@@ -59,6 +59,19 @@ const CONFIG = {
   // en Number('') is 0 — dat zou onbedoeld de noodrem zijn. Daarom ook '' → standaard.
   vensterSec: Number(process.env.RITMONITOR_VENSTER_SEC || 300),
   intervalSec: Number(process.env.RITMONITOR_INTERVAL_SEC || 60),
+  // Een mislukte lezing beëindigde tot 2026-09-17 het hele leesvenster van dat
+  // depot (één `break`), ook al was het een transiente fout en waren er nog
+  // minuten over. In de 7 dagen ervóór haalde 8% van de runs daardoor minder
+  // dan 5 lezingen voor minstens één depot — precies waar de wachtdog
+  // `check_ritmonitor_eindtijd()` op alarmeert, en precies het scenario waarvoor
+  // het herhaald lezen bestaat (de afsluit-registratie missen). Nu wordt een
+  // lezing opnieuw geprobeerd, en na de helft van die pogingen wordt de hele
+  // browsersessie vervangen (hetzelfde escalatiepatroon als de route-TVI-scraper
+  // in matransport: eerst opnieuw navigeren, dan pas een verse sessie). Korte
+  // pauze ertussen i.p.v. het volle interval — het venster is de grens, niet het
+  // aantal pogingen.
+  maxFoutenAchtereen: Number(process.env.RITMONITOR_MAX_FOUTEN || 3),
+  foutWachtSec: Number(process.env.RITMONITOR_FOUT_WACHT_SEC || 10),
 }
 
 function requireEnv(name) {
@@ -137,10 +150,42 @@ function nlTijdstipNaarIso(datum, tekst, nuMs = Date.now()) {
   return tijdstipNaarIso(datum, tekst, nuMs, CONFIG.timezone)
 }
 
+// Herkent een Akamai-/WAF-blokkade aan de paginainhoud i.p.v. alleen de URL —
+// overgenomen uit de route-TVI-scraper (matransport, stap1.js), waar dit het
+// verschil maakte tussen "PostNL-hik" en "ons IP ligt eruit". Zonder dit staat
+// er in worker_run_log alleen een kale time-out en is dat niet te onderscheiden.
+async function detecteerBlok(page) {
+  const url = page.url()
+  const title = await page.title().catch(() => '')
+  const snippet = await page.locator('body').innerText({ timeout: 3000 })
+    .catch(() => '').then(t => t.slice(0, 300).replace(/\s+/g, ' ').trim())
+  const patronen = [
+    /access denied/i, /access blocked/i, /blocked/i, /forbidden/i,
+    /reference #\d/i, /ray id/i, /error 403/i, /your request has been blocked/i,
+    /akamai/i, /web application firewall/i, /waf/i,
+  ]
+  return { url, title, snippet, isBlok: patronen.some(r => r.test(title) || r.test(snippet)) }
+}
+
+const SEL_LOGIN_VELD = 'input[type="text"], input[type="email"]'
+
 async function loginPostnl(page, depot) {
   console.log(`[${depot.naam}] Login pagina URL:`, page.url())
-  await page.locator('input[type="text"], input[type="email"]').first().waitFor({ timeout: 15000 })
-  await page.locator('input[type="text"], input[type="email"]').first().fill(depot.username)
+  // Het invoerveld staat soms al in de DOM terwijl het nog verborgen is (de
+  // PCI-loginpagina hydrateert traag): 8 van de 34 mislukte depot-runs in de week
+  // vóór 2026-09-17 strandden op "locator resolved to hidden" na 15 s. Langer
+  // wachten en anders één keer herladen kost hooguit een halve minuut van het
+  // leesvenster; een mislukte login kost het depot de hele run.
+  try {
+    await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
+  } catch {
+    const blok = await detecteerBlok(page)
+    console.warn(`[${depot.naam}] Loginveld niet zichtbaar na 45 s${blok.isBlok ? ' — ⛔ MOGELIJKE IP-BLOKKERING' : ''} (titel: "${blok.title}")`)
+    if (blok.isBlok) console.error(`[${depot.naam}] Body: ${blok.snippet}`)
+    await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
+    await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
+  }
+  await page.locator(SEL_LOGIN_VELD).first().fill(depot.username)
   await page.locator('input[type="password"]').first().fill(depot.password)
   await page.locator('button[data-trn-key="login.butlogin"]').click()
   // Wacht tot we van de loginpagina af zijn. NIET op '**pnl-oompd**' wachten:
@@ -565,30 +610,64 @@ async function syncMonitorDepot(depot) {
   const vandaag = vandaagNl()
   console.log(`[${depot.naam}] Ritmonitor sync voor ${vandaag}`)
 
-  const { browser, context, page } = await openDepotSessie(depot)
+  let { browser, context, page } = await openDepotSessie(depot)
   let rijenAantal = 0
   let lezingen = 0
   let fout = null
   const deadline = Date.now() + CONFIG.vensterSec * 1000
+
+  // Verse browsersessie als opnieuw navigeren niet meer helpt (stale Mendix-
+  // sessie, "Execution context destroyed" na een redirect). Zelfde escalatie als
+  // `herstelMetNieuweSessie()` in de route-TVI-scraper, met één verschil: binnen
+  // één GitHub-Actions-run blijft het IP hetzelfde, dus dit lost een IP-blokkade
+  // níet op — dat is precies waarom detecteerBlok() apart logt.
+  const vervangSessie = async (reden) => {
+    console.warn(`[${depot.naam}] [NIEUWE-SESSIE] Browser vervangen (${reden})...`)
+    await context.close().catch(() => {})
+    await browser.close().catch(() => {})
+    ;({ browser, context, page } = await openDepotSessie(depot))
+    await page.waitForTimeout(1000)
+  }
+
   try {
     await page.waitForTimeout(1000)
     // Herhaald lezen tot het venster om is (zie CONFIG.vensterSec). Elke lezing
     // navigeert opnieuw naar de Ritmonitor via het bewezen pad (openRitmonitor:
     // inclusief OAuth-herlogin) i.p.v. een onbekende ververs-knop in de grid.
-    // Een fout ná een geslaagde lezing stopt alleen de herhaling — wat al gelezen
-    // en opgeslagen is, telt.
+    // Een mislukte lezing beëindigt het venster niet meer (zie CONFIG.maxFoutenAchtereen).
+    let foutenAchtereen = 0
     for (;;) {
       try {
         await openRitmonitor(page, depot)
         const rijen = await leesRitmonitor(page)
         lezingen++
+        foutenAchtereen = 0
         console.log(`[${depot.naam}] Ritmonitor lezing ${lezingen}: ${rijen.length} ritten gelezen`)
         await opslaanMonitorInSupabase(rijen, vandaag, depot.naam)
         rijenAantal = Math.max(rijenAantal, rijen.length)
       } catch (error) {
-        if (lezingen === 0) throw error
-        console.error(`[${depot.naam}] Lezing ${lezingen + 1} mislukt, stop met herhalen:`, error.message)
-        break
+        foutenAchtereen++
+        console.error(`[${depot.naam}] Lezing ${lezingen + 1} mislukt (${foutenAchtereen}/${CONFIG.maxFoutenAchtereen} achter elkaar): ${error.message.split('\n')[0]}`)
+        if (foutenAchtereen >= CONFIG.maxFoutenAchtereen) {
+          if (lezingen === 0) throw error
+          console.error(`[${depot.naam}] Te veel fouten achter elkaar — stop met herhalen (${lezingen} lezing(en) behouden)`)
+          break
+        }
+        // Wacht kort en probeer opnieuw; halverwege de pogingen eerst een verse
+        // sessie, want blijven klikken in een kapotte sessie levert niets op.
+        const wachtMs = Math.min(CONFIG.foutWachtSec * 1000, deadline - Date.now())
+        if (wachtMs <= 0) { if (lezingen === 0) throw error; break }
+        await new Promise(r => setTimeout(r, wachtMs))
+        if (foutenAchtereen >= Math.ceil(CONFIG.maxFoutenAchtereen / 2)) {
+          try {
+            await vervangSessie(error.message.split('\n')[0])
+          } catch (sessieErr) {
+            if (lezingen === 0) throw sessieErr
+            console.error(`[${depot.naam}] Nieuwe sessie ook mislukt: ${sessieErr.message.split('\n')[0]}`)
+            break
+          }
+        }
+        continue
       }
       if (Date.now() + CONFIG.intervalSec * 1000 > deadline) break
       await page.waitForTimeout(CONFIG.intervalSec * 1000)
@@ -601,7 +680,9 @@ async function syncMonitorDepot(depot) {
   }
 
   // Video pas na context.close() ophalen — Playwright rondt het bestand pas
-  // dan af, ervoor kan het nog onvolledig op schijf staan.
+  // dan af, ervoor kan het nog onvolledig op schijf staan. Is de sessie tussendoor
+  // vervangen, dan is dit de video van de laatste sessie; de eerdere gaat verloren
+  // (bewuste keuze: één video per depot, zie § Sessie-video in POSTNL_RITMONITOR.md).
   const video = page.video()
   await context.close().catch(() => {})
   await browser.close().catch(() => {})
