@@ -45,4 +45,10 @@ jobs:
           # Noodrem: zet de repository-variabele RITMONITOR_VENSTER_SEC op 0 voor
           # één lezing per run (gedrag van vóór 2026-09-12). Leeg = standaard 300.
           RITMONITOR_VENSTER_SEC: ${{ vars.RITMONITOR_VENSTER_SEC }}
+          # Leeg = de standaarden uit CONFIG (60 s tussen lezingen; 3 fouten
+          # achter elkaar vóór een depot opgeeft, 10 s ertussen). Alleen zetten
+          # als een storing daarom vraagt — zie § Per-depot foutisolatie.
+          RITMONITOR_INTERVAL_SEC: ${{ vars.RITMONITOR_INTERVAL_SEC }}
+          RITMONITOR_MAX_FOUTEN: ${{ vars.RITMONITOR_MAX_FOUTEN }}
+          RITMONITOR_FOUT_WACHT_SEC: ${{ vars.RITMONITOR_FOUT_WACHT_SEC }}
         run: node src/index.js --once
