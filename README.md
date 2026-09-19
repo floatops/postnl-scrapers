@@ -10,6 +10,22 @@ GitHub Secrets (zie hieronder). De PostNL-logins zelf staan versleuteld in de
 Supabase-tabel `klant_credentials` en worden per run ontsleuteld met
 `CREDENTIALS_ENCRYPTION_KEY`.
 
+## Publieke run-logs zeggen niets over de klant (sinds 2026-09-19)
+
+Omdat de repo publiek is, kan iedereen de Actions-logs lezen. Met meerdere klanten zou
+daaruit af te leiden zijn welke bedrijven FloatOps gebruiken (depotnamen, portaal-URL's).
+Daarom filtert `worker/credentials-shared/src/publiekLog.js` in GitHub Actions de console
+zelf, zodra de depots geladen zijn: depotnamen worden een stabiele code (`D-3f2a`, per
+klant anders), logins `<login>`, elke URL `<url>`, en van fouten blijft alleen de eerste
+regel over. Lokaal blijft alles leesbaar. Test: `cd worker/credentials-shared && node --test test/`.
+
+Welk depot bij welke code hoort staat privé in `worker_run_log` (matransport-database:
+`depots_ok`/`depots_mislukt` met echte namen) — of reken `depotCode(klantId, naam)` na.
+**Nooit** een echte depotnaam, login of URL rechtstreeks naar `process.stdout` schrijven
+of in een workflow-`run-name`/stapnaam zetten; alleen `console.*` wordt gefilterd.
+Zet daarnaast in **Settings → Actions → General → Artifact and log retention** de
+bewaartermijn op 1 dag: dan staat zelfs het neutrale niet lang.
+
 ## Benodigde GitHub Secrets
 
 Instellen via **Settings → Secrets and variables → Actions → New repository secret**:

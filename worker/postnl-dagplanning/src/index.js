@@ -4,6 +4,7 @@ import http from 'node:http'
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
+import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 
 // Optionele proxy — PostNL's Akamai-beveiliging blokkeert het IP van de
 // scrape-omgeving bij te veel geautomatiseerd verkeer vanaf één vast adres.
@@ -564,6 +565,8 @@ async function koppelChauffeurs() {
 async function syncPostnlStops(markeerGereden = false, allesDatums = false, syncDatum = null) {
   const actieveDepots = await getDepots(supabase, KLANT_ID, 'postnl')
   if (actieveDepots.length === 0) throw new Error('Geen depots geconfigureerd (klant_credentials leeg voor deze klant)')
+  // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
+  installeerNeutraleConsole({ klantId: KLANT_ID, depots: actieveDepots })
   console.log(`Start PostNL sync voor ${actieveDepots.map(d => d.naam).join(', ')}`)
   const depotsOk = []
   let ritenTotaal = 0

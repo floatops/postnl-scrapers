@@ -21,6 +21,7 @@ import fs from 'node:fs/promises'
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
+import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd.js'
 
 // Optionele proxy — PostNL's Akamai-beveiliging blokkeert het IP van de
@@ -734,6 +735,8 @@ async function eindeRunLog(runLogId, velden) {
 async function syncRitmonitor() {
   const runLogId = await startRunLog()
   const DEPOTS = await getDepots(supabase, KLANT_ID, 'postnl')
+  // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
+  installeerNeutraleConsole({ klantId: KLANT_ID, depots: DEPOTS })
   if (DEPOTS.length === 0) {
     await eindeRunLog(runLogId, { status: 'mislukt', foutmelding: 'Geen depots geconfigureerd' })
     throw new Error('Geen depots geconfigureerd (klant_credentials leeg voor deze klant)')
