@@ -713,9 +713,13 @@ function githubRunUrl() {
 
 async function startRunLog() {
   try {
-    const { data } = await supabase.from('worker_run_log')
+    // supabase-js gooit NIET bij een databasefout maar geeft { error } terug; zonder
+    // deze check verdween een mislukte insert (bv. onbekende klant_id) geruisloos en
+    // bleef de wachtdog blind voor deze run. Gevonden 2026-09-20 bij de stack-b-proefrun.
+    const { data, error } = await supabase.from('worker_run_log')
       .insert({ worker_naam: 'postnl-ritmonitor', klant_id: KLANT_ID, run_url: githubRunUrl() })
       .select('id').single()
+    if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
     return data?.id ?? null
   } catch (error) {
     console.error('startRunLog mislukt (sync gaat gewoon door):', error.message)
@@ -726,7 +730,8 @@ async function startRunLog() {
 async function eindeRunLog(runLogId, velden) {
   if (!runLogId) return
   try {
-    await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', runLogId)
+    const { error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', runLogId)
+    if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
   } catch (error) {
     console.error('eindeRunLog mislukt:', error.message)
   }
