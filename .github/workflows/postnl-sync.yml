@@ -8,9 +8,26 @@ name: PostNL Dagplanning
 #
 # Getriggerd door Supabase pg_cron via de GitHub API (workflow_dispatch).
 # NOOIT on: schedule gebruiken — dat vuurt minuten tot uren te laat.
+# Per klant en per stack (floatops/matransport#154, 2026-09-20): de dispatcher in de
+# database stuurt `klant_id` en `stack` mee. `stack` kiest het GitHub-environment
+# (stack-a = M&A-database, stack-b = klanten-database) en daarmee de secrets;
+# `klant_id` welke klant_credentials-rijen de scraper gebruikt. Zonder inputs
+# (oude dispatcher, handmatige start) precies het gedrag van vóór deze wijziging:
+# stack-a met de repo-secret KLANT_ID (M&A). Die terugval verdwijnt zodra beide
+# databases de nieuwe dispatcher hebben.
 on:
   workflow_dispatch:
     inputs:
+      klant_id:
+        description: 'Klant (uuid uit klanten.id) — leeg = repo-secret KLANT_ID'
+        required: false
+        type: string
+      stack:
+        description: 'Omgeving (GitHub-environment)'
+        required: false
+        type: choice
+        options: [stack-a, stack-b]
+        default: stack-a
       datum:
         description: 'Specifieke datum (YYYY-MM-DD), leeg = vandaag'
         required: false
@@ -21,9 +38,15 @@ on:
         type: boolean
         default: false
 
+# Eén dagplanning-run tegelijk per klant per stack; andere klanten parallel.
+concurrency:
+  group: postnl-sync-${{ inputs.stack || 'stack-a' }}-${{ inputs.klant_id || 'standaard' }}
+  cancel-in-progress: false
+
 jobs:
   sync:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.stack || 'stack-a' }}
     container: mcr.microsoft.com/playwright:v1.50.0-noble
     timeout-minutes: 15
     steps:
@@ -48,7 +71,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
-          KLANT_ID: ${{ secrets.KLANT_ID }}
+          KLANT_ID: ${{ inputs.klant_id || secrets.KLANT_ID }}
           POSTNL_HEADLESS: 'true'
           SYNC_DATUM: ${{ inputs.datum }}
           RUN_ALL: ${{ inputs.alle_datums }}

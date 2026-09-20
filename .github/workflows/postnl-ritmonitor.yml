@@ -2,20 +2,40 @@ name: PostNL Ritmonitor
 
 # Getriggerd door Supabase pg_cron via de GitHub API (workflow_dispatch).
 # NOOIT on: schedule gebruiken — dat vuurt minuten tot uren te laat.
+# Per klant en per stack (floatops/matransport#154, 2026-09-20): de dispatcher in de
+# database stuurt `klant_id` en `stack` mee. `stack` kiest het GitHub-environment
+# (stack-a = M&A-database, stack-b = klanten-database) en daarmee de secrets;
+# `klant_id` welke klant_credentials-rijen de scraper gebruikt. Zonder inputs
+# (oude dispatcher, handmatige start) precies het gedrag van vóór deze wijziging:
+# stack-a met de repo-secret KLANT_ID (M&A). Die terugval verdwijnt zodra beide
+# databases de nieuwe dispatcher hebben.
 on:
   workflow_dispatch:
+    inputs:
+      klant_id:
+        description: 'Klant (uuid uit klanten.id) — leeg = repo-secret KLANT_ID'
+        required: false
+        type: string
+      stack:
+        description: 'Omgeving (GitHub-environment)'
+        required: false
+        type: choice
+        options: [stack-a, stack-b]
+        default: stack-a
 
-# Eén run tegelijk: de worker leest de grid herhaaldelijk tot ~6 min na de start
-# (RITMONITOR_VENSTER_SEC), dus een trage start kan tegen de volgende 7-min-trigger
-# aanlopen. Een tweede run wacht dan even i.p.v. gelijktijdig dezelfde ritten te
-# beschrijven. Niet annuleren: een lopende run heeft lezingen die tellen.
+# Eén run tegelijk per klant per stack: de worker leest de grid herhaaldelijk tot
+# ~6 min na de start (RITMONITOR_VENSTER_SEC), dus een trage start kan tegen de
+# volgende 7-min-trigger aanlopen. Een tweede run voor dezelfde klant wacht dan
+# even i.p.v. gelijktijdig dezelfde ritten te beschrijven; andere klanten lopen
+# gewoon parallel. Niet annuleren: een lopende run heeft lezingen die tellen.
 concurrency:
-  group: postnl-ritmonitor
+  group: postnl-ritmonitor-${{ inputs.stack || 'stack-a' }}-${{ inputs.klant_id || 'standaard' }}
   cancel-in-progress: false
 
 jobs:
   ritmonitor:
     runs-on: ubuntu-latest
+    environment: ${{ inputs.stack || 'stack-a' }}
     container: mcr.microsoft.com/playwright:v1.50.0-noble
     timeout-minutes: 10
     steps:
@@ -40,7 +60,7 @@ jobs:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
           CREDENTIALS_ENCRYPTION_KEY: ${{ secrets.CREDENTIALS_ENCRYPTION_KEY }}
-          KLANT_ID: ${{ secrets.KLANT_ID }}
+          KLANT_ID: ${{ inputs.klant_id || secrets.KLANT_ID }}
           POSTNL_HEADLESS: 'true'
           # Noodrem: zet de repository-variabele RITMONITOR_VENSTER_SEC op 0 voor
           # één lezing per run (gedrag van vóór 2026-09-12). Leeg = standaard 300.
