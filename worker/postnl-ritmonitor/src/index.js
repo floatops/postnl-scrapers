@@ -22,28 +22,18 @@ import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
+import {
+  kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout,
+  proxyPoolAan, ProxyBlokkadeError,
+} from '../../credentials-shared/src/proxyPool.js'
 import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd.js'
 
-// Optionele proxy — PostNL's Akamai-beveiliging blokkeert het IP van de
-// scrape-omgeving bij te veel geautomatiseerd verkeer vanaf één vast adres.
-// Hier grotendeels overbodig (elke GitHub Actions-run heeft al een ander IP
-// uit de pool), maar blijft bewust beschikbaar als extra beveiligingslaag.
-// Zet in GitHub Secrets (leeg = direct verbinden, ongewijzigd gedrag):
-//   PROXY_SERVER=http://gateway.provider.com:7000
-//   PROXY_USERNAME / PROXY_PASSWORD (optioneel)
-// Was worker/postnl-shared/proxy.js (gedeeld met postnl-dagplanning) — nu per
-// worker ingebouwd, want een map voor 15 regels code die door precies twee
-// bestanden gebruikt wordt voegde meer verwarring toe dan het oploste.
-function metProxy(launchOptions, label = '') {
-  const server = process.env.PROXY_SERVER
-  if (!server) return launchOptions
-  const proxy = { server }
-  if (process.env.PROXY_USERNAME) proxy.username = process.env.PROXY_USERNAME
-  if (process.env.PROXY_PASSWORD) proxy.password = process.env.PROXY_PASSWORD
-  launchOptions.proxy = proxy
-  console.log(`${label ? `[${label}] ` : ''}Proxy actief: ${proxy.server}`)
-  return launchOptions
-}
+// Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
+// (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
+// elke blokkade gelogd; op GitHub Actions het oude gedrag (optioneel PROXY_SERVER).
+// Hoe vaak een depot bij het openen van een sessie een ander IP probeert als het
+// huidige geblokkeerd blijkt, vóór het depot voor deze run opgeeft.
+const MAX_BLOKKADES_PER_OPEN = Number(process.env.PROXY_MAX_BLOKKADES || 3)
 
 const CONFIG = {
   timezone: process.env.TZ || 'Europe/Amsterdam',
@@ -151,22 +141,8 @@ function nlTijdstipNaarIso(datum, tekst, nuMs = Date.now()) {
   return tijdstipNaarIso(datum, tekst, nuMs, CONFIG.timezone)
 }
 
-// Herkent een Akamai-/WAF-blokkade aan de paginainhoud i.p.v. alleen de URL —
-// overgenomen uit de route-TVI-scraper (matransport, stap1.js), waar dit het
-// verschil maakte tussen "PostNL-hik" en "ons IP ligt eruit". Zonder dit staat
-// er in worker_run_log alleen een kale time-out en is dat niet te onderscheiden.
-async function detecteerBlok(page) {
-  const url = page.url()
-  const title = await page.title().catch(() => '')
-  const snippet = await page.locator('body').innerText({ timeout: 3000 })
-    .catch(() => '').then(t => t.slice(0, 300).replace(/\s+/g, ' ').trim())
-  const patronen = [
-    /access denied/i, /access blocked/i, /blocked/i, /forbidden/i,
-    /reference #\d/i, /ray id/i, /error 403/i, /your request has been blocked/i,
-    /akamai/i, /web application firewall/i, /waf/i,
-  ]
-  return { url, title, snippet, isBlok: patronen.some(r => r.test(title) || r.test(snippet)) }
-}
+// detecteerBlok() (Akamai-/WAF-pagina herkennen) staat sinds #173 in
+// credentials-shared/src/proxyPool.js, gedeeld met postnl-dagplanning.
 
 const SEL_LOGIN_VELD = 'input[type="text"], input[type="email"]'
 
@@ -183,6 +159,9 @@ async function loginPostnl(page, depot) {
     const blok = await detecteerBlok(page)
     console.warn(`[${depot.naam}] Loginveld niet zichtbaar na 45 s${blok.isBlok ? ' — ⛔ MOGELIJKE IP-BLOKKERING' : ''} (titel: "${blok.title}")`)
     if (blok.isBlok) console.error(`[${depot.naam}] Body: ${blok.snippet}`)
+    // Met de pool helpt herladen niet: dit IP is geblokkeerd. Meteen afbreken, zodat
+    // de sessie het als blokkade afsluit en met het volgende IP opnieuw begint.
+    if (blok.isBlok && proxyPoolAan()) throw new ProxyBlokkadeError(`Loginpagina geblokkeerd: ${blok.title || blok.snippet.slice(0, 80)}`)
     await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
     await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
   }
@@ -197,13 +176,45 @@ async function loginPostnl(page, depot) {
   console.log(`[${depot.naam}] Ingelogd, URL:`, page.url())
 }
 
-// Opent browser + context (met opgeslagen sessie indien aanwezig) + page,
-// navigeert naar het depot en logt in indien nodig.
+// Opent een sessie; is het IP geblokkeerd, dan meteen opnieuw met het volgende IP
+// uit de pool (tot MAX_BLOKKADES_PER_OPEN). Andere fouten gaan direct door.
 async function openDepotSessie(depot) {
+  for (let poging = 1; ; poging++) {
+    try {
+      return await openDepotSessieEenmaal(depot)
+    } catch (err) {
+      if (!(err instanceof ProxyBlokkadeError) || poging >= MAX_BLOKKADES_PER_OPEN) throw err
+      console.warn(`[${depot.naam}] ⛔ IP geblokkeerd (${err.message}) — opnieuw met het volgende IP (${poging}/${MAX_BLOKKADES_PER_OPEN})`)
+    }
+  }
+}
+
+// Opent browser + context (met opgeslagen sessie indien aanwezig) + page,
+// navigeert naar het depot en logt in indien nodig. Mislukt dat, dan wordt het
+// proxy-gebruik hier al afgesloten (fout of blokkade) en de browser gesloten.
+async function openDepotSessieEenmaal(depot) {
   const launchOptions = { headless: CONFIG.headless, slowMo: CONFIG.slowMo, args: ['--disable-dev-shm-usage'] }
   if (process.env.CHROMIUM_EXECUTABLE_PATH) launchOptions.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
-  metProxy(launchOptions, depot.naam)
-  const browser = await chromium.launch(launchOptions)
+  const sessie = await kiesProxy(supabase, { worker: 'postnl-ritmonitor', depot })
+  if (sessie) {
+    launchOptions.proxy = sessie.proxy
+    console.log(`[${depot.naam}] Proxy: ${sessie.label}`)
+  }
+  let browser = null
+  let page = null
+  try {
+    browser = await chromium.launch(launchOptions)
+    const geopend = await openInBrowser(browser, depot)
+    page = geopend.page
+    return { browser, ...geopend, sessie }
+  } catch (err) {
+    await sluitProxyAf(supabase, sessie, await uitkomstBijFout(err, page ?? err.page), err.message)
+    await browser?.close().catch(() => {})
+    throw err
+  }
+}
+
+async function openInBrowser(browser, depot) {
 
   // serviceWorkers blokkeren: de Mendix service-worker veroorzaakt anders
   // herlaad-/chrome-error-loops vlak na de OAuth-redirect.
@@ -227,11 +238,17 @@ async function openDepotSessie(depot) {
   const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
 
-  await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
-  if (page.url().includes('loginpostnl') || page.url().includes('/login') || page.url().includes('/authorize')) {
-    await loginPostnl(page, depot)
+  try {
+    const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null)
+    if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
+    if (page.url().includes('loginpostnl') || page.url().includes('/login') || page.url().includes('/authorize')) {
+      await loginPostnl(page, depot)
+    }
+  } catch (err) {
+    err.page = page // voor uitkomstBijFout(): blokkadepagina herkennen vóór het sluiten
+    throw err
   }
-  return { browser, context, page }
+  return { context, page }
 }
 
 // Koppelt chauffeur_id aan postnl_chauffeur — en corrigeert 'm ook als 'ie al
@@ -611,22 +628,25 @@ async function syncMonitorDepot(depot) {
   const vandaag = vandaagNl()
   console.log(`[${depot.naam}] Ritmonitor sync voor ${vandaag}`)
 
-  let { browser, context, page } = await openDepotSessie(depot)
+  let { browser, context, page, sessie } = await openDepotSessie(depot)
   let rijenAantal = 0
   let lezingen = 0
+  let sessieLezingen = 0 // lezingen van de huidige proxy-sessie
   let fout = null
   const deadline = Date.now() + CONFIG.vensterSec * 1000
 
   // Verse browsersessie als opnieuw navigeren niet meer helpt (stale Mendix-
   // sessie, "Execution context destroyed" na een redirect). Zelfde escalatie als
-  // `herstelMetNieuweSessie()` in de route-TVI-scraper, met één verschil: binnen
-  // één GitHub-Actions-run blijft het IP hetzelfde, dus dit lost een IP-blokkade
-  // níet op — dat is precies waarom detecteerBlok() apart logt.
-  const vervangSessie = async (reden) => {
+  // `herstelMetNieuweSessie()` in de route-TVI-scraper. Op GitHub Actions blijft het
+  // IP binnen één run hetzelfde, dus daar lost dit een IP-blokkade níet op; met de
+  // proxy-pool (VPS) krijgt de nieuwe sessie wél een ander IP.
+  const vervangSessie = async (reden, uitkomst = 'fout') => {
     console.warn(`[${depot.naam}] [NIEUWE-SESSIE] Browser vervangen (${reden})...`)
+    await sluitProxyAf(supabase, sessie, uitkomst, reden)
     await context.close().catch(() => {})
     await browser.close().catch(() => {})
-    ;({ browser, context, page } = await openDepotSessie(depot))
+    ;({ browser, context, page, sessie } = await openDepotSessie(depot))
+    sessieLezingen = 0
     await page.waitForTimeout(1000)
   }
 
@@ -642,6 +662,7 @@ async function syncMonitorDepot(depot) {
         await openRitmonitor(page, depot)
         const rijen = await leesRitmonitor(page)
         lezingen++
+        sessieLezingen++
         foutenAchtereen = 0
         console.log(`[${depot.naam}] Ritmonitor lezing ${lezingen}: ${rijen.length} ritten gelezen`)
         await opslaanMonitorInSupabase(rijen, vandaag, depot.naam)
@@ -649,6 +670,19 @@ async function syncMonitorDepot(depot) {
       } catch (error) {
         foutenAchtereen++
         console.error(`[${depot.naam}] Lezing ${lezingen + 1} mislukt (${foutenAchtereen}/${CONFIG.maxFoutenAchtereen} achter elkaar): ${error.message.split('\n')[0]}`)
+        // Geblokkeerd IP (alleen met de pool): niet wachten en opnieuw proberen op
+        // hetzelfde IP, maar direct een sessie met het volgende IP.
+        if (proxyPoolAan() && await uitkomstBijFout(error, page) === 'blokkade') {
+          console.warn(`[${depot.naam}] ⛔ IP-BLOKKERING tijdens lezen — direct naar het volgende IP`)
+          try {
+            await vervangSessie(`blokkade: ${error.message.split('\n')[0]}`, 'blokkade')
+            continue
+          } catch (sessieErr) {
+            if (lezingen === 0) throw sessieErr
+            console.error(`[${depot.naam}] Nieuwe sessie ook mislukt: ${sessieErr.message.split('\n')[0]}`)
+            break
+          }
+        }
         if (foutenAchtereen >= CONFIG.maxFoutenAchtereen) {
           if (lezingen === 0) throw error
           console.error(`[${depot.naam}] Te veel fouten achter elkaar — stop met herhalen (${lezingen} lezing(en) behouden)`)
@@ -684,6 +718,12 @@ async function syncMonitorDepot(depot) {
   // dan af, ervoor kan het nog onvolledig op schijf staan. Is de sessie tussendoor
   // vervangen, dan is dit de video van de laatste sessie; de eerdere gaat verloren
   // (bewuste keuze: één video per depot, zie § Sessie-video in POSTNL_RITMONITOR.md).
+  // Proxy-gebruik van de laatste sessie afsluiten. Een fout ná minstens één
+  // geslaagde lezing telt als 'ok' voor het IP: het portaal was bereikbaar.
+  await sluitProxyAf(supabase, sessie,
+    fout && sessieLezingen === 0 ? await uitkomstBijFout(fout, page) : 'ok',
+    fout?.message ?? `${sessieLezingen} lezing(en)`)
+
   const video = page.video()
   await context.close().catch(() => {})
   await browser.close().catch(() => {})
@@ -740,6 +780,9 @@ async function eindeRunLog(runLogId, velden) {
 async function syncRitmonitor() {
   const runLogId = await startRunLog()
   const DEPOTS = await getDepots(supabase, KLANT_ID, 'postnl')
+  // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij
+  // een ander IP, en het bewezen patroon (GitHub Actions) is elke run vers inloggen.
+  if (proxyPoolAan()) for (const d of DEPOTS) d.storageState = null
   // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
   installeerNeutraleConsole({ klantId: KLANT_ID, depots: DEPOTS })
   if (DEPOTS.length === 0) {

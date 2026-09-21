@@ -61,11 +61,33 @@ worker/postnl-dagplanning/       Dagplanning-scraper (ritten + stops) — map he
                                   postnl-sync.yml (zie die file voor waarom)
 worker/postnl-ritmonitor/        Live voortgang per rit
   POSTNL_RITMONITOR.md           Volledige technische documentatie (lees dit eerst)
-worker/credentials-shared/       Ontsleutelt klant_credentials (crypto)
+worker/credentials-shared/       Ontsleutelt klant_credentials (crypto), proxyPool.js,
+                                  publiekLog.js
 .github/workflows/                De twee Actions-workflows
 ```
 
-Elke worker bouwt zijn eigen (optionele) proxy-ondersteuning in — was ooit een gedeeld `worker/postnl-shared/`-bestandje, maar dat werd door precies twee bestanden gebruikt en voegde meer verwarring toe dan het scheelde. Zie de `metProxy()`-functie bovenin elke `src/index.js`.
+## Twee plekken waar de scrapers draaien (sinds 2026-09-21, floatops/matransport#173)
+
+Dezelfde code draait op twee manieren; welke pg_cron kiest, staat per omgeving in de
+matransport-database (`platform_instellingen.postnl_scrape_route` = `github` of `vps`):
+
+- **GitHub Actions** (de workflows hieronder) — elke run een ander IP uit de GitHub-pool.
+- **De VPS** — `vps-server` start `node src/index.js --once` vanuit een checkout van deze
+  repo (`/opt/postnl-scrapers`, elke minuut bijgewerkt door matransport's
+  `scripts/auto-deploy-scrapers.sh`) met `PROXY_POOL=true`: elke browsersessie krijgt
+  dan het volgende IP uit de eigen proxy-pool (dedicated ISP-IP's, rouleren 1..n over
+  alle depots). Die proxies accepteren alleen verkeer vanaf het VPS-IP, dus op GitHub
+  werken ze niet.
+
+De proxy-logica staat één keer, in `worker/credentials-shared/src/proxyPool.js`:
+`kiesProxy()` (volgende IP via `volgende_proxy()`), `sluitProxyAf()` (uitkomst `ok` /
+`fout` / `blokkade` naar `proxy_gebruik_log`), en `detecteerBlok()`/`ProxyBlokkadeError`.
+Een blokkade zet het IP in de database automatisch in quarantaine (en stuurt een
+pushmelding); de scraper probeert direct opnieuw met het volgende IP
+(`PROXY_MAX_BLOKKADES`, standaard 3). Geen bruikbaar IP = harde fout, nooit stil via
+het VPS-IP. Zonder `PROXY_POOL` is het gedrag als vóór #173: optioneel één vaste
+`PROXY_SERVER` uit de omgeving. Uitleg en overzichten: matransport
+`worker/proxy-pool/PROXY_POOL.md`. Tests: `cd worker/credentials-shared && node --test test/proxyPool.test.mjs`.
 
 ## Relatie met `fixertnl/matransport`
 

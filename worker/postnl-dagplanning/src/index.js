@@ -6,26 +6,16 @@ import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 
-// Optionele proxy — PostNL's Akamai-beveiliging blokkeert het IP van de
-// scrape-omgeving bij te veel geautomatiseerd verkeer vanaf één vast adres.
-// Hier grotendeels overbodig (elke GitHub Actions-run heeft al een ander IP
-// uit de pool), maar blijft bewust beschikbaar als extra beveiligingslaag.
-// Zet in GitHub Secrets (leeg = direct verbinden, ongewijzigd gedrag):
-//   PROXY_SERVER=http://gateway.provider.com:7000
-//   PROXY_USERNAME / PROXY_PASSWORD (optioneel)
-// Was worker/postnl-shared/proxy.js (gedeeld met postnl-ritmonitor) — nu per
-// worker ingebouwd, want een map voor 15 regels code die door precies twee
-// bestanden gebruikt wordt voegde meer verwarring toe dan het oploste.
-function metProxy(launchOptions, label = '') {
-  const server = process.env.PROXY_SERVER
-  if (!server) return launchOptions
-  const proxy = { server }
-  if (process.env.PROXY_USERNAME) proxy.username = process.env.PROXY_USERNAME
-  if (process.env.PROXY_PASSWORD) proxy.password = process.env.PROXY_PASSWORD
-  launchOptions.proxy = proxy
-  console.log(`${label ? `[${label}] ` : ''}Proxy actief: ${proxy.server}`)
-  return launchOptions
-}
+import {
+  kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout,
+  proxyPoolAan, ProxyBlokkadeError,
+} from '../../credentials-shared/src/proxyPool.js'
+
+// Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
+// (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
+// elke blokkade gelogd; op GitHub Actions het oude gedrag (optioneel PROXY_SERVER).
+// Hoe vaak een depot een ander IP probeert als het huidige geblokkeerd blijkt.
+const MAX_BLOKKADES_PER_DEPOT = Number(process.env.PROXY_MAX_BLOKKADES || 3)
 
 const CONFIG = {
   cronTime: process.env.CRON_TIME || '0 23 * * *',
@@ -126,7 +116,16 @@ function labelNaarDatum(label) {
 
 async function loginPostnl(page, depot) {
   console.log(`[${depot.naam}] Login pagina URL:`, page.url())
-  await page.locator('input[type="text"], input[type="email"]').first().waitFor({ timeout: 15000 })
+  try {
+    await page.locator('input[type="text"], input[type="email"]').first().waitFor({ timeout: 15000 })
+  } catch (err) {
+    const blok = await detecteerBlok(page)
+    if (blok.isBlok) {
+      console.warn(`[${depot.naam}] Loginveld niet zichtbaar — ⛔ MOGELIJKE IP-BLOKKERING (titel: "${blok.title}")`)
+      if (proxyPoolAan()) throw new ProxyBlokkadeError(`Loginpagina geblokkeerd: ${blok.title || blok.snippet.slice(0, 80)}`)
+    }
+    throw err
+  }
   await page.locator('input[type="text"], input[type="email"]').first().fill(depot.username)
   await page.locator('input[type="password"]').first().fill(depot.password)
   await page.locator('button[data-trn-key="login.butlogin"]').click()
@@ -405,15 +404,38 @@ async function eindeRunLog(runLogId, velden) {
   }
 }
 
-async function syncDepot(depot, markeerGereden = false, allesDatums = false, syncDatum = null) {
+// Eén depot; is het IP geblokkeerd, dan meteen opnieuw met het volgende IP uit de
+// pool i.p.v. te wachten op de volgende poging van syncMetRetry.
+async function syncDepot(depot, ...args) {
+  for (let poging = 1; ; poging++) {
+    try {
+      return await syncDepotEenmaal(depot, ...args)
+    } catch (err) {
+      if (!(err instanceof ProxyBlokkadeError) || poging >= MAX_BLOKKADES_PER_DEPOT) throw err
+      console.warn(`[${depot.naam}] ⛔ IP geblokkeerd (${err.message}) — opnieuw met het volgende IP (${poging}/${MAX_BLOKKADES_PER_DEPOT})`)
+    }
+  }
+}
+
+async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = false, syncDatum = null) {
   const vandaag = vandaagNl()
   const logLabel = syncDatum ? `voor ${syncDatum}` : allesDatums ? '(alle datums)' : `voor ${vandaag}`
   console.log(`[${depot.naam}] Start sync ${logLabel}`)
 
   const launchOptions = { headless: CONFIG.headless, slowMo: CONFIG.slowMo, args: ['--disable-dev-shm-usage'] }
   if (process.env.CHROMIUM_EXECUTABLE_PATH) launchOptions.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
-  metProxy(launchOptions, depot.naam)
-  const browser = await chromium.launch(launchOptions)
+  const sessie = await kiesProxy(supabase, { worker: 'postnl-dagplanning', depot })
+  if (sessie) {
+    launchOptions.proxy = sessie.proxy
+    console.log(`[${depot.naam}] Proxy: ${sessie.label}`)
+  }
+  let browser
+  try {
+    browser = await chromium.launch(launchOptions)
+  } catch (err) {
+    await sluitProxyAf(supabase, sessie, 'fout', err.message)
+    throw err
+  }
 
   const contextOptions = {}
   try {
@@ -425,7 +447,8 @@ async function syncDepot(depot, markeerGereden = false, allesDatums = false, syn
   const page = await context.newPage()
 
   try {
-    await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
+    const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null)
+    if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
 
     if (page.url().includes('loginpostnl') || page.url().includes('/login') || page.url().includes('/authorize')) {
       await loginPostnl(page, depot)
@@ -524,9 +547,11 @@ async function syncDepot(depot, markeerGereden = false, allesDatums = false, syn
 
     if (depot.storageState) await context.storageState({ path: depot.storageState })
     console.log(`[${depot.naam}] Sync klaar`)
+    await sluitProxyAf(supabase, sessie, 'ok', `${totaalGesynced} ritten`)
     return totaalGesynced
   } catch (error) {
     console.error(`[${depot.naam}] Sync mislukt:`, error)
+    await sluitProxyAf(supabase, sessie, await uitkomstBijFout(error, page), error.message)
     throw error
   } finally {
     await browser.close()
@@ -569,6 +594,9 @@ async function koppelChauffeurs() {
 
 async function syncPostnlStops(markeerGereden = false, allesDatums = false, syncDatum = null) {
   const actieveDepots = await getDepots(supabase, KLANT_ID, 'postnl')
+  // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij
+  // een ander IP, en het bewezen patroon (GitHub Actions) is elke run vers inloggen.
+  if (proxyPoolAan()) for (const d of actieveDepots) d.storageState = null
   if (actieveDepots.length === 0) throw new Error('Geen depots geconfigureerd (klant_credentials leeg voor deze klant)')
   // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
   installeerNeutraleConsole({ klantId: KLANT_ID, depots: actieveDepots })

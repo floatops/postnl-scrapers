@@ -41,7 +41,7 @@ export function decrypt(encryptedText, keyHex) {
  * @param {object} supabase - Supabase-client (service role)
  * @param {string} klantId
  * @param {'postnl'|'movemove'} systeem
- * @returns {Promise<Array<{naam: string|null, url: string|null, username: string, password: string, storageState: string}>>}
+ * @returns {Promise<Array<{id: string, naam: string|null, url: string|null, username: string, password: string, storageState: string}>>}
  */
 export async function getDepots(supabase, klantId, systeem) {
   if (!klantId) throw new Error('getDepots: klantId ontbreekt')
@@ -50,13 +50,14 @@ export async function getDepots(supabase, klantId, systeem) {
 
   const { data, error } = await supabase
     .from('klant_credentials')
-    .select('depot_naam, depot_url, username, password_encrypted')
+    .select('id, depot_naam, depot_url, username, password_encrypted')
     .eq('klant_id', klantId)
     .eq('systeem', systeem)
     .eq('actief', true)
   if (error) throw error
 
   return (data ?? []).map(d => ({
+    id: d.id,
     naam: d.depot_naam,
     url: d.depot_url,
     username: d.username,
