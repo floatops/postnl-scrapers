@@ -603,14 +603,16 @@ async function opslaanMonitorInSupabase(rijen, datum, depotNaam) {
 // een onbeperkt groeiend archief. Geeft het storage-pad terug, of null als er
 // geen video was of het opslaan mislukte (nooit de sync zelf laten falen op
 // een video-probleem).
-async function bewaarSessieVideo(video, depotNaam) {
+// soort 'fout-latest': een sessie die vervangen werd na fouten. Apart pad, anders
+// overschrijft de geslaagde vervanger juist de video waarop te zien is wat misging.
+async function bewaarSessieVideo(video, depotNaam, soort = 'latest') {
   if (!video) return null
   let localPath
   try {
     localPath = await video.path()
     const buffer = await fs.readFile(localPath)
     const slug = depotNaam.toLowerCase().replace(/\s+/g, '-')
-    const storagePath = `${KLANT_ID}/postnl-ritmonitor/${slug}-latest.webm`
+    const storagePath = `${KLANT_ID}/postnl-ritmonitor/${slug}-${soort}.webm`
     const { error } = await supabase.storage.from('worker-sessies')
       .upload(storagePath, buffer, { contentType: 'video/webm', upsert: true })
     if (error) throw error
@@ -633,6 +635,7 @@ async function syncMonitorDepot(depot) {
   let lezingen = 0
   let sessieLezingen = 0 // lezingen van de huidige proxy-sessie
   let fout = null
+  const foutVideoPaths = [] // video's van sessies die na fouten vervangen zijn
   const deadline = Date.now() + CONFIG.vensterSec * 1000
 
   // Verse browsersessie als opnieuw navigeren niet meer helpt (stale Mendix-
@@ -643,8 +646,11 @@ async function syncMonitorDepot(depot) {
   const vervangSessie = async (reden, uitkomst = 'fout') => {
     console.warn(`[${depot.naam}] [NIEUWE-SESSIE] Browser vervangen (${reden})...`)
     await sluitProxyAf(supabase, sessie, uitkomst, reden)
+    const oudeVideo = page.video()
     await context.close().catch(() => {})
     await browser.close().catch(() => {})
+    const foutPad = await bewaarSessieVideo(oudeVideo, depot.naam, 'fout-latest')
+    if (foutPad) foutVideoPaths.push(foutPad)
     ;({ browser, context, page, sessie } = await openDepotSessie(depot))
     sessieLezingen = 0
     await page.waitForTimeout(1000)
@@ -729,8 +735,8 @@ async function syncMonitorDepot(depot) {
   await browser.close().catch(() => {})
   const videoPath = await bewaarSessieVideo(video, depot.naam)
 
-  if (fout) { fout.videoPath = videoPath; fout.lezingen = lezingen; throw fout }
-  return { rijen: rijenAantal, lezingen, videoPath }
+  if (fout) { fout.videoPath = videoPath; fout.foutVideoPaths = foutVideoPaths; fout.lezingen = lezingen; throw fout }
+  return { rijen: rijenAantal, lezingen, videoPath, foutVideoPaths }
 }
 
 // Gestructureerd run-niveau-logboek in `worker_run_log` (migration_v150) —
@@ -813,16 +819,18 @@ async function syncRitmonitor() {
   uitkomsten.forEach((uitkomst, i) => {
     const depot = DEPOTS[i]
     if (uitkomst.status === 'fulfilled') {
-      const { rijen, lezingen, videoPath } = uitkomst.value
+      const { rijen, lezingen, videoPath, foutVideoPaths } = uitkomst.value
       rijenTotaal += rijen
       lezingenPerDepot[depot.naam] = lezingen
       console.log(`[${depot.naam}] ${lezingen} lezingen in deze run`)
       if (videoPath) videoPaths.push({ depot: depot.naam, storage_path: videoPath })
+      for (const p of foutVideoPaths) videoPaths.push({ depot: depot.naam, storage_path: p, soort: 'vervangen_na_fout' })
     } else {
       const error = uitkomst.reason
       mislukt.push({ depot: depot.naam, fout: error.message })
       lezingenPerDepot[depot.naam] = error.lezingen ?? 0
       if (error.videoPath) videoPaths.push({ depot: depot.naam, storage_path: error.videoPath })
+      for (const p of error.foutVideoPaths ?? []) videoPaths.push({ depot: depot.naam, storage_path: p, soort: 'vervangen_na_fout' })
       console.error(`[${depot.naam}] Ritmonitor mislukt (andere depots gaan door):`, error.message)
     }
   })

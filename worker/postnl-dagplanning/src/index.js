@@ -411,26 +411,28 @@ async function eindeRunLog(runLogId, velden) {
 // hetzelfde pad). Gaat als video_paths mee in worker_run_log.
 const sessieVideos = new Map()
 function videoPaths() {
-  return sessieVideos.size ? [...sessieVideos].map(([depot, storage_path]) => ({ depot, storage_path })) : null
+  return sessieVideos.size ? [...sessieVideos.values()] : null
 }
 
 // Zelfde als bewaarSessieVideo() in postnl-ritmonitor: private bucket
 // worker-sessies, overwrite-latest per depot, best-effort (een video-probleem
 // laat de sync nooit falen). Pas aanroepen ná context.close(), anders is het
 // bestand nog niet afgerond.
-async function bewaarSessieVideo(video, depotNaam) {
+// Een mislukte poging krijgt een eigen pad (-fout-latest), anders overschrijft de
+// geslaagde herkansing juist de video waarop te zien is wat misging.
+async function bewaarSessieVideo(video, depotNaam, mislukt = false) {
   if (!video) return null
   let localPath
   try {
     localPath = await video.path()
     const buffer = await fs.readFile(localPath)
     const slug = depotNaam.toLowerCase().replace(/\s+/g, '-')
-    const storagePath = `${KLANT_ID}/postnl-dagplanning/${slug}-latest.webm`
+    const storagePath = `${KLANT_ID}/postnl-dagplanning/${slug}-${mislukt ? 'fout-latest' : 'latest'}.webm`
     const { error } = await supabase.storage.from('worker-sessies')
       .upload(storagePath, buffer, { contentType: 'video/webm', upsert: true })
     if (error) throw error
     console.log(`[${depotNaam}] Sessie-video opgeslagen: ${storagePath}`)
-    sessieVideos.set(depotNaam, storagePath)
+    sessieVideos.set(storagePath, { depot: depotNaam, storage_path: storagePath, ...(mislukt && { soort: 'mislukte_poging' }) })
     return storagePath
   } catch (error) {
     console.error(`[${depotNaam}] Video-opslag mislukt (sync gaat gewoon door):`, error.message)
@@ -486,6 +488,7 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
 
   const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
+  let mislukt = false
 
   try {
     const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null)
@@ -592,13 +595,14 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
     return totaalGesynced
   } catch (error) {
     console.error(`[${depot.naam}] Sync mislukt:`, error)
+    mislukt = true
     await sluitProxyAf(supabase, sessie, await uitkomstBijFout(error, page), error.message)
     throw error
   } finally {
     const video = page.video()
     await context.close().catch(() => {})
     await browser.close()
-    await bewaarSessieVideo(video, depot.naam)
+    await bewaarSessieVideo(video, depot.naam, mislukt)
     await fs.rm(videoDir, { recursive: true, force: true }).catch(() => {})
   }
 }
