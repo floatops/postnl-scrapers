@@ -337,7 +337,21 @@ async function openRitmonitor(page, depot) {
   await page.waitForTimeout(1500)
 }
 
+// Geeft { rijen, leegBevestigd }. leegBevestigd = PostNL zegt zelf dat de lijst
+// leeg is: overview-grid gevonden, eigen riteigenaar links geselecteerd (Mendix-
+// klasse 'selected') en de teller van die grid "0 tot 0 van 0" — twee keer, 2 s
+// na elkaar. PostNL haalt afgemelde ritten uit de Ritmonitor, dus 's avonds is de
+// lijst echt leeg (sessievideo 19-10 21:00 Waddinxveen, floatops/matransport#357).
+// 0 rijen zonder die bevestiging = niet uitgelezen.
 async function leesRitmonitor(page) {
+  const eerste = await leesRitmonitorEenmaal(page)
+  if (eerste.rijen.length > 0 || !eerste.leegVolgensTeller) return { rijen: eerste.rijen, leegBevestigd: false }
+  await page.waitForTimeout(2000)
+  const tweede = await leesRitmonitorEenmaal(page)
+  return { rijen: tweede.rijen, leegBevestigd: tweede.rijen.length === 0 && tweede.leegVolgensTeller }
+}
+
+async function leesRitmonitorEenmaal(page) {
   const result = await page.evaluate(() => {
     function cel(row, cls) {
       return row.querySelector(`td.${cls}`)?.getAttribute('title')?.trim() || ''
@@ -346,7 +360,15 @@ async function leesRitmonitor(page) {
     // Zo onderscheiden we 'm van de Riteigenaar-grid (column5) links.
     const tables = Array.from(document.querySelectorAll('.mx-grid-content table'))
     const target = tables.find(t => t.querySelector('th[title="Stops te doen"]'))
-    if (!target) return { rows: [], debug: 'Ritmonitor overview-grid niet gevonden' }
+    if (!target) return { rows: [], leegVolgensTeller: false, debug: 'Ritmonitor overview-grid niet gevonden' }
+
+    // Teller van de overview-grid zelf ("0 tot 0 van 0"), niet die van de
+    // Riteigenaar-grid links (die heeft z'n eigen "1 tot 1 van 1").
+    const gridWidget = target.closest('.mx-grid')
+    const teller = gridWidget?.textContent.replace(/\s+/g, ' ').match(/(\d+)\s*tot\s*(\d+)\s*van\s*(\d+)/)
+    const totaalVolgensTeller = teller ? Number(teller[3]) : null
+    const eigenaarTabel = tables.find(t => t !== target && /riteigenaar/i.test(t.closest('.mx-grid')?.textContent || ''))
+    const eigenaarGeselecteerd = !!eigenaarTabel?.querySelector('tbody tr.selected')
 
     // Brievenbuss kolom dynamisch opzoeken via header-titel — het kolomnummer
     // kan per Mendix-instantie verschillen van de Overview-shift-grid.
@@ -368,11 +390,12 @@ async function leesRitmonitor(page) {
       brievenbusstops: brievenbussCol ? cel(row, brievenbussCol) : '',
     }))
     const f = mapped[0]
-    return { rows: mapped, debug: `${mapped.length} rijen, eerste={ritnaam:"${f?.ritnaam}",totaal:"${f?.stopsTotaal}",teDoen:"${f?.stopsTeDoen}",brievenbuss:"${f?.brievenbusstops}",col:"${brievenbussCol}"}` }
+    const leegVolgensTeller = totaalVolgensTeller === 0 && eigenaarGeselecteerd
+    return { rows: mapped, leegVolgensTeller, debug: `${mapped.length} rijen, teller=${totaalVolgensTeller}, eigenaar=${eigenaarGeselecteerd}, eerste={ritnaam:"${f?.ritnaam}",totaal:"${f?.stopsTotaal}",teDoen:"${f?.stopsTeDoen}",brievenbuss:"${f?.brievenbusstops}",col:"${brievenbussCol}"}` }
   })
   console.log(`[DEBUG ritmonitor] ${result.debug}`)
 
-  return result.rows
+  const rijen = result.rows
     .filter(r => r.ritnaam && /^\d{3,4}/.test(r.ritnaam) && toNumber(r.stopsTotaal) !== null)
     .map(r => {
       const ritnummer = normaliseerRitnummer(r.ritnaam.match(/^\d+/)?.[0] || '')
@@ -391,9 +414,10 @@ async function leesRitmonitor(page) {
         shift:           isAdKanaal(r.kanaal) ? null : (ritnummer.charAt(0) || null),
       }
     })
+  return { rijen, leegVolgensTeller: result.leegVolgensTeller }
 }
 
-async function opslaanMonitorInSupabase(rijen, datum, depotNaam) {
+async function opslaanMonitorInSupabase(rijen, datum, depotNaam, leegBevestigd = false) {
   const nu = new Date().toISOString()
   const klantId = KLANT_ID
 
@@ -417,7 +441,7 @@ async function opslaanMonitorInSupabase(rijen, datum, depotNaam) {
     depot: depotNaam,
     datum,
     rijen_gelezen: rijen.length,
-    lege_lijst_bevestigd: false,
+    lege_lijst_bevestigd: leegBevestigd,
     bestaande_ritten: bestaande?.length ?? 0,
   }
 
@@ -541,9 +565,10 @@ async function opslaanMonitorInSupabase(rijen, datum, depotNaam) {
   const AFWEZIG_DREMPEL_MIN = 20   // ≈ 3 gemiste polls bij de 7-min-cron
   const gelezenNummers = new Set(rijen.map(r => r.ritnummer))
 
-  // Alleen zinvol als deze scrape zelf rijen opleverde — een lege lijst is
-  // waarschijnlijk een mislukte/half-geladen grid; dan niets afronden.
-  if (rijen.length > 0) {
+  // Alleen als deze scrape rijen opleverde, of PostNL's teller een lege lijst
+  // bevestigde (zie leesRitmonitor). Een onbevestigde lege lijst kan een
+  // mislukte/half-geladen grid zijn; dan niets afronden.
+  if (rijen.length > 0 || leegBevestigd) {
     for (const [key, r] of bestaandeMap) {
       if (gelezenNummers.has(key)) continue                    // nog in de grid
       // 'gereden' is de enige "al afgerond"-check — postnl_eind_werktijd staat
@@ -635,6 +660,7 @@ async function syncMonitorDepot(depot) {
   let lezingen = 0
   let sessieLezingen = 0 // lezingen van de huidige proxy-sessie
   let fout = null
+  let laatsteLeegBevestigd = false // laatste geslaagde lezing: lijst bevestigd leeg
   const foutVideoPaths = [] // video's van sessies die na fouten vervangen zijn
   const deadline = Date.now() + CONFIG.vensterSec * 1000
 
@@ -666,12 +692,13 @@ async function syncMonitorDepot(depot) {
     for (;;) {
       try {
         await openRitmonitor(page, depot)
-        const rijen = await leesRitmonitor(page)
+        const { rijen, leegBevestigd } = await leesRitmonitor(page)
+        laatsteLeegBevestigd = leegBevestigd
         lezingen++
         sessieLezingen++
         foutenAchtereen = 0
-        console.log(`[${depot.naam}] Ritmonitor lezing ${lezingen}: ${rijen.length} ritten gelezen`)
-        await opslaanMonitorInSupabase(rijen, vandaag, depot.naam)
+        console.log(`[${depot.naam}] Ritmonitor lezing ${lezingen}: ${rijen.length} ritten gelezen${leegBevestigd ? ' (lege lijst bevestigd door PostNL)' : ''}`)
+        await opslaanMonitorInSupabase(rijen, vandaag, depot.naam, leegBevestigd)
         rijenAantal = Math.max(rijenAantal, rijen.length)
       } catch (error) {
         foutenAchtereen++
@@ -736,7 +763,7 @@ async function syncMonitorDepot(depot) {
   const videoPath = await bewaarSessieVideo(video, depot.naam)
 
   if (fout) { fout.videoPath = videoPath; fout.foutVideoPaths = foutVideoPaths; fout.lezingen = lezingen; throw fout }
-  return { rijen: rijenAantal, lezingen, videoPath, foutVideoPaths }
+  return { rijen: rijenAantal, lezingen, videoPath, foutVideoPaths, leegBevestigd: laatsteLeegBevestigd }
 }
 
 // Gestructureerd run-niveau-logboek in `worker_run_log` (migration_v150) —
@@ -776,7 +803,14 @@ async function startRunLog() {
 async function eindeRunLog(runLogId, velden) {
   if (!runLogId) return
   try {
-    const { error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', runLogId)
+    let { error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', runLogId)
+    // Omgeving zonder de kolom leeg_onbevestigd (migratie #357 nog niet
+    // gepromoveerd, bv. Stack B): zonder die kolom afsluiten i.p.v. de run op
+    // 'gestart' te laten hangen.
+    if (error && /leeg_onbevestigd/.test(error.message ?? '')) {
+      const { leeg_onbevestigd, ...rest } = velden
+      ;({ error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...rest }).eq('id', runLogId))
+    }
     if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
   } catch (error) {
     console.error('eindeRunLog mislukt:', error.message)
@@ -815,11 +849,16 @@ async function syncRitmonitor() {
   // Lezingen per depot gaan naar worker_run_log.lezingen — de wachtdog
   // check_ritmonitor_eindtijd() (matransport) alarmeert als het er < 3 worden.
   const lezingenPerDepot = {}
+  // Depots die deze run 0 ritten gaven zonder bevestigde lege lijst = niet
+  // uitgelezen. De wachtdog check_ritmonitor_eindtijd() (matransport, #357)
+  // alarmeert als een depot hier 3 runs op rij in staat.
+  const leegOnbevestigd = []
   const uitkomsten = await Promise.allSettled(DEPOTS.map(depot => syncMonitorDepot(depot)))
   uitkomsten.forEach((uitkomst, i) => {
     const depot = DEPOTS[i]
     if (uitkomst.status === 'fulfilled') {
-      const { rijen, lezingen, videoPath, foutVideoPaths } = uitkomst.value
+      const { rijen, lezingen, videoPath, foutVideoPaths, leegBevestigd } = uitkomst.value
+      if (rijen === 0 && !leegBevestigd) leegOnbevestigd.push(depot.naam)
       rijenTotaal += rijen
       lezingenPerDepot[depot.naam] = lezingen
       console.log(`[${depot.naam}] ${lezingen} lezingen in deze run`)
@@ -828,6 +867,7 @@ async function syncRitmonitor() {
     } else {
       const error = uitkomst.reason
       mislukt.push({ depot: depot.naam, fout: error.message })
+      leegOnbevestigd.push(depot.naam)
       lezingenPerDepot[depot.naam] = error.lezingen ?? 0
       if (error.videoPath) videoPaths.push({ depot: depot.naam, storage_path: error.videoPath })
       for (const p of error.foutVideoPaths ?? []) videoPaths.push({ depot: depot.naam, storage_path: p, soort: 'vervangen_na_fout' })
@@ -837,7 +877,7 @@ async function syncRitmonitor() {
 
   if (mislukt.length === DEPOTS.length) {
     await eindeRunLog(runLogId, {
-      status: 'mislukt', depots_ok: 0, depots_mislukt: mislukt, rijen_gelezen: rijenTotaal, lezingen: lezingenPerDepot,
+      status: 'mislukt', depots_ok: 0, depots_mislukt: mislukt, rijen_gelezen: rijenTotaal, lezingen: lezingenPerDepot, leeg_onbevestigd: leegOnbevestigd,
       foutmelding: `Alle depots faalden: ${mislukt.map(m => `${m.depot} (${m.fout})`).join('; ')}`,
       video_paths: videoPaths.length ? videoPaths : null,
     })
@@ -852,6 +892,7 @@ async function syncRitmonitor() {
     depots_mislukt: mislukt.length ? mislukt : null,
     rijen_gelezen: rijenTotaal,
     lezingen: lezingenPerDepot,
+    leeg_onbevestigd: leegOnbevestigd,
     video_paths: videoPaths.length ? videoPaths : null,
   })
   if (mislukt.length) {
