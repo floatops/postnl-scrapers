@@ -1,6 +1,9 @@
 import 'dotenv/config'
 import cron from 'node-cron'
 import http from 'node:http'
+import os from 'node:os'
+import path from 'node:path'
+import fs from 'node:fs/promises'
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
@@ -404,6 +407,39 @@ async function eindeRunLog(runLogId, velden) {
   }
 }
 
+// Sessie-video's van deze run, per depot de laatste (een retry overschrijft
+// hetzelfde pad). Gaat als video_paths mee in worker_run_log.
+const sessieVideos = new Map()
+function videoPaths() {
+  return sessieVideos.size ? [...sessieVideos].map(([depot, storage_path]) => ({ depot, storage_path })) : null
+}
+
+// Zelfde als bewaarSessieVideo() in postnl-ritmonitor: private bucket
+// worker-sessies, overwrite-latest per depot, best-effort (een video-probleem
+// laat de sync nooit falen). Pas aanroepen ná context.close(), anders is het
+// bestand nog niet afgerond.
+async function bewaarSessieVideo(video, depotNaam) {
+  if (!video) return null
+  let localPath
+  try {
+    localPath = await video.path()
+    const buffer = await fs.readFile(localPath)
+    const slug = depotNaam.toLowerCase().replace(/\s+/g, '-')
+    const storagePath = `${KLANT_ID}/postnl-dagplanning/${slug}-latest.webm`
+    const { error } = await supabase.storage.from('worker-sessies')
+      .upload(storagePath, buffer, { contentType: 'video/webm', upsert: true })
+    if (error) throw error
+    console.log(`[${depotNaam}] Sessie-video opgeslagen: ${storagePath}`)
+    sessieVideos.set(depotNaam, storagePath)
+    return storagePath
+  } catch (error) {
+    console.error(`[${depotNaam}] Video-opslag mislukt (sync gaat gewoon door):`, error.message)
+    return null
+  } finally {
+    if (localPath) await fs.unlink(localPath).catch(() => {})
+  }
+}
+
 // Eén depot; is het IP geblokkeerd, dan meteen opnieuw met het volgende IP uit de
 // pool i.p.v. te wachten op de volgende poging van syncMetRetry.
 async function syncDepot(depot, ...args) {
@@ -439,9 +475,14 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
 
   const contextOptions = {}
   try {
-    const fs = await import('node:fs')
-    if (depot.storageState && fs.existsSync(depot.storageState)) contextOptions.storageState = depot.storageState
+    const fsSync = await import('node:fs')
+    if (depot.storageState && fsSync.existsSync(depot.storageState)) contextOptions.storageState = depot.storageState
   } catch {}
+
+  // Video-opname van de sessie, zoals bij postnl-ritmonitor: meekijken met wat
+  // de browser zag bij een mislukte login of scrape.
+  const videoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'sessie-video-'))
+  contextOptions.recordVideo = { dir: videoDir, size: { width: 1280, height: 720 } }
 
   const context = await browser.newContext(contextOptions)
   const page = await context.newPage()
@@ -554,7 +595,11 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
     await sluitProxyAf(supabase, sessie, await uitkomstBijFout(error, page), error.message)
     throw error
   } finally {
+    const video = page.video()
+    await context.close().catch(() => {})
     await browser.close()
+    await bewaarSessieVideo(video, depot.naam)
+    await fs.rm(videoDir, { recursive: true, force: true }).catch(() => {})
   }
 }
 
@@ -632,10 +677,11 @@ const runDatum = process.argv.find(a => /^\d{4}-\d{2}-\d{2}$/.test(a)) || proces
 
 async function syncMetRetry(markeer, allesDatums = false, syncDatum = null, pogingen = 3) {
   const runLogId = await startRunLog()
+  sessieVideos.clear()
   for (let poging = 1; poging <= pogingen; poging++) {
     try {
       const { depotsOk, ritenTotaal } = await syncPostnlStops(markeer, allesDatums, syncDatum)
-      await eindeRunLog(runLogId, { status: 'ok', depots_ok: depotsOk.length, rijen_gelezen: ritenTotaal })
+      await eindeRunLog(runLogId, { status: 'ok', depots_ok: depotsOk.length, rijen_gelezen: ritenTotaal, video_paths: videoPaths() })
       return
     } catch (err) {
       console.error(`Poging ${poging}/${pogingen} mislukt:`, err.message)
@@ -650,6 +696,7 @@ async function syncMetRetry(markeer, allesDatums = false, syncDatum = null, pogi
           depots_mislukt: err.depotNaam ? [{ depot: err.depotNaam, fout: err.message }] : null,
           rijen_gelezen: err.ritenTotaal ?? null,
           foutmelding: err.message,
+          video_paths: videoPaths(),
         })
         process.exit(1)
       }

@@ -158,7 +158,7 @@ Gevolg voor de video: is de sessie tussendoor vervangen, dan wordt alleen de laa
 
 ## Sessie-video (`worker-sessies` bucket)
 
-Elke depot-sessie neemt een Playwright-video op (`recordVideo` op de browser-context, 1280×720) — zodat je kan meekijken in de browser zonder zelf `POSTNL_HEADLESS=false` te hoeven draaien. Alleen voor deze worker gebouwd (niet voor `postnl-dagplanning`).
+Elke depot-sessie neemt een Playwright-video op (`recordVideo` op de browser-context, 1280×720) — zodat je kan meekijken in de browser zonder zelf `POSTNL_HEADLESS=false` te hoeven draaien. Sinds 2026-10-19 doet `postnl-dagplanning` hetzelfde (pad `{klant_id}/postnl-dagplanning/{depot-slug}-latest.webm`, ook in `worker_run_log.video_paths`).
 
 - **`bewaarSessieVideo(video, depotNaam)`** draait na `context.close()`/`browser.close()` (Playwright rondt het video-bestand pas dán af — ervoor ophalen geeft een onvolledig bestand) en uploadt naar de private Supabase Storage-bucket `worker-sessies` (matransport migration_v156).
 - **Pad-conventie: overwrite-latest**, geen timestamp: `{klant_id}/postnl-ritmonitor/{depot-slug}-latest.webm`. Elke run overschrijft de vorige video van dat depot — bewuste keuze om opslag te begrenzen tot één video per depot i.p.v. een onbeperkt groeiend archief (geen aparte opschoon-cron nodig). Je ziet dus altijd alleen de laatste sessie, niet de geschiedenis.
