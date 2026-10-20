@@ -13,6 +13,7 @@ import {
   kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout,
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
+import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -414,32 +415,18 @@ function videoPaths() {
   return sessieVideos.size ? [...sessieVideos.values()] : null
 }
 
-// Zelfde als bewaarSessieVideo() in postnl-ritmonitor: private bucket
-// worker-sessies, overwrite-latest per depot, best-effort (een video-probleem
-// laat de sync nooit falen). Pas aanroepen ná context.close(), anders is het
-// bestand nog niet afgerond.
-// Een mislukte poging krijgt een eigen pad (-fout-latest), anders overschrijft de
-// geslaagde herkansing juist de video waarop te zien is wat misging.
+// Zelfde als bewaarSessieVideo() in postnl-ritmonitor (credentials-shared/src/
+// sessieVideo.js): geslaagde poging = {depot}-latest.webm, mislukte poging =
+// fout/{depot}-{tijdstip}.webm, 30 dagen bewaard (floatops/matransport#360).
+// Pas aanroepen ná context.close().
 async function bewaarSessieVideo(video, depotNaam, mislukt = false) {
-  if (!video) return null
-  let localPath
-  try {
-    localPath = await video.path()
-    const buffer = await fs.readFile(localPath)
-    const slug = depotNaam.toLowerCase().replace(/\s+/g, '-')
-    const storagePath = `${KLANT_ID}/postnl-dagplanning/${slug}-${mislukt ? 'fout-latest' : 'latest'}.webm`
-    const { error } = await supabase.storage.from('worker-sessies')
-      .upload(storagePath, buffer, { contentType: 'video/webm', upsert: true })
-    if (error) throw error
-    console.log(`[${depotNaam}] Sessie-video opgeslagen: ${storagePath}`)
-    sessieVideos.set(storagePath, { depot: depotNaam, storage_path: storagePath, ...(mislukt && { soort: 'mislukte_poging' }) })
-    return storagePath
-  } catch (error) {
-    console.error(`[${depotNaam}] Video-opslag mislukt (sync gaat gewoon door):`, error.message)
-    return null
-  } finally {
-    if (localPath) await fs.unlink(localPath).catch(() => {})
-  }
+  const pad = await bewaarVideo(supabase, video,
+    mislukt ? foutPad(KLANT_ID, 'postnl-dagplanning', depotNaam) : latestPad(KLANT_ID, 'postnl-dagplanning', depotNaam),
+    `[${depotNaam}] `)
+  if (!pad) return null
+  sessieVideos.set(pad, { depot: depotNaam, storage_path: pad, ...(mislukt && { soort: 'mislukte_poging' }) })
+  if (mislukt) await ruimOudeFoutVideosOp(supabase, KLANT_ID, 'postnl-dagplanning')
+  return pad
 }
 
 // Eén depot; is het IP geblokkeerd, dan meteen opnieuw met het volgende IP uit de

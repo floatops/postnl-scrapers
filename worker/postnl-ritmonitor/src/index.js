@@ -27,6 +27,7 @@ import {
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd.js'
+import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -622,33 +623,15 @@ async function opslaanMonitorInSupabase(rijen, datum, depotNaam, leegBevestigd =
   console.log(`[${depotNaam}] Ritmonitor ${datum}: bijgewerkt ${teUpdaten.length}, nieuw ${teInserten.length}`)
 }
 
-// Slaat de zojuist opgenomen sessie-video op in de private bucket
-// worker-sessies (migration_v156) — overwrite-latest per depot (vast pad,
-// geen timestamp), zodat opslag begrensd blijft tot één video per depot i.p.v.
-// een onbeperkt groeiend archief. Geeft het storage-pad terug, of null als er
-// geen video was of het opslaan mislukte (nooit de sync zelf laten falen op
-// een video-probleem).
-// soort 'fout-latest': een sessie die vervangen werd na fouten. Apart pad, anders
-// overschrijft de geslaagde vervanger juist de video waarop te zien is wat misging.
-async function bewaarSessieVideo(video, depotNaam, soort = 'latest') {
-  if (!video) return null
-  let localPath
-  try {
-    localPath = await video.path()
-    const buffer = await fs.readFile(localPath)
-    const slug = depotNaam.toLowerCase().replace(/\s+/g, '-')
-    const storagePath = `${KLANT_ID}/postnl-ritmonitor/${slug}-${soort}.webm`
-    const { error } = await supabase.storage.from('worker-sessies')
-      .upload(storagePath, buffer, { contentType: 'video/webm', upsert: true })
-    if (error) throw error
-    console.log(`[${depotNaam}] Sessie-video opgeslagen: ${storagePath}`)
-    return storagePath
-  } catch (error) {
-    console.error(`[${depotNaam}] Video-opslag mislukt (sync gaat gewoon door):`, error.message)
-    return null
-  } finally {
-    if (localPath) await fs.unlink(localPath).catch(() => {})
-  }
+// Sessie-video naar worker-sessies (credentials-shared/src/sessieVideo.js).
+// Geslaagde sessie: {depot}-latest.webm, elke run overschreven. Mislukte of na
+// fouten vervangen sessie: fout/{depot}-{tijdstip}.webm, 30 dagen bewaard
+// (floatops/matransport#360). Pas aanroepen ná context.close().
+async function bewaarSessieVideo(video, depotNaam, mislukt = false) {
+  if (!mislukt) return bewaarVideo(supabase, video, latestPad(KLANT_ID, 'postnl-ritmonitor', depotNaam), `[${depotNaam}] `)
+  const pad = await bewaarVideo(supabase, video, foutPad(KLANT_ID, 'postnl-ritmonitor', depotNaam), `[${depotNaam}] `)
+  if (pad) await ruimOudeFoutVideosOp(supabase, KLANT_ID, 'postnl-ritmonitor')
+  return pad
 }
 
 async function syncMonitorDepot(depot) {
@@ -675,8 +658,8 @@ async function syncMonitorDepot(depot) {
     const oudeVideo = page.video()
     await context.close().catch(() => {})
     await browser.close().catch(() => {})
-    const foutPad = await bewaarSessieVideo(oudeVideo, depot.naam, 'fout-latest')
-    if (foutPad) foutVideoPaths.push(foutPad)
+    const pad = await bewaarSessieVideo(oudeVideo, depot.naam, true)
+    if (pad) foutVideoPaths.push(pad)
     ;({ browser, context, page, sessie } = await openDepotSessie(depot))
     sessieLezingen = 0
     await page.waitForTimeout(1000)
@@ -749,8 +732,7 @@ async function syncMonitorDepot(depot) {
 
   // Video pas na context.close() ophalen — Playwright rondt het bestand pas
   // dan af, ervoor kan het nog onvolledig op schijf staan. Is de sessie tussendoor
-  // vervangen, dan is dit de video van de laatste sessie; de eerdere gaat verloren
-  // (bewuste keuze: één video per depot, zie § Sessie-video in POSTNL_RITMONITOR.md).
+  // vervangen, dan staat de eerdere al in fout/ (zie vervangSessie).
   // Proxy-gebruik van de laatste sessie afsluiten. Een fout ná minstens één
   // geslaagde lezing telt als 'ok' voor het IP: het portaal was bereikbaar.
   await sluitProxyAf(supabase, sessie,
@@ -760,7 +742,8 @@ async function syncMonitorDepot(depot) {
   const video = page.video()
   await context.close().catch(() => {})
   await browser.close().catch(() => {})
-  const videoPath = await bewaarSessieVideo(video, depot.naam)
+  // Depot mislukt zonder één geslaagde lezing: deze sessie is de fout, dus archiveren.
+  const videoPath = await bewaarSessieVideo(video, depot.naam, !!fout && lezingen === 0)
 
   if (fout) { fout.videoPath = videoPath; fout.foutVideoPaths = foutVideoPaths; fout.lezingen = lezingen; throw fout }
   return { rijen: rijenAantal, lezingen, videoPath, foutVideoPaths, leegBevestigd: laatsteLeegBevestigd }
