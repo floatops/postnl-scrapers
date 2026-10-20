@@ -156,6 +156,17 @@ Gevolg voor de video: is de sessie tussendoor vervangen, dan wordt de mislukte s
 
 **Staleness-alert**: `public.check_worker_staleness()` (pg_cron in matransport's Supabase-project, elke 15 min, 06:15–22:55 NL-tijd) checkt of de laatste succesvolle run niet ouder is dan 20 minuten en pusht zo nodig naar de admins. Werkt automatisch voor deze GitHub-Actions-runs, want ze schrijven naar dezelfde database met dezelfde `worker_naam` — geen aparte configuratie nodig.
 
+## Eén sessie per login: het sessie-slot (sinds 2026-10-20, floatops/matransport#361)
+
+PostNL verdraagt geen twee gelijktijdige sessies met dezelfde login. Logden de dagplanning en de Ritmonitor tegelijk in voor hetzelfde depot, dan zette PostNL een van beide terug naar de startpagina (te zien in de foutvideo van 20-10 15:28). De Ritmonitor faalde dan met "Execution context was destroyed", en de dagplanning las stil "0 ritten". Sinds 13-10 vielen alle Ritmonitor-fouten in zo'n overlap.
+
+Daarom pakken beide workers vóór het inloggen een slot per klant + depot (`credentials-shared/src/sessieSlot.js` → RPC `postnl_sessie_pak`/`postnl_sessie_los`, matransport-migratie `20261020165256`, tabel `private.postnl_sessie_slot`):
+- **Ritmonitor:** lease van venster + 3 min en hooguit 2,5 min wachten. De gewachte tijd gaat af van het leesvenster, zodat de run niet langer duurt en de volgende cron-run niet op de flock afketst.
+- **Dagplanning:** lease van 10 min en hooguit 6 min wachten. De Ritmonitor houdt de login ~5 van elke 7 minuten vast; de dagplanning (~1 min per depot) past in de tussenruimte.
+- Na de maximale wachttijd, of als de RPC ontbreekt (omgeving zonder de migratie), gaat de worker zonder slot door. Een gecrasht proces houdt het slot hooguit tot de lease verloopt.
+
+**Ook in de dagplanning (zelfde issue):** ontbreekt de shifttabel helemaal, dan is dat geen lege shift maar een fout: PostNL heeft de sessie teruggezet, op dezelfde host. Een shift die ook na één herkansing niet uitgelezen kan worden, maakt de poging mislukt. `syncMetRetry` probeert het dan opnieuw en de video gaat naar `fout/`. Voorheen werd zo'n shift stil overgeslagen, met "0 ritten" en status ok als resultaat.
+
 ## Sessie-video (`worker-sessies` bucket)
 
 Elke depot-sessie neemt een Playwright-video op (`recordVideo` op de browser-context, 1280×720) — zodat je kan meekijken in de browser zonder zelf `POSTNL_HEADLESS=false` te hoeven draaien. Sinds 2026-10-19 doet `postnl-dagplanning` hetzelfde (pad `{klant_id}/postnl-dagplanning/{depot-slug}-latest.webm`, ook in `worker_run_log.video_paths`).

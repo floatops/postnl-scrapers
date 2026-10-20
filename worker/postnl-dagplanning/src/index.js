@@ -14,6 +14,7 @@ import {
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
+import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -158,6 +159,10 @@ async function leesShift(page, shift, depotHostname) {
     await rij.waitFor({ state: 'visible', timeout: 8000 })
   } catch {
     checkPagina()
+    // Staat de shifttabel er helemaal niet, dan zijn we niet (meer) op de
+    // Dagplanning, bv. door PostNL teruggezet naar de startpagina (zelfde host,
+    // dus checkPagina ziet het niet). Dat is een fout, geen lege shift (#361).
+    if (await page.locator('.mx-name-Shift_Grid_1').count() === 0) throw new PageReloadError(shift)
     console.log(`Shift ${shift}: niet beschikbaar op deze datum`)
     return []
   }
@@ -447,6 +452,21 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
   const logLabel = syncDatum ? `voor ${syncDatum}` : allesDatums ? '(alle datums)' : `voor ${vandaag}`
   console.log(`[${depot.naam}] Start sync ${logLabel}`)
 
+  // Eén PostNL-sessie per login tegelijk (#361): de Ritmonitor houdt deze login
+  // ~5 van elke 7 minuten vast; wachten tot hij klaar is. Tegelijk inloggen zette
+  // de sessie terug naar de startpagina en gaf stil "0 ritten".
+  const slot = await pakSessieSlot(supabase, {
+    klantId: KLANT_ID, depot: depot.naam, worker: 'postnl-dagplanning',
+    seconden: 600, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] `,
+  })
+  try {
+    return await syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, vandaag)
+  } finally {
+    await slot.los()
+  }
+}
+
+async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, vandaag) {
   const launchOptions = { headless: CONFIG.headless, slowMo: CONFIG.slowMo, args: ['--disable-dev-shm-usage'] }
   if (process.env.CHROMIUM_EXECUTABLE_PATH) launchOptions.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
   const sessie = await kiesProxy(supabase, { worker: 'postnl-dagplanning', depot })
@@ -531,6 +551,7 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
 
       const depotHostname = new URL(depot.url).hostname
       const alleRitten = []
+      const nietUitgelezen = []
       for (const shift of CONFIG.shifts) {
         let geprobeerd = 0
         while (geprobeerd < 2) {
@@ -541,6 +562,7 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
           } catch (err) {
             if (!(err instanceof PageReloadError) || geprobeerd >= 2) {
               console.log(`[${depot.naam}] Shift ${shift}: overgeslagen na fout: ${err.message}`)
+              nietUitgelezen.push(shift)
               break
             }
             console.log(`[${depot.naam}] Shift ${shift}: pagina herlaadde — Dagplanning opnieuw openen...`)
@@ -558,6 +580,13 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
             }
           }
         }
+      }
+
+      // Een shift die niet uitgelezen kon worden maakt de hele poging mislukt:
+      // anders meldde de run stil "0 ritten" met status ok (#361). syncMetRetry
+      // probeert het opnieuw en de video gaat naar fout/.
+      if (nietUitgelezen.length) {
+        throw new Error(`Shift(s) ${nietUitgelezen.join(', ')} niet uitgelezen voor ${datum}`)
       }
 
       // Dedupliceer op ritnummer — als de tabel per shift dezelfde ritten toont,

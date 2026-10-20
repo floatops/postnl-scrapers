@@ -28,6 +28,7 @@ import {
 } from '../../credentials-shared/src/proxyPool.js'
 import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
+import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -638,14 +639,30 @@ async function syncMonitorDepot(depot) {
   const vandaag = vandaagNl()
   console.log(`[${depot.naam}] Ritmonitor sync voor ${vandaag}`)
 
-  let { browser, context, page, sessie } = await openDepotSessie(depot)
+  // Eén PostNL-sessie per login tegelijk (#361): wacht als de dagplanning nu met
+  // deze login bezig is. De wachttijd gaat af van het leesvenster, zodat de run
+  // niet langer duurt (anders slaat de volgende cron-run over op de flock).
+  const wachtStart = Date.now()
+  const slot = await pakSessieSlot(supabase, {
+    klantId: KLANT_ID, depot: depot.naam, worker: 'postnl-ritmonitor',
+    seconden: CONFIG.vensterSec + 180, maxWachtMs: 150_000, label: `[${depot.naam}] `,
+  })
+  const gewacht = Date.now() - wachtStart
+
+  let browser, context, page, sessie
+  try {
+    ;({ browser, context, page, sessie } = await openDepotSessie(depot))
+  } catch (err) {
+    await slot.los()
+    throw err
+  }
   let rijenAantal = 0
   let lezingen = 0
   let sessieLezingen = 0 // lezingen van de huidige proxy-sessie
   let fout = null
   let laatsteLeegBevestigd = false // laatste geslaagde lezing: lijst bevestigd leeg
   const foutVideoPaths = [] // video's van sessies die na fouten vervangen zijn
-  const deadline = Date.now() + CONFIG.vensterSec * 1000
+  const deadline = Date.now() + CONFIG.vensterSec * 1000 - gewacht
 
   // Verse browsersessie als opnieuw navigeren niet meer helpt (stale Mendix-
   // sessie, "Execution context destroyed" na een redirect). Zelfde escalatie als
@@ -742,6 +759,7 @@ async function syncMonitorDepot(depot) {
   const video = page.video()
   await context.close().catch(() => {})
   await browser.close().catch(() => {})
+  await slot.los()
   // Depot mislukt zonder één geslaagde lezing: deze sessie is de fout, dus archiveren.
   const videoPath = await bewaarSessieVideo(video, depot.naam, !!fout && lezingen === 0)
 
