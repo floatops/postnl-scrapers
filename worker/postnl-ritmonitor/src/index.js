@@ -27,6 +27,7 @@ import {
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd.js'
+import { teSchrijven } from './wijzigingen.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 
@@ -425,8 +426,12 @@ async function opslaanMonitorInSupabase(rijen, datum, depotNaam, leegBevestigd =
 
   const { data: bestaande } = await supabase
     .from('ritten')
-    .select('id, ritnummer, status, postnl_stops_totaal, postnl_stops_te_doen, postnl_start_werktijd, postnl_eind_werktijd, postnl_monitor_opgehaald, postnl_laatste_actie')
-    .eq('datum', datum).eq('depot', depotNaam)
+    // Elk veld dat `velden` hieronder kan zetten moet hier staan: teSchrijven()
+    // vergelijkt ermee, en een ontbrekend veld telt als "gewijzigd".
+    .select('id, ritnummer, status, shift, postnl_stops_totaal, postnl_stops_te_doen, postnl_start_werktijd, postnl_eind_werktijd, postnl_monitor_opgehaald, postnl_laatste_actie, postnl_kanaal, postnl_chauffeur, postnl_briefbusstops')
+    // klant_id erbij (#462): twee klanten op dezelfde stack kunnen hetzelfde depot
+    // hebben; zonder dit filter werkte de worker de ritten van de ander bij.
+    .eq('klant_id', klantId).eq('datum', datum).eq('depot', depotNaam)
 
   // Eerste rij per genormaliseerd ritnummer (dedup zoals de hoofd-sync).
   const bestaandeMap = new Map()
@@ -536,7 +541,10 @@ async function opslaanMonitorInSupabase(rijen, datum, depotNaam, leegBevestigd =
     })
 
     if (existing) {
-      teUpdaten.push({ id: existing.id, velden })
+      // Alleen wat echt anders is, plus hoogstens elke 5 min de hartslag
+      // postnl_monitor_opgehaald (zie wijzigingen.js, floatops/matransport#462).
+      const diff = teSchrijven(existing, velden, new Date(nu).getTime())
+      if (diff) teUpdaten.push({ id: existing.id, velden: diff })
     } else {
       // Rit nog niet via Dagplanning aangemaakt → minimale rij zodat het live toch toont.
       teInserten.push({

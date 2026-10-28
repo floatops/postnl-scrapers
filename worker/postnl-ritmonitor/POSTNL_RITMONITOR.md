@@ -18,9 +18,11 @@ Per rit, in de `ritten`-tabel:
 | `postnl_laatste_actie` | Tekst uit "Tijdstip laatste actie" (alleen tijd, geen datum) |
 | `postnl_kanaal` | Kanaal-kolom |
 | `postnl_chauffeur` | Chauffeursnaam zoals PostNL 'm toont (gebruikt om later te koppelen aan `users.postnl_naam`, zie `koppelChauffeurs()`) |
-| `postnl_monitor_opgehaald` | Timestamp van deze scrape — ook de basis voor de "verdwenen-uit-grid"-detectie hieronder |
+| `postnl_monitor_opgehaald` | Hartslag: wanneer de rit voor het laatst in de grid stond. Basis voor de "verdwenen-uit-grid"-detectie hieronder (20 min), `sluit_stille_ritten()` (20 min) en `useLiveVoertuig` (30 min). **Sinds floatops/matransport#462 hoogstens elke 5 min bijgewerkt** (`HARTSLAG_MS`), of eerder als er toch iets verandert — geen tijdstempel van elke lezing meer |
 | `postnl_start_werktijd` / `postnl_eind_werktijd` | Zie [Werkuren](#werkuren--start-eind-werktijd) |
 | `status` | `ritmonitor` is leidend zodra `stops_te_doen` bekend is: `bezig` of `gereden` (bevestigd-nul, zie hieronder) |
+
+**Alleen wijzigingen schrijven (sinds floatops/matransport#462).** Een bestaande rit krijgt alleen de velden die echt anders zijn dan wat er al staat (`teSchrijven()` in `src/wijzigingen.js`, tests in `test/wijzigingen.test.js`); geen verschil en een recente hartslag = geen update. Tot dan schreef elke lezing (5-6 per run) elke rit opnieuw weg: ~1,2 mln updates, en elk ging als realtime-bericht naar alle open apps. Twee valkuilen: (1) **elk veld dat de worker kan zetten moet in de `select` van de bestaande ritten staan**, anders telt het altijd als gewijzigd (veilig, maar dan schrijft hij weer elke lezing); (2) tijdstempels komen uit de database als `+00:00` en gaan erin als `Z`, dus `teSchrijven()` vergelijkt ze als moment. De `select` filtert ook op `klant_id`: zonder dat filter zou een worker de ritten bijwerken van een andere klant met hetzelfde depot.
 
 Elke run logt ook diagnostisch naar `ritmonitor_log` (matransport migration_v111) — per rit wat er gelezen is + welke beslissing genomen is (`actie`: `nieuw`/`gelezen`/`start-gezet`/`eind-nul`/`eind-bijgewerkt`/`verdwenen-afgerond`). Bedoeld om te achterhalen waarom een rit soms te vroeg op "gereden" springt.
 
