@@ -4,7 +4,8 @@
 // oudste opdracht van deze klant op en werkt alles af wat er staat. Uitleg: ../POSTNL_PLANNER.md.
 //
 // Veiligheid: echt verplaatsen gebeurt alleen met PLANNER_ECHT=ja. Zonder die instelling
-// selecteert de worker de stops, controleert hij alles en stopt hij vóór de dubbelklik.
+// selecteert de worker de stops, controleert hij alles en stopt hij vóór de dubbelklik. Alleen
+// naar een geautoriseerde doelrit dubbelklikt hij wel: die weigert PostNL zelf.
 import 'dotenv/config'
 import os from 'node:os'
 import path from 'node:path'
@@ -191,7 +192,10 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
   const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum) ?? bron.deadline
   const reden = redenNietUitvoeren({ doelRit: doel, deadline: doel?.deadline ?? deadline })
     ?? redenNietUitvoeren({ doelRit: bron, deadline })
-  if (reden) return { status: 'overgeslagen', melding: reden }
+  // Proef: een geautoriseerde doelrit weigert PostNL zelf, dus die dubbelklik is veilig en test
+  // de hele keten. Een open doelrit raakt de proefstand nooit (zie hieronder).
+  const proefWeigering = !ECHT && doel?.geautoriseerd === true
+  if (reden && !proefWeigering) return { status: 'overgeslagen', melding: reden }
 
   const gewenst = stops.filter(s => v.stop_ids.includes(s.guid))
   if (gewenst.length !== v.stop_ids.length) {
@@ -203,7 +207,7 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
   if (!await selecteer(page, mendix, gewenst)) {
     return { status: 'mislukt', melding: 'De stops konden niet exact geselecteerd worden. Er is niets verplaatst.' }
   }
-  if (!ECHT) {
+  if (!ECHT && !proefWeigering) {
     return { status: 'overgeslagen', melding: `Proefstand: ${gewenst.length} stop(s) geselecteerd, niet verplaatst naar ${doel.ritnaam}.` }
   }
 
