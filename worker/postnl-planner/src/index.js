@@ -188,7 +188,6 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
     return { status: 'mislukt', melding: 'De stops konden niet exact geselecteerd worden. Er is niets verplaatst.' }
   }
   if (!ECHT) {
-    await page.screenshot({ path: path.join(os.tmpdir(), `planner-proef-${v.id}.png`) }).catch(() => {})
     return { status: 'overgeslagen', melding: `Proefstand: ${gewenst.length} stop(s) geselecteerd, niet verplaatst naar ${doel.ritnaam}.` }
   }
 
@@ -273,6 +272,8 @@ async function voerDoorvoerenUit(page, mendix, taak) {
       await sluitDialoog(page, mendix).catch(() => {})
     }
     await zetVerplaatsing(v.id, uitkomst)
+    tellingDoorvoer[uitkomst.status] = (tellingDoorvoer[uitkomst.status] ?? 0) + 1
+    console.log(`Wijziging ${klaar + 1}/${lijst.length}: ${uitkomst.status}`)
     if (uitkomst.status === 'gelukt') { geraakt.add(v.shift); if (v.naar_shift) geraakt.add(v.naar_shift) }
     await zetTaak(taak.id, { voortgang: Math.round((++klaar / lijst.length) * 85) })
   }
@@ -318,16 +319,19 @@ async function metSessie(depot, doorvoeren, werk) {
     const video = page.video()
     await context.close().catch(() => {})
     await browser.close().catch(() => {})
+    // Een doorvoer wijzigt PostNL: die video altijd 30 dagen bewaren, ook als alles goed ging.
+    const bewaren = mislukt || doorvoeren
     const videoPad = await bewaarVideo(supabase, video,
-      mislukt ? foutPad(KLANT_ID, WORKER, depot.naam) : latestPad(KLANT_ID, WORKER, depot.naam), `[${depot.naam}] `).catch(() => null)
-    if (mislukt) await ruimOudeFoutVideosOp(supabase, KLANT_ID, WORKER).catch(() => {})
+      bewaren ? foutPad(KLANT_ID, WORKER, depot.naam, new Date(), doorvoeren ? '-doorvoeren' : '') : latestPad(KLANT_ID, WORKER, depot.naam), `[${depot.naam}] `).catch(() => null)
+    if (bewaren) await ruimOudeFoutVideosOp(supabase, KLANT_ID, WORKER).catch(() => {})
     await slot.los()
     await fs.rm(videoDir, { recursive: true, force: true }).catch(() => {})
-    laatsteVideo = videoPad ? { depot: depot.naam, storage_path: videoPad, ...(mislukt && { soort: 'mislukte_poging' }) } : null
+    laatsteVideo = videoPad ? { depot: depot.naam, storage_path: videoPad, ...(mislukt && { soort: 'mislukte_poging' }), ...(doorvoeren && !mislukt && { soort: 'doorvoer' }) } : null
   }
 }
 
 let laatsteVideo = null
+let tellingDoorvoer = {}
 
 async function verwerk(taak) {
   const doorvoeren = taak.soort === 'doorvoeren'
@@ -337,6 +341,7 @@ async function verwerk(taak) {
   if (!opgepakt.length) return
   const { data: run } = await supabase.from('worker_run_log').insert({ worker_naam: WORKER, klant_id: KLANT_ID }).select('id').single()
   let fout = null
+  tellingDoorvoer = {}
   try {
     const depots = await getDepots(supabase, KLANT_ID, 'postnl')
     installeerNeutraleConsole({ klantId: KLANT_ID, depots })
@@ -366,8 +371,9 @@ async function verwerk(taak) {
   })
   if (run?.id) {
     await supabase.from('worker_run_log').update({
-      status: fout ? 'mislukt' : 'ok', afgerond_at: new Date().toISOString(),
-      foutmelding: fout ? fout.message.slice(0, 500) : null,
+      status: fout ? 'mislukt' : tellingDoorvoer.mislukt ? 'deels_mislukt' : 'ok', afgerond_at: new Date().toISOString(),
+      rijen_gelezen: Object.values(tellingDoorvoer).reduce((n, x) => n + x, 0),
+      foutmelding: fout ? fout.message.slice(0, 500) : Object.keys(tellingDoorvoer).length ? JSON.stringify(tellingDoorvoer) : null,
       video_paths: laatsteVideo ? [laatsteVideo] : null,
     }).eq('id', run.id)
   }

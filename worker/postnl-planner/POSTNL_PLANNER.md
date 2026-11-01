@@ -59,6 +59,10 @@ De tekst "Ritten kunnen tot HH:MM uur worden aangepast." op de pagina is de offi
 
 De keuzelijst `.mx-name-referenceSelector1 select` bij de open rit. Bij een geautoriseerde rit staat hij op slot (`disabled`): de worker volgt wat het scherm toestaat, niet het attribuut `AllowDriverChange` (dat staat ook bij geautoriseerde ritten op true). Na een gelukte wissel werkt de worker meteen `ritten.postnl_chauffeur` en `chauffeur_id` bij, zodat de Ritten-pagina niet tot de volgende sync achterloopt. Een met de hand gekozen chauffeur eindigt dan via de trigger `rit_chauffeur_handmatig`.
 
+## Terugzoeken
+
+De video van een doorvoer blijft 30 dagen staan (`fout/{depot}-doorvoeren-{tijdstip}.webm`), ook als alles goed ging. In `worker_run_log` staat per run hoeveel wijzigingen gelukt, mislukt of overgeslagen zijn. Log geen adressen of namen: deze uitvoer staat op de VPS.
+
 ## Nog vast te stellen op een echte opname
 
 Een geslaagde verplaatsing en chauffeurwissel zijn nog niet gezien. Open: of de keuzelijst direct opslaat, of een losse klik selectie toevoegt of vervangt (de code probeert daarom klik en daarna Ctrl), of er een bevestigingsvraag komt, wat er met vergrendelingen gebeurt en of de `StopID` wijzigt. Ook: de kop toont soms meer stops dan de lijst (111 tegenover 107).
