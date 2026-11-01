@@ -68,6 +68,10 @@ De keuzelijst `.mx-name-referenceSelector1 select` bij de open rit. Bij een geau
 
 De video van een doorvoer blijft 30 dagen staan (`fout/{depot}-doorvoeren-{tijdstip}.webm`), ook als alles goed ging. In `worker_run_log` staat per run hoeveel wijzigingen gelukt, mislukt of overgeslagen zijn. Log geen adressen of namen: deze uitvoer staat op de VPS.
 
+## Vastgesteld op de sessievideo (02-11, naar een geautoriseerde rit)
+
+Een losse klik voegt een rij toe aan de selectie; onder de tabel staat dan "4 rijen geselecteerd | Selectie wissen". De dubbelklik op de doelrit in een andere shift werkt, en de weigering van PostNL komt terug als melding.
+
 ## Nog vast te stellen op een echte opname
 
-Een geslaagde verplaatsing en chauffeurwissel zijn nog niet gezien. Open: of de keuzelijst direct opslaat, of een losse klik selectie toevoegt of vervangt (de code probeert daarom klik en daarna Ctrl), of er een bevestigingsvraag komt, wat er met vergrendelingen gebeurt en of de `StopID` wijzigt. Ook: de kop toont soms meer stops dan de lijst (111 tegenover 107).
+Een geslaagde verplaatsing en chauffeurwissel zijn nog niet gezien. Open: of de keuzelijst direct opslaat, of er een bevestigingsvraag komt, wat er met vergrendelingen gebeurt en of de `StopID` wijzigt. Ook: de kop toont soms meer stops dan de lijst (111 tegenover 107).
