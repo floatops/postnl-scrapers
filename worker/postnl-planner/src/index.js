@@ -47,6 +47,12 @@ async function db(belofte, wat) {
 }
 
 const zetTaak = (id, velden) => db(supabase.from('planning_taken').update(velden).eq('id', id), 'taak bijwerken')
+// Wat de planner in de balk ziet. Mag een opdracht nooit laten mislukken.
+async function zetStap(id, stap, voortgang) {
+  const { error } = await supabase.from('planning_taken').update({ stap, ...(voortgang != null && { voortgang: Math.round(voortgang) }) }).eq('id', id)
+  if (error) console.warn('stap niet bijgewerkt:', error.message)
+}
+
 const zetVerplaatsing = (id, velden) => db(supabase.from('planning_verplaatsingen').update(velden).eq('id', id), 'verplaatsing bijwerken')
 
 function dagLabel(datum) {
@@ -142,7 +148,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
       rit.chauffeur_wijzigbaar = keuze.wijzigbaar
       rit.chauffeur_opties = keuze.opties
     }
-    await opVoortgang(++klaar / Math.max(1, eigen.length))
+    await opVoortgang(++klaar / Math.max(1, eigen.length), eigen[klaar]?.ritnaam)
   }
   // Pas na een complete ronde: bij een fout onderweg blijft de vorige stand staan.
   await db(supabase.from('planning_stops').delete()
@@ -150,17 +156,19 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
 }
 
 async function voerOphalenUit(page, mendix, taak) {
+  await zetStap(taak.id, 'Dag kiezen in PostNL', 6)
   await kiesDag(page, mendix, dagLabel(taak.datum))
+  await zetStap(taak.id, 'Ritten lezen', 8)
   const ritten = await leesRitten(page, mendix, taak)
   // De ritten staan meteen in de app; de stops komen er per rit achteraan.
   await bewaarRitten(taak, ritten)
-  await zetTaak(taak.id, { voortgang: 10 })
+  await zetStap(taak.id, `Stops lezen, shift ${taak.shift ?? ''}`.trim(), 10)
   // Bestaat de gevraagde shift op deze dag niet, dan de eerste die er wel is.
   const shifts = [...new Set(ritten.map(r => r.shift))]
   const shift = shifts.includes(taak.shift) ? taak.shift : shifts[0]
   if (!shift) throw new Error('Op deze dag staan geen ritten in PostNL.')
   await leesStopsVanShift(page, mendix, taak, shift, ritten,
-    (deel) => zetTaak(taak.id, { voortgang: Math.min(95, 10 + Math.round(deel * 85)) }))
+    (deel, volgende) => zetStap(taak.id, volgende ? `Stops lezen: ${volgende}` : 'Afronden', Math.min(95, 10 + deel * 85)))
   await bewaarRitten(taak, ritten)
 }
 
@@ -182,11 +190,12 @@ async function selecteer(page, mendix, stops) {
   return false
 }
 
-async function verplaatsEen(page, mendix, taak, v, ritten) {
+async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
   const bron = ritten.find(r => r.rit_id === v.van_rit_id)
   const doel = ritten.find(r => r.rit_id === v.naar_rit_id)
   if (!bron) return { status: 'overgeslagen', melding: 'De bronrit staat niet meer in de planning.' }
 
+  await opStap(`${bron.ritnaam} openen`, 0.1)
   await kiesShift(page, mendix, bron.shift)
   const stops = await openRit(page, mendix, bron.ritnaam)
   const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum) ?? bron.deadline
@@ -204,6 +213,7 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
 
   const { problemen } = rijenVoorStops(gewenst, await leesStopTabel(page))
   if (problemen.length) return { status: 'mislukt', melding: problemen.join('; ') }
+  await opStap(`${gewenst.length} ${gewenst.length === 1 ? 'stop' : 'stops'} selecteren`, 0.3)
   if (!await selecteer(page, mendix, gewenst)) {
     return { status: 'mislukt', melding: 'De stops konden niet exact geselecteerd worden. Er is niets verplaatst.' }
   }
@@ -211,11 +221,13 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
     return { status: 'overgeslagen', melding: `Proefstand: ${gewenst.length} stop(s) geselecteerd, niet verplaatst naar ${doel.ritnaam}.` }
   }
 
+  await opStap(`Verplaatsen naar ${doel.ritnaam}`, 0.6)
   const meldingen = await verplaatsNaar(page, mendix, doel.shift, doel.ritnaam)
   const dialoog = await sluitDialoog(page, mendix)
   const weigering = meldingen.find(isWeigering)
   if (weigering) return { status: 'mislukt', melding: weigering.tekst }
 
+  await opStap('Controleren', 0.8)
   // Controle: staan de adressen nu ook echt in de doelrit? De StopID kan veranderen.
   await kiesShift(page, mendix, doel.shift)
   const inDoel = new Set((await openRit(page, mendix, doel.ritnaam)).map(adresSleutel))
@@ -242,9 +254,10 @@ async function werkRittenBij(taak, ritnaam, naam) {
     .eq('klant_id', KLANT_ID).eq('datum', taak.datum).eq('depot', taak.depot).eq('ritnummer', ritnummer), 'rit bijwerken')
 }
 
-async function wisselChauffeur(page, mendix, taak, v, ritten) {
+async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
   const rit = ritten.find(r => r.rit_id === v.van_rit_id)
   if (!rit) return { status: 'overgeslagen', melding: 'De rit staat niet meer in de planning.' }
+  await opStap(`Chauffeur van ${rit.ritnaam}`, 0.2)
   await kiesShift(page, mendix, rit.shift)
   await openRit(page, mendix, rit.ritnaam)
   const keuze = await leesChauffeurKeuze(page)
@@ -274,17 +287,21 @@ async function wisselChauffeur(page, mendix, taak, v, ritten) {
 async function voerDoorvoerenUit(page, mendix, taak) {
   const lijst = await db(supabase.from('planning_verplaatsingen').select('*')
     .eq('taak_id', taak.id).eq('status', 'wacht').order('created_at'), 'verplaatsingen lezen')
+  await zetStap(taak.id, 'Dag kiezen in PostNL', 6)
   await kiesDag(page, mendix, dagLabel(taak.datum))
+  await zetStap(taak.id, 'Ritten lezen', 8)
   const ritten = await leesRitten(page, mendix, taak)
   const geraakt = new Set()
   let klaar = 0
   for (const v of lijst) {
     await zetVerplaatsing(v.id, { status: 'bezig' })
+    const nummer = klaar
+    const opStap = (tekst, deel) => zetStap(taak.id, lijst.length > 1 ? `${nummer + 1} van ${lijst.length}: ${tekst}` : tekst, 10 + ((nummer + deel) / lijst.length) * 75)
     let uitkomst
     try {
       uitkomst = v.soort === 'chauffeur'
-        ? await wisselChauffeur(page, mendix, taak, v, ritten)
-        : await verplaatsEen(page, mendix, taak, v, ritten)
+        ? await wisselChauffeur(page, mendix, taak, v, ritten, opStap)
+        : await verplaatsEen(page, mendix, taak, v, ritten, opStap)
     } catch (err) {
       console.error('Verplaatsing faalde:', err.message)
       // Onzeker: de dubbelklik kan al gegeven zijn. Daarom niet automatisch opnieuw.
@@ -295,10 +312,11 @@ async function voerDoorvoerenUit(page, mendix, taak) {
     tellingDoorvoer[uitkomst.status] = (tellingDoorvoer[uitkomst.status] ?? 0) + 1
     console.log(`Wijziging ${klaar + 1}/${lijst.length}: ${uitkomst.status}`)
     if (uitkomst.status === 'gelukt') { geraakt.add(v.shift); if (v.naar_shift) geraakt.add(v.naar_shift) }
-    await zetTaak(taak.id, { voortgang: Math.round((++klaar / lijst.length) * 85) })
+    klaar++
   }
   // De app moet de nieuwe stand zien.
   if (geraakt.size) {
+    await zetStap(taak.id, 'Planning bijwerken', 88)
     const nieuw = await leesRitten(page, mendix, taak)
     for (const shift of geraakt) await leesStopsVanShift(page, mendix, taak, shift, nieuw)
     await bewaarRitten(taak, nieuw)
@@ -363,6 +381,7 @@ async function verwerk(taak) {
   let fout = null
   tellingDoorvoer = {}
   try {
+    await zetStap(taak.id, 'Inloggen bij PostNL', 3)
     const depots = await getDepots(supabase, KLANT_ID, 'postnl')
     installeerNeutraleConsole({ klantId: KLANT_ID, depots })
     const depot = depots.find(d => d.naam === taak.depot)
