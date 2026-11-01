@@ -192,10 +192,10 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
   const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum) ?? bron.deadline
   const reden = redenNietUitvoeren({ doelRit: doel, deadline: doel?.deadline ?? deadline })
     ?? redenNietUitvoeren({ doelRit: bron, deadline })
-  // Proef: een geautoriseerde doelrit weigert PostNL zelf, dus die dubbelklik is veilig en test
-  // de hele keten. Een open doelrit raakt de proefstand nooit (zie hieronder).
-  const proefWeigering = !ECHT && doel?.geautoriseerd === true
-  if (reden && !proefWeigering) return { status: 'overgeslagen', melding: reden }
+  // Een geautoriseerde doelrit weigert PostNL zelf: die dubbelklik is veilig, en de planner ziet
+  // de melding van PostNL. Al het andere wat niet mag, blijft hier hangen.
+  const doelWeigertZelf = doel?.geautoriseerd === true
+  if (reden && !doelWeigertZelf) return { status: 'overgeslagen', melding: reden }
 
   const gewenst = stops.filter(s => v.stop_ids.includes(s.guid))
   if (gewenst.length !== v.stop_ids.length) {
@@ -207,7 +207,7 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
   if (!await selecteer(page, mendix, gewenst)) {
     return { status: 'mislukt', melding: 'De stops konden niet exact geselecteerd worden. Er is niets verplaatst.' }
   }
-  if (!ECHT && !proefWeigering) {
+  if (!ECHT && !doelWeigertZelf) {
     return { status: 'overgeslagen', melding: `Proefstand: ${gewenst.length} stop(s) geselecteerd, niet verplaatst naar ${doel.ritnaam}.` }
   }
 
