@@ -95,9 +95,18 @@ async function leesRitten(page, mendix, taak) {
 
 async function bewaarRitten(taak, ritten) {
   const nu = new Date().toISOString()
+  // De chauffeurlijst staat alleen op een open rit. Ritten die deze ronde niet open waren
+  // (andere shift, geen stops) houden wat ze hadden.
+  const bekend = new Map((await db(supabase.from('planning_ritten').select('rit_id, chauffeur_wijzigbaar, chauffeur_opties')
+    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum), 'ritten lezen')).map(r => [r.rit_id, r]))
   if (ritten.length) {
     await db(supabase.from('planning_ritten').upsert(
-      ritten.map(r => ({ ...r, klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum, opgehaald_at: nu })),
+      ritten.map(r => ({
+        ...r,
+        chauffeur_wijzigbaar: r.chauffeur_wijzigbaar ?? bekend.get(r.rit_id)?.chauffeur_wijzigbaar ?? false,
+        chauffeur_opties: r.chauffeur_opties ?? bekend.get(r.rit_id)?.chauffeur_opties ?? [],
+        klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum, opgehaald_at: nu,
+      })),
       { onConflict: 'klant_id,rit_id' }), 'ritten bewaren')
   }
   await db(supabase.from('planning_ritten').delete()
