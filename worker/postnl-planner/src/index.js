@@ -114,11 +114,11 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
   for (const rit of eigen) {
     if (rit.stops > 0) {
       const stops = await openRit(page, mendix, rit.ritnaam)
-      const eigenStops = stops.filter(s => s.RideID === rit.rit_id)
+      const eigenStops = stops
       // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is.
       if (eigenStops.length) {
         await db(supabase.from('planning_stops').upsert(
-          eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, opgehaaldAt: nu })),
+          eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu })),
           { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
       }
       if (eigenStops.length !== rit.stops) console.log(`${rit.rit_id}: kop ${rit.stops} stops, lijst ${eigenStops.length}`)
@@ -181,7 +181,7 @@ async function verplaatsEen(page, mendix, taak, v, ritten) {
     ?? redenNietUitvoeren({ doelRit: bron, deadline })
   if (reden) return { status: 'overgeslagen', melding: reden }
 
-  const gewenst = stops.filter(s => v.stop_ids.includes(s.StopID))
+  const gewenst = stops.filter(s => v.stop_ids.includes(s.guid))
   if (gewenst.length !== v.stop_ids.length) {
     return { status: 'overgeslagen', melding: `${v.stop_ids.length - gewenst.length} stop(s) staan niet meer in ${bron.ritnaam}. Haal de planning opnieuw op.` }
   }

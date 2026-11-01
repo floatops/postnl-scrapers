@@ -3,18 +3,28 @@
 const TIJDZONE = 'Europe/Amsterdam'
 
 // Alle objecten in een /xas/-antwoord, op type. Mendix zet ze per actie onder een andere
-// sleutel, en sommige attribuutwaarden staan alleen in `changes` (per guid).
+// sleutel, nest gekoppelde objecten in de attribuutwaarde (RideNumber -> Ride -> Driver), en
+// sommige waarden staan alleen in `changes` (per guid). Een koppeling wordt hier de guid.
 export function objectenUit(antwoord, objectType) {
   if (!antwoord) return []
-  const lijst = [...(antwoord.objects ?? []), ...(antwoord.partialObjects ?? []), ...(antwoord.mxobjects ?? [])]
   const perGuid = new Map()
-  for (const o of lijst) {
-    if (o?.objectType !== objectType) continue
+  const bezoek = (o) => {
+    if (!o?.objectType || !o.guid) return
     const waarden = {}
-    for (const [k, v] of Object.entries(o.attributes ?? {})) waarden[k] = v?.value ?? null
+    for (const [k, v] of Object.entries(o.attributes ?? {})) {
+      const w = v?.value
+      if (w && typeof w === 'object' && w.objectType) {
+        bezoek(w)
+        waarden[k] = w.guid
+      } else {
+        waarden[k] = w ?? null
+      }
+    }
+    if (o.objectType !== objectType) return
     for (const [k, v] of Object.entries(antwoord.changes?.[o.guid] ?? {})) waarden[k] = v?.value ?? null
     perGuid.set(o.guid, { guid: o.guid, ...(perGuid.get(o.guid) ?? {}), ...waarden })
   }
+  for (const o of [...(antwoord.objects ?? []), ...(antwoord.partialObjects ?? []), ...(antwoord.mxobjects ?? [])]) bezoek(o)
   return [...perGuid.values()]
 }
 
@@ -69,11 +79,12 @@ function tekst(waarde) {
 }
 
 // Voor de app: alleen wat daar getoond wordt. Verder niets, het zijn adressen.
-export function stopNaarRij(stop, { klantId, depot, datum, shift, opgehaaldAt }) {
+// De stoplijst bevat geen StopID en RideID: de guid is het vaste kenmerk, en de rit is die we open hebben.
+export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt }) {
   return {
     klant_id: klantId, depot, datum, shift,
-    rit_id: stop.RideID,
-    stop_id: stop.StopID,
+    rit_id: ritId,
+    stop_id: stop.guid,
     straat: tekst(stop.Street) ?? '(onbekend)',
     huisnummer: tekst(stop.BuildingNumber),
     toevoeging: tekst(stop.BuildingNumberExtension),
@@ -96,12 +107,13 @@ export function rittenUit(antwoorden) {
   const uit = []
   for (const n of nummers.values()) {
     const rit = ritten.get(n['OperationalPlanning.RideNumber_Ride'])
-    if (!rit?.RideID) continue
+    if (!rit?.RideName) continue
     uit.push({
-      rit_id: rit.RideID,
-      ritnaam: tekst(rit.RideName) ?? rit.RideID,
+      // De guid, niet RideID: die laatste staat niet in elk antwoord.
+      rit_id: rit.guid,
+      ritnaam: tekst(rit.RideName),
       chauffeur: tekst(chauffeurs.get(rit['OperationalPlanning.OperationalRide_Driver'])?.LastNameInitials),
-      geautoriseerd: rit.Authorized === true,
+      geautoriseerd: rit.Authorized === true || rit.Enum_Authorized === '_True',
       bewerkbaar: rit.Editable !== false,
       geblokkeerd: rit.IsBlocked === true,
       stops: Math.round(getal(n.Stops)),
@@ -116,7 +128,7 @@ export function stopsUit(antwoorden) {
   const perStop = new Map()
   for (const a of antwoorden) {
     for (const s of objectenUit(a, 'OperationalPlanning.Stop')) {
-      if (s.StopID) perStop.set(s.StopID, { ...(perStop.get(s.StopID) ?? {}), ...s })
+      perStop.set(s.guid, { ...(perStop.get(s.guid) ?? {}), ...s })
     }
   }
   return [...perStop.values()]

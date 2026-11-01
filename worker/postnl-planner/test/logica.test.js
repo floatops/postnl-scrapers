@@ -53,6 +53,19 @@ test('koppeling op PostNL-naam, alleen bij precies één treffer', () => {
   assert.equal(gebruikerBijNaam(lijst, 'Niemand'), null)
 })
 
+test('ritten: geneste Ride en chauffeur zoals PostNL ze stuurt', () => {
+  const [rit] = rittenUit([{ mxobjects: [{
+    objectType: 'OperationalPlanning.RideNumber', guid: 'n1',
+    attributes: { Stops: { value: '168' }, Pieces: { value: '244' }, Volume: { value: '4.69' }, 'OperationalPlanning.RideNumber_Ride': { value: {
+      objectType: 'OperationalPlanning.Ride', guid: 'r1',
+      attributes: { RideName: { value: '0217 maasdijk' }, Enum_Authorized: { value: '_True' }, 'OperationalPlanning.OperationalRide_Driver': { value: {
+        objectType: 'Planning.Driver', guid: 'd1', attributes: { LastNameInitials: { value: 'Soerka, S.H.' } },
+      } } },
+    } } },
+  }] }])
+  assert.deepEqual(rit, { rit_id: 'r1', ritnaam: '0217 maasdijk', chauffeur: 'Soerka, S.H.', geautoriseerd: true, bewerkbaar: true, geblokkeerd: false, stops: 168, stuks: 244, volume: 4.69 })
+})
+
 test('ritten: de chauffeur komt mee via de koppeling op de Ride', () => {
   const [rit] = rittenUit([{ objects: [
     { objectType: 'OperationalPlanning.Ride', guid: 'r1', attributes: attrs({ RideID: 'X', RideName: '0217', 'OperationalPlanning.OperationalRide_Driver': 'd1', AllowDriverChange: true }) },
@@ -70,17 +83,17 @@ test('ritten: status van de Ride, totalen van het RideNumber', () => {
       { objectType: 'OperationalPlanning.RideNumber', guid: 'n2', attributes: attrs({ 'OperationalPlanning.RideNumber_Ride': 'bestaat-niet', Stops: '1' }) },
     ],
   }])
-  assert.deepEqual(uit, [{ rit_id: 'X_0217', ritnaam: '0217 maasdijk', chauffeur: null, geautoriseerd: true, bewerkbaar: true, geblokkeerd: false, stops: 168, stuks: 244, volume: 4.69 }])
+  assert.deepEqual(uit, [{ rit_id: 'r1', ritnaam: '0217 maasdijk', chauffeur: null, geautoriseerd: true, bewerkbaar: true, geblokkeerd: false, stops: 168, stuks: 244, volume: 4.69 }])
 })
 
 test('stop naar rij bevat alleen wat de app toont', () => {
   const [stop] = stopsUit([{ partialObjects: [stopObject('1', {
-    StopID: 'S1', RideID: 'R1', Street: 'Abel Tasmanstraat ', BuildingNumber: '8', BuildingNumberExtension: null,
+    Street: 'Abel Tasmanstraat ', BuildingNumber: '8', BuildingNumberExtension: null,
     Pieces: '1', Volume: '0.019', Weight: '1.12', City: 'MAASDIJK', PostalCode: '2676AA', PlannedStopTime: 1793467080000,
   })] }])
-  const rij = stopNaarRij(stop, { klantId: 'k', depot: 'd', datum: '2026-11-02', shift: '02', opgehaaldAt: 't' })
+  const rij = stopNaarRij(stop, { klantId: 'k', depot: 'd', datum: '2026-11-02', shift: '02', ritId: 'R1', opgehaaldAt: 't' })
   assert.deepEqual(rij, {
-    klant_id: 'k', depot: 'd', datum: '2026-11-02', shift: '02', rit_id: 'R1', stop_id: 'S1',
+    klant_id: 'k', depot: 'd', datum: '2026-11-02', shift: '02', rit_id: 'R1', stop_id: '1',
     straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, stuks: 1, volume: 0.019, opgehaald_at: 't',
   })
 })

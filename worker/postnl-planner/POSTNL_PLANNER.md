@@ -33,7 +33,8 @@ De app maakt een rij in `planning_taken`; `planning-taak` roept `POST /run/postn
 
 Mendix stuurt alles naar `/xas/`. Herken data aan `objectType`, **nooit aan `operationId`**: die code verandert bij een PostNL-release. Valkuilen:
 
-- Stops komen binnen in **`partialObjects`**, andere objecten in `objects` of `mxobjects`.
+- Stops komen binnen in **`partialObjects`**, andere objecten in `objects` of `mxobjects`. Die stoplijst heeft geen `StopID` en `RideID`: de **`guid`** is de sleutel van stops en ritten.
+- De ritlijst is **genest**: `RideNumber` bevat in zijn attribuut de `Ride`, en die weer de `Driver`.
 - Sommige waarden staan alleen in **`changes[guid]`**, het object zelf heeft dan `null`.
 - De stoplijst heeft `amount: 500`; `hasMoreItems` is nog nooit waar gezien.
 
