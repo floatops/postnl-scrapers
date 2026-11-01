@@ -97,12 +97,13 @@ async function bewaarRitten(taak, ritten) {
   const nu = new Date().toISOString()
   // De chauffeurlijst staat alleen op een open rit. Ritten die deze ronde niet open waren
   // (andere shift, geen stops) houden wat ze hadden.
-  const bekend = new Map((await db(supabase.from('planning_ritten').select('rit_id, chauffeur_wijzigbaar, chauffeur_opties')
+  const bekend = new Map((await db(supabase.from('planning_ritten').select('rit_id, chauffeur_wijzigbaar, chauffeur_opties, stops_gelezen')
     .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum), 'ritten lezen')).map(r => [r.rit_id, r]))
   if (ritten.length) {
     await db(supabase.from('planning_ritten').upsert(
       ritten.map(r => ({
         ...r,
+        stops_gelezen: r.stops_gelezen ?? bekend.get(r.rit_id)?.stops_gelezen ?? null,
         chauffeur_wijzigbaar: r.chauffeur_wijzigbaar ?? bekend.get(r.rit_id)?.chauffeur_wijzigbaar ?? false,
         chauffeur_opties: r.chauffeur_opties ?? bekend.get(r.rit_id)?.chauffeur_opties ?? [],
         klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum, opgehaald_at: nu,
@@ -130,7 +131,9 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
           eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu })),
           { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
       }
-      if (eigenStops.length !== rit.stops) console.log(`${rit.rit_id}: kop ${rit.stops} stops, lijst ${eigenStops.length}`)
+      rit.stops_gelezen = eigenStops.length
+      const opScherm = (await leesStopTabel(page)).length
+      console.log(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord ${eigenStops.length}, scherm ${opScherm}`)
       // De deadline kan per rit verschillen; de tekst bij de open rit gaat voor.
       const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum)
       if (deadline) rit.deadline = deadline

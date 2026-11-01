@@ -38,6 +38,10 @@ Mendix stuurt alles naar `/xas/`. Herken data aan `objectType`, **nooit aan `ope
 - Sommige waarden staan alleen in **`changes[guid]`**, het object zelf heeft dan `null`.
 - De stoplijst heeft `amount: 500`; `hasMoreItems` is nog nooit waar gezien.
 
+## Is alles gelezen?
+
+`hasMoreItems` op de stoplijst = fout, de rit is dan niet compleet. Het aantal gelezen rijen gaat naar `planning_ritten.stops_gelezen`, en het log toont per rit kop, antwoord en scherm. De kop van PostNL kan afwijken van de lijst, ook in een gewone browser: op de afgesloten dag 31-10 bij 8 van de 11 ritten in shift 02. Oorzaak nog onbekend, opnieuw bekijken op een lopende dag.
+
 ## Timing
 
 Vanaf **ongeveer 05:30** staat de nieuwe dag in PostNL. Tot de deadline kan PostNL nog adressen toevoegen, dus: wat in FloatOps staat kan verouderd zijn, en rijnummers zijn niet vast. Daarom leest de worker vlak voor elke verplaatsing opnieuw, en zoekt hij rijen altijd op tijd + adres. De ritmonitor start pas om 08:00 en de dagplanning-scraper om 07:00, dus het sessie-slot is in dit tijdvak meestal vrij.

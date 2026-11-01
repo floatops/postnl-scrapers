@@ -128,6 +128,10 @@ export async function openRit(page, mendix, ritnaam) {
     if (!(await nee.isChecked())) throw new Error(`Postcodes kon bij ${ritnaam} niet op Nee`)
   }
   await page.locator(`${SCHERM.stops} [role="row"]`).first().waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {})
+  // PostNL geeft de lijst in stukken: staat er nog een vervolg, dan is hij niet compleet.
+  if (antwoorden.some(a => a.hasMoreItems === true && (a.partialObjects ?? []).some(o => o.objectType === 'OperationalPlanning.Stop'))) {
+    throw new Error(`De stoplijst van ${ritnaam} is niet compleet opgehaald.`)
+  }
   return stopsUit(antwoorden)
 }
 
