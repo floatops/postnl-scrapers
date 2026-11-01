@@ -1,0 +1,16 @@
+{
+  "name": "postnl-planner",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test",
+    "playwright:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0",
+    "dotenv": "^16.4.5",
+    "playwright": "1.63.0"
+  }
+}
