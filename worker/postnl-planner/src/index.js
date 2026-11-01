@@ -142,7 +142,11 @@ async function voerOphalenUit(page, mendix, taak) {
   // De ritten staan meteen in de app; de stops komen er per rit achteraan.
   await bewaarRitten(taak, ritten)
   await zetTaak(taak.id, { voortgang: 10 })
-  await leesStopsVanShift(page, mendix, taak, taak.shift, ritten,
+  // Bestaat de gevraagde shift op deze dag niet, dan de eerste die er wel is.
+  const shifts = [...new Set(ritten.map(r => r.shift))]
+  const shift = shifts.includes(taak.shift) ? taak.shift : shifts[0]
+  if (!shift) throw new Error('Op deze dag staan geen ritten in PostNL.')
+  await leesStopsVanShift(page, mendix, taak, shift, ritten,
     (deel) => zetTaak(taak.id, { voortgang: Math.min(95, 10 + Math.round(deel * 85)) }))
   await bewaarRitten(taak, ritten)
 }

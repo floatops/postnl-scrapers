@@ -77,9 +77,16 @@ const isGeselecteerd = (rij) => rij.evaluate(el => el.classList.contains('select
 export async function kiesDag(page, mendix, label) {
   const dag = page.locator(SCHERM.dag).first()
   await dag.waitFor({ state: 'visible', timeout: 30_000 })
-  const bestaat = await dag.evaluate((el, l) => [...el.options].some(o => o.label.trim() === l), label)
+  // Mendix vult de keuzelijst pas na het tekenen van de pagina: wachten tot de dag erin staat.
+  await mendix.wacht()
+  const bestaat = await page.waitForFunction(({ sel, l }) => {
+    const el = document.querySelector(sel)
+    return el && [...el.options].some(o => o.label.trim() === l)
+  }, { sel: SCHERM.dag, l: label }, { timeout: 20_000 }).then(() => true, () => false)
   if (!bestaat) throw new Error(`Dag ${label} staat niet in de PostNL-planning.`)
   await mendix.actie(() => dag.selectOption({ label }))
+  await page.locator(`${SCHERM.shiftsLinks} tbody tr td`).first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
+  await mendix.wacht()
 }
 
 export async function leesShifts(page) {
