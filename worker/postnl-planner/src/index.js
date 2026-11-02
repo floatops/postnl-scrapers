@@ -102,6 +102,8 @@ async function leesRitten(page, mendix, taak) {
   for (const shift of await leesShifts(page)) {
     const ritten = await kiesShift(page, mendix, shift)
     const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum)
+    // Log zonder namen of adressen: alleen shift, aantal ritten en de tijd van PostNL.
+    console.log(`Shift ${shift}: ${ritten.length} ritten, wijzigen tot ${deadline ? new Date(deadline).toLocaleTimeString('nl-NL', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Amsterdam' }) : 'onbekend'}`)
     for (const r of ritten) uit.push({ ...r, shift, deadline })
   }
   return uit
