@@ -175,8 +175,22 @@ export async function leesChauffeurKeuze(page) {
   })
 }
 
+// PostNL slaat de keuze meteen op en vraagt dan of de chauffeur ook aan de komende ritten van
+// het scenario gekoppeld moet worden (gezien op 02-11). Altijd "alleen vandaag": een wissel uit
+// Plannen mag nooit andere dagen raken. Een ander venster dan dit: fout, niets aanklikken.
+export const CHAUFFEUR_VRAAG = 'Wijzig chauffeur'
+export const ALLEEN_VANDAAG = /alleen voor de rit van vandaag/i
+
 export async function kiesChauffeur(page, mendix, naam) {
   const antwoorden = await mendix.actie(() => page.locator(SCHERM.chauffeur).first().selectOption({ label: naam }), 60_000)
+  const dialoog = page.locator(SCHERM.dialoog).filter({ hasText: CHAUFFEUR_VRAAG }).first()
+  const gevraagd = await dialoog.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
+  if (gevraagd) {
+    const nee = dialoog.getByRole('button', { name: ALLEEN_VANDAAG }).first()
+    if (!(await nee.count())) throw new Error('PostNL stelde een onbekende vraag bij de chauffeurwissel')
+    antwoorden.push(...await mendix.actie(() => nee.click(), 60_000))
+    await dialoog.waitFor({ state: 'hidden', timeout: 15_000 })
+  }
   return uniekeMeldingen(antwoorden)
 }
 
