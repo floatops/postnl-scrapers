@@ -12,10 +12,11 @@ async function vereis(belofte, wat) {
 
 export function maakOpslag({ supabase, klantId, log = console }) {
   return {
-    async instellingen() {
+    async instellingen(boven = null) {
       const { data, error } = await supabase.from('postnl_instellingen').select('instellingen').eq('klant_id', klantId).maybeSingle()
       if (error) log.warn(`Instellingen niet gelezen (${error.message}): standaardwaarden`)
-      return mergeInstellingen(data?.instellingen ?? {})
+      if (boven) log.warn(`Instellingen overschreven voor een proef: ${Object.keys(boven).join(', ')}`)
+      return mergeInstellingen({ ...(data?.instellingen ?? {}), ...(boven ?? {}) })
     },
 
     async dagstatus(depot) {

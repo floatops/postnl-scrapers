@@ -58,7 +58,9 @@ function codeVersie() {
 
 async function main() {
   const opslag = maakOpslag({ supabase, klantId: KLANT_ID, log })
-  const cfg = await opslag.instellingen()
+  // POSTNL_SESSIE_INSTELLINGEN (json): alleen voor een handmatige proef, bv. 's nachts met andere
+  // werktijden. Gaat boven de instellingen van de klant; zonder variabele niets anders.
+  const cfg = await opslag.instellingen(process.env.POSTNL_SESSIE_INSTELLINGEN ? JSON.parse(process.env.POSTNL_SESSIE_INSTELLINGEN) : null)
   const depots = await getDepots(supabase, KLANT_ID, 'postnl')
   installeerNeutraleConsole({ klantId: KLANT_ID, depots })
   if (!depots.length) { log.log('Geen PostNL-depots voor deze klant'); return }

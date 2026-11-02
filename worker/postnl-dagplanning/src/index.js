@@ -17,11 +17,10 @@ import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../cre
 import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
 import { schrijfDagplanning, markeerGereden as markeerRittenGereden, beschikbareKolommen } from '../../credentials-shared/src/postnl/schrijver.js'
 import { vandaagNl as vandaagNlGedeeld } from '../../credentials-shared/src/postnl/tekst.js'
-import { naarDepot, openDagplanning, SEL_DAG } from '../../credentials-shared/src/postnl/login.js'
+import { naarDepot, openDagplanning } from '../../credentials-shared/src/postnl/login.js'
 import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
 import { startRunLog as startRunLogGedeeld, eindeRunLog as eindeRunLogGedeeld } from '../../credentials-shared/src/runLog.js'
-// Dag en shift kiezen in de Dagplanning: de schermfuncties van de planner, niet nog een kopie.
-import { volgMendix, kiesDag, leesShifts, kiesShift } from '../../postnl-planner/src/mendix.js'
+import { verzamelAntwoorden, dagenInKeuzelijst, kiesDag, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -162,23 +161,20 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
   let mislukt = false
 
   // Alle Mendix-antwoorden van deze sessie: daaruit leest de gedeelde lezer de ritten.
-  const antwoorden = []
-  page.on('response', (res) => { if (res.url().includes('/xas/')) res.json().then(j => antwoorden.push(j)).catch(() => {}) })
-  const mendix = volgMendix(page)
+  const antwoorden = verzamelAntwoorden(page)
 
   try {
     await naarDepot(page, depot)
     console.log(`[${depot.naam}] Ingelogd, URL:`, page.url())
     await openDagplanning(page, depot)
     kolommenCache ??= await beschikbareKolommen(supabase)
-    const beschikbaar = await page.locator(SEL_DAG).first().evaluate(el => Array.from(el.options).map(o => o.label.trim()).filter(Boolean)).catch(() => [])
 
     let teSyncen
     if (syncDatum) {
       teSyncen = [{ datum: syncDatum, label: dagLabel(syncDatum) }]
       console.log(`[${depot.naam}] Specifieke datum: ${syncDatum}`)
     } else if (allesDatums) {
-      teSyncen = beschikbaar
+      teSyncen = (await dagenInKeuzelijst(page))
         .map(label => ({ label, datum: labelNaarDatum(label) }))
         .filter(d => d.datum && d.datum <= vandaag)
         .sort((a, b) => a.datum.localeCompare(b.datum))
@@ -189,32 +185,29 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
 
     let totaalGesynced = 0
     for (const { datum, label } of teSyncen) {
-      if (!beschikbaar.includes(label)) {
-        console.log(`[${depot.naam}] Datum ${label} niet in de keuzelijst, overgeslagen`)
-        continue
-      }
       const vanaf = antwoorden.length
       await openDagplanning(page, depot)
-      await kiesDag(page, mendix, label)
+      // Ontbreekt de dag, dan gooit kiesDag (dagOntbreekt): dat telt als fout, nooit stil overslaan.
+      await kiesDag(page, label, antwoorden)
       // Shifts zoals PostNL ze vandaag toont, niet een vaste lijst.
-      const shifts = await leesShifts(page)
+      const shifts = await shiftsOpScherm(page)
       const nietUitgelezen = []
       for (const shift of shifts) {
         try {
-          await kiesShift(page, mendix, shift)
+          const uitkomst = await kiesShift(page, shift, antwoorden)
+          if (uitkomst === 'geen_ritten') console.log(`[${depot.naam}] Shift ${shift}: geen ritten ontvangen (lege shift)`)
         } catch (err) {
           console.log(`[${depot.naam}] Shift ${shift}: opnieuw na fout (${eersteRegel(err)})`)
           try {
             await openDagplanning(page, depot)
-            await kiesDag(page, mendix, label)
-            await kiesShift(page, mendix, shift)
+            await kiesDag(page, label, antwoorden)
+            await kiesShift(page, shift, antwoorden)
           } catch (err2) {
             console.log(`[${depot.naam}] Shift ${shift}: overgeslagen na fout: ${eersteRegel(err2)}`)
             nietUitgelezen.push(shift)
           }
         }
       }
-      await mendix.wacht().catch(() => {})
 
       // Een shift die niet uitgelezen kon worden maakt de hele poging mislukt: anders meldde de
       // run stil "0 ritten" met status ok (#361). syncMetRetry probeert het opnieuw.

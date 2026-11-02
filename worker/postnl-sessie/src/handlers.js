@@ -5,7 +5,8 @@ import { openDagplanning } from '../../credentials-shared/src/postnl/login.js'
 import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
 import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
-import { kiesDag, leesShifts, kiesShift, leesDeadlineTekst } from '../../postnl-planner/src/mendix.js'
+import { leesDeadlineTekst } from '../../postnl-planner/src/mendix.js'
+import { kiesDag, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
 import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor } from './dagstatus.js'
 
 const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
@@ -16,9 +17,9 @@ export class DagNietBeschikbaar extends Error {}
 async function naarDag(sessie, datum) {
   await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
   try {
-    await kiesDag(sessie.page, sessie.mendix, dagLabel(datum))
+    await kiesDag(sessie.page, dagLabel(datum), sessie.antwoorden)
   } catch (err) {
-    if (/staat niet in de PostNL-planning/.test(err.message)) throw new DagNietBeschikbaar(err.message)
+    if (err.dagOntbreekt) throw new DagNietBeschikbaar(err.message)
     throw err
   }
 }
@@ -26,8 +27,7 @@ async function naarDag(sessie, datum) {
 // Eén shift kiezen en de antwoorden + deadline van PostNL teruggeven.
 async function leesShift(sessie, shift, datum) {
   const vanaf = sessie.antwoorden.length
-  await kiesShift(sessie.page, sessie.mendix, shift)
-  await sessie.mendix.wacht()
+  await kiesShift(sessie.page, shift, sessie.antwoorden)
   const deadline = deadlineUitTekst(await leesDeadlineTekst(sessie.page), datum)
   return { antwoorden: sessie.antwoorden.slice(vanaf), deadline }
 }
@@ -51,7 +51,7 @@ export const HANDLERS = {
       if (err instanceof DagNietBeschikbaar) return { dag: naOchtendNietBeschikbaar(dag, { nu, cfg: ctx.cfg }), run: null, melding: 'dag nog niet in PostNL' }
       throw err
     }
-    const shifts = await leesShifts(sessie.page)
+    const shifts = await shiftsOpScherm(sessie.page)
     if (!shifts.length) throw new Error('Geen shifts zichtbaar in de Dagplanning')
     const alle = [...sessie.antwoorden]
     const perShift = {}
