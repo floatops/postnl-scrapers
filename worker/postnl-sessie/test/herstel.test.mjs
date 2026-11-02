@@ -18,6 +18,9 @@ test('classificeer: de gevallen die we in sessievideo\'s hebben gezien', () => {
   // #361 / 30-10: "pagina herlaadde" en Execution context destroyed zonder login = eruit gegooid.
   assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, fout: new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation') }), 'gegooid')
   assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, planningZichtbaar: false }), 'gegooid', 'terug op de startpagina zonder menu')
+  // Meting 02-11: een andere sessie werkt in Mendix, deze staat op de startpagina, menu wel zichtbaar.
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, planningZichtbaar: true, opStartpagina: true }), 'gegooid', 'teruggezet naar de startpagina')
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, fout: new Error('locator.click: Timeout 10000ms exceeded.'), planningZichtbaar: true, opStartpagina: true }), 'gegooid', 'klik faalt omdat het scherm weg is')
   // Akamai
   assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, fout: Object.assign(new Error('x'), { name: 'ProxyBlokkadeError' }) }), 'blokkade')
   assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, blokkade: true }), 'blokkade')

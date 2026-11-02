@@ -20,7 +20,7 @@ export const STANDAARD = Object.freeze({
   // Sessie
   slotLeaseSec: 180,              // lease van het sessie-slot; alleen verlengd na een geslaagde taak
   slotWachtMaxMin: 12,            // zo lang wachten op een ander (vangnet-script) dat het slot heeft
-  contextWissel: false,           // nieuw videosegment met dezelfde cookies (geen login); aan na meting stap 0
+  contextWissel: true,            // nieuw videosegment met dezelfde cookies, geen login (gemeten 02-11: blijft ingelogd)
   segmentMin: 30,                 // videosegment
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is

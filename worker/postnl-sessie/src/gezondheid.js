@@ -3,26 +3,29 @@
 // Na elke taak (geslaagd of niet) bekijkt de sessiehouder de pagina en de fout:
 //   gezond      niets aan de hand
 //   verlopen    PostNL stuurt naar de loginpagina: de sessie is afgelopen
-//   gegooid     de pagina herlaadde of sprong terug naar de startpagina zonder login
-//               (iemand anders logde in met dezelfde login, of PostNL zette de sessie terug)
+//   gegooid     de pagina herlaadde, of staat na de taak op de startpagina ("OOM PD Proces")
+//               in plaats van op het scherm van de taak. Gemeten op 02-11: zodra een andere sessie
+//               met dezelfde login in Mendix werkt, zet PostNL deze terug naar de startpagina; hij
+//               blijft ingelogd en het Planning-menu blijft zichtbaar.
 //   blokkade    het IP is geblokkeerd (Akamai)
 //   browser_weg de browser of het tabblad is gesloten of gecrasht
 //   database    de taak faalde op de database, niet op PostNL: de sessie is in orde
 //   fout        iets anders
-// De precieze herkenning van `gegooid` is bevestigd op de opnames van stap 0 (POSTNL_SESSIE.md).
+// De herkenning van `gegooid` komt uit de meting van stap 0 (POSTNL_SESSIE.md § Meting).
 
 export const isLoginUrl = (url) => /loginpostnl|\/login(?:\.html)?(?:[?#/]|$)|\/authorize/i.test(String(url ?? ''))
 
 const BROWSER_WEG = /has been closed|Target closed|browser has disconnected|Browser closed|crash/i
 const HERLADEN = /Execution context was destroyed|frame was detached|Navigation.*interrupted|herlaadde|PageReload/i
 
-export function classificeer({ url = '', depotHost = null, fout = null, planningZichtbaar = null, blokkade = false } = {}) {
+export function classificeer({ url = '', depotHost = null, fout = null, planningZichtbaar = null, opStartpagina = false, blokkade = false } = {}) {
   if (blokkade || fout?.name === 'ProxyBlokkadeError') return 'blokkade'
   if (fout?.database) return 'database'
   const tekst = String(fout?.message ?? '')
   if (BROWSER_WEG.test(tekst)) return 'browser_weg'
   if (isLoginUrl(url)) return 'verlopen'
   if (HERLADEN.test(tekst)) return 'gegooid'
+  if (opStartpagina) return 'gegooid'
   let host = null
   try { host = new URL(url).hostname } catch {}
   if (depotHost && host === depotHost && planningZichtbaar === false) return 'gegooid'

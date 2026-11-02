@@ -135,9 +135,10 @@ export class Sessie {
   async nieuwSegment() {
     const state = await this.context.storageState()
     const oud = { context: this.context, page: this.page, dir: this.videoDir }
+    // Altijd één tabblad: eerst het oude sluiten, dan pas het nieuwe openen (zelfde cookies).
     await oud.context.tracing.stop().catch(() => {})
-    await this.#nieuweContext(state)
     await oud.context.close().catch(() => {})
+    await this.#nieuweContext(state)
     await this.#bewaarVideo(oud.page, oud.dir, this.incidentInSegment)
     this.incidentInSegment = false
     this.segmentOm = Date.now()

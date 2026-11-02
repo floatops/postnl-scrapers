@@ -6,7 +6,7 @@ import { classificeer, herstel } from './gezondheid.js'
 import { voorDatum, voegAanvraagToe, aanvraagKlaar } from './dagstatus.js'
 import { moetVernieuwen } from './levensduur.js'
 import { vandaagNl } from '../../credentials-shared/src/postnl/tekst.js'
-import { SEL_PLANNING } from '../../credentials-shared/src/postnl/login.js'
+import { SEL_PLANNING, opStartpagina } from '../../credentials-shared/src/postnl/login.js'
 
 const MIN = 60_000
 const POLL_MS = 15_000   // zo vaak kijken of er een planner-opdracht is, ook als er niets te doen is
@@ -140,8 +140,11 @@ export async function draaiDepot(deps) {
       // Hoe staat de sessie ervoor, ook na een geslaagde taak?
       const page = sessie?.page
       const planningZichtbaar = page ? await page.locator(SEL_PLANNING).first().isVisible().catch(() => false) : null
+      // Elke taak eindigt op zijn eigen scherm. Staat de pagina dan op de startpagina, dan heeft
+      // PostNL de sessie teruggezet (een andere sessie werkt met dezelfde login).
+      const startpagina = page ? await (deps.opStartpagina ?? opStartpagina)(page) : false
       const soort = !sessie ? (fout ? classificeer({ fout }) : 'gezond')
-        : classificeer({ url: page?.url?.() ?? '', depotHost: sessie.depotHost, fout, planningZichtbaar: fout ? planningZichtbaar : null })
+        : classificeer({ url: page?.url?.() ?? '', depotHost: sessie.depotHost, fout, planningZichtbaar: fout ? planningZichtbaar : null, opStartpagina: startpagina })
       const actie = herstel(soort, { recent, logins, nu: klok.nu(), cfg })
       recent.push({ soort, at: klok.nu() })
       if (recent.length > 20) recent.shift()

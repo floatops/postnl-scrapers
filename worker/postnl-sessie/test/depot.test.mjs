@@ -48,6 +48,7 @@ function opzet({ start = '2026-11-02T10:00:00+01:00', handlers, opdrachten = () 
     maakSessie: nepSessies(log),
     handlers,
     ctx: {},
+    opStartpagina: async () => nepSessies.laatste?.startpagina === true,
     schatting: () => null,
     melden: async (m) => { meldingen.push(m) },
     naRun: async (r) => { runs.push(r) },
@@ -95,6 +96,19 @@ test('eruit gegooid: eerst opnieuw openen in dezelfde sessie, tweede keer binnen
   assert.deepEqual(o.gebeurtenissen.slice(0, 2).map(g => g.actie), ['opnieuw_openen', 'nieuwe_login'])
   assert.ok(o.meldingen.some(m => m.soort === 'gegooid'), 'eruit gegooid wordt altijd gemeld')
   assert.ok(o.log.includes('dicht:1:gegooid'))
+})
+
+test('teruggezet naar de startpagina na een geslaagde taak: gegooid, gemeld, eerst opnieuw openen', async () => {
+  let n = 0
+  const o = opzet({ duurMin: 2, handlers: { ritmonitor: async (ctx, dag) => {
+    nepSessies.laatste.startpagina = ++n === 1
+    return { ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } }
+  } } })
+  await draaiDepot(o.deps)
+  assert.equal(o.gebeurtenissen[0].soort, 'gegooid')
+  assert.equal(o.gebeurtenissen[0].actie, 'opnieuw_openen')
+  assert.ok(o.meldingen.some(m => m.soort === 'gegooid'))
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 1, 'geen nieuwe login bij een keer teruggezet')
 })
 
 test('databasefout: sessie blijft open, geen nieuwe login, lezing telt als mislukt', async () => {

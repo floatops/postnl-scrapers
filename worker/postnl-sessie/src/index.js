@@ -97,21 +97,44 @@ async function main() {
   }
 
   log.log(`Sessiehouder gestart voor ${depots.length} depot(s), houder ${houder}`)
-  const uitkomsten = await Promise.allSettled(depots.map(depot => draaiDepot({
-    depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun,
-    stop: () => stop,
-    schatting: () => schattingen[depot.naam] ?? null,
-    telRitmonitor: (d, r) => teller.tel(d, r),
-    handlers: HANDLERS,
-    ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor },
-    maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),
-  })))
-  for (const [i, u] of uitkomsten.entries()) {
-    if (u.status === 'rejected') {
-      exitCode = exitCode || 1
-      await melden({ soort: 'depot_gestopt', depot: depots[i].naam, detail: String(u.reason?.message ?? u.reason).slice(0, 300) })
-    }
+  // Per depot één lus (één browser, één tabblad). Elke 15 minuten opnieuw kijken welke depots er
+  // zijn: een net toegevoegd depot krijgt zo zonder herstart een eigen lus.
+  const lopend = new Map()
+  const startDepot = (depot) => {
+    if (lopend.has(depot.naam)) return
+    teller.depot(depot.naam)
+    lopend.set(depot.naam, draaiDepot({
+      depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun,
+      stop: () => stop,
+      schatting: () => schattingen[depot.naam] ?? null,
+      telRitmonitor: (d, r) => teller.tel(d, r),
+      handlers: HANDLERS,
+      ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor },
+      maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),
+    }).then(
+      (uit) => ({ depot: depot.naam, uit }),
+      async (err) => {
+        exitCode = exitCode || 1
+        await melden({ soort: 'depot_gestopt', depot: depot.naam, detail: String(err?.message ?? err).slice(0, 300) })
+        return { depot: depot.naam, fout: err }
+      },
+    ))
   }
+  for (const d of depots) startDepot(d)
+  const depotCheck = setInterval(async () => {
+    if (stop) return
+    try {
+      const nu = await getDepots(supabase, KLANT_ID, 'postnl')
+      for (const d of nu) if (!lopend.has(d.naam)) { log.log(`Nieuw depot ${d.naam}: eigen sessie gestart`); startDepot(d) }
+    } catch (err) { log.warn(`Depots opnieuw lezen mislukt: ${err.message}`) }
+  }, 15 * 60_000)
+  // Wachten tot alle lussen klaar zijn, ook die er onderweg bij kwamen.
+  while (true) {
+    const aantal = lopend.size
+    await Promise.all(lopend.values())
+    if (lopend.size === aantal) break
+  }
+  clearInterval(depotCheck)
   await teller.flush()
   clearInterval(codeCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
 }

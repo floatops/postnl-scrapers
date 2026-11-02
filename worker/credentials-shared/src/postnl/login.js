@@ -7,6 +7,13 @@ export const SEL_LOGIN_VELD = 'input[type="text"], input[type="email"]'
 export const SEL_PLANNING = 'a.mx-name-menuBar1-2, a[title="Planning"]'
 export const SEL_DAGPLANNING = 'a.mx-name-menuBar1-2-0, a[title="Dagplanning"]'
 export const SEL_DAG = 'select.form-control'
+// De startpagina van het portaal ("Homepage", tekst "OOM PD Proces"). Hier zet PostNL een sessie
+// naartoe terug als een andere sessie met dezelfde login in Mendix werkt (meting 02-11, #562):
+// nog ingelogd, Planning-menu zichtbaar, maar het scherm van de taak is weg.
+export const TEKST_STARTPAGINA = 'OOM PD Proces'
+export async function opStartpagina(page) {
+  return page.getByText(TEKST_STARTPAGINA, { exact: true }).first().isVisible().catch(() => false)
+}
 
 export const isLoginPagina = (url) => /loginpostnl|\/login|\/authorize/.test(String(url ?? ''))
 

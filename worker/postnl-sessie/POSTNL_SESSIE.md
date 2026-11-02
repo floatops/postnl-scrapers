@@ -1,6 +1,6 @@
 # postnl-sessie (de sessiehouder)
 
-Per klant één proces op de VPS dat per depot **één PostNL-sessie** open houdt zolang er werk is, in één tabblad. Daarin lopen de ochtendlezing, de definitieve lezing per shift en de ritmonitor achter elkaar, zodat workers elkaar nooit meer wegduwen (PostNL verdraagt per login maar één sessie, #361). Aanleiding en plan: floatops/matransport#562.
+Per klant één proces op de VPS dat per depot **één PostNL-sessie** open houdt zolang er werk is, in één tabblad. Elk depot heeft een eigen browser met één tabblad (eigen login, eigen slot); een depot dat later in de inloggegevens bijkomt, krijgt binnen 15 minuten een eigen sessie, zonder herstart. Daarin lopen de ochtendlezing, de definitieve lezing per shift en de ritmonitor achter elkaar, zodat workers elkaar nooit meer wegduwen (PostNL verdraagt per login maar één sessie, #361). Aanleiding en plan: floatops/matransport#562.
 
 ## Wanneer doet hij wat
 
@@ -21,6 +21,20 @@ Ligt de volgende taak verder dan `sluitNaLeegMin` (10 min) weg, dan gaat de sess
 - **Eén schrijver** (`postnl/schrijver.js`), ook voor het losse dagplanning-script: sleutel ritnummer + kanaal (#560), altijd `klant_id`, geen dubbelen verwijderen, alleen wijzigingen, een databasefout gooit. Een rit zonder bekend kanaal wordt niet geschreven (een gok tussen HD en AD gaf #560) en komt als fout in de run-log.
 - **Chauffeur koppelen** doet de database (trigger `trg_rit_chauffeur_koppeling`, matransport-migratie `20261102140635`).
 
+## Meting stap 0 (02-11, beide depots)
+
+Op de VPS met `scripts/meet.mjs --zonder-levensduur`, opnames in `/var/log/workers/postnl/opnames/meting/2026-11-02/`.
+
+| Vraag | Uitkomst | Gevolg |
+|---|---|---|
+| Nieuwe browser-context met dezelfde cookies en hetzelfde IP | blijft ingelogd, Planning-menu zichtbaar; de oude sessie ook | `contextWissel` staat standaard aan: elke 30 min een nieuw videosegment zonder login |
+| `loginpostnl.net/myapps` in hetzelfde tabblad | opent zonder login; daarna is het depot nog ingelogd | depot-URL kan later in de sessie (stap 3) |
+| Tweede login (ander IP), beide sessies herladen alleen de startpagina | beide blijven ingelogd (0, 30 en 90 s) | een tweede login gooit niet meteen iemand eruit |
+| Tweede login, beide sessies werken in Mendix (Dagplanning openen, shift kiezen) | de ándere sessie staat daarna op de **startpagina** ("Homepage", "OOM PD Proces"); nog ingelogd, Planning-menu zichtbaar | dit is "eruit gegooid": herkend via `opStartpagina()` na elke taak (`gezondheid.js`) |
+| Levensduur | niet overdag gemeten (houdt het slot uren vast) | meet de sessiehouder zelf (`einde_reden = 'verlopen'`) |
+
+Eén tabblad per depot: bij een nieuw segment gaat eerst het oude tabblad dicht en dan pas het nieuwe open.
+
 ## Herstel (`src/gezondheid.js`)
 
 Na elke taak, geslaagd of niet, wordt de sessie beoordeeld:
@@ -28,7 +42,7 @@ Na elke taak, geslaagd of niet, wordt de sessie beoordeeld:
 | Soort | Herkend aan | Herstel |
 |---|---|---|
 | `verlopen` | loginpagina | meteen nieuwe login, nieuw IP |
-| `gegooid` | pagina herlaadde / startpagina zonder Planning-menu | 1e keer opnieuw openen, 2e keer binnen 2 min nieuwe login; altijd een melding (er hoort niemand anders in te loggen) |
+| `gegooid` | pagina herlaadde, of na de taak de startpagina ("OOM PD Proces") in plaats van het scherm van de taak | 1e keer opnieuw openen, 2e keer binnen 2 min nieuwe login; altijd een melding (er hoort niemand anders in te loggen) |
 | `blokkade` | Akamai (403 of blokpagina) | IP in quarantaine (database), nieuwe login met het volgende IP |
 | `browser_weg` | browser/tabblad gesloten of gecrasht | nieuwe login |
 | `database` | `database: true` op de fout | sessie blijft; 10 s wachten |

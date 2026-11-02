@@ -43,6 +43,8 @@ export function maakRitmonitorTeller({ opslag, depots, log, intervalMs = 7 * 60_
   }
 
   return {
+    // Een depot dat er onderweg bij kwam, telt vanaf nu mee in de samenvatting.
+    depot(naam) { if (!depots.includes(naam)) depots.push(naam) },
     tel(depot, { ok, rijen = 0, leegBevestigd = false, fout = null }) {
       const p = perDepot[depot] ??= { ok: 0, maxRijen: 0, leegBevestigd: false, fouten: [] }
       if (ok) { p.ok++; p.maxRijen = Math.max(p.maxRijen, rijen); p.leegBevestigd = p.leegBevestigd || leegBevestigd }

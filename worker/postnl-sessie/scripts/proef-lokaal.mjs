@@ -13,7 +13,7 @@ process.env.OPNAME_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'opnames-'))
 const { Sessie } = await import('../src/sessie.js')
 import { classificeer } from '../src/gezondheid.js'
 import { mergeInstellingen } from '../src/instellingen.js'
-import { SEL_PLANNING } from '../../credentials-shared/src/postnl/login.js'
+import { SEL_PLANNING, opStartpagina } from '../../credentials-shared/src/postnl/login.js'
 
 const sessies = new Set()
 let gegooid = false
@@ -33,7 +33,9 @@ const server = http.createServer((req, res) => {
     if (!geldig) { res.writeHead(302, { Location: '/login?goto=index' }); return res.end() }
     res.writeHead(200, { 'Content-Type': 'text/html' })
     // "Eruit gegooid": PostNL zet de sessie terug naar de startpagina, zonder menu.
-    return res.end(gegooid ? '<h1>Homepage</h1>' : '<a class="mx-name-menuBar1-2" title="Planning" href="#">Planning</a><select class="form-control"><option>02-11-2026</option></select>')
+    // Zoals gemeten op 02-11: het menu blijft, het scherm wordt de startpagina met "OOM PD Proces".
+    const menu = '<a class="mx-name-menuBar1-2" title="Planning" href="#">Planning</a>'
+    return res.end(gegooid ? menu + '<div>Homepage</div><span>OOM PD Proces</span>' : menu + '<select class="form-control"><option>02-11-2026</option></select>')
   }
   res.writeHead(404); res.end()
 })
@@ -74,9 +76,10 @@ try {
   gegooid = true
   await s.page.reload()
   const planning = await s.page.locator(SEL_PLANNING).first().isVisible()
-  assert.equal(classificeer({ url: s.page.url(), depotHost: s.depotHost, planningZichtbaar: planning, fout: new Error('menu weg') }), 'gegooid')
+  assert.equal(planning, true, 'menu blijft zichtbaar, zoals bij PostNL')
+  assert.equal(classificeer({ url: s.page.url(), depotHost: s.depotHost, planningZichtbaar: planning, opStartpagina: await opStartpagina(s.page) }), 'gegooid')
   gegooid = false
-  console.log('✔ eruit gegooid (startpagina zonder menu) herkend')
+  console.log('✔ eruit gegooid (startpagina met menu, zoals gemeten) herkend')
 
   sessies.clear()
   await s.page.goto(url)
