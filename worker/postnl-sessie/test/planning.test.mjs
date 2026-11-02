@@ -135,3 +135,20 @@ test('instellingen: klantwaarden overschrijven, rommel valt terug op de standaar
   assert.equal(c.ochtendVanaf, '05:30')
   assert.equal('onbekend' in c, false)
 })
+
+import { nieuweDepots } from '../src/depots.js'
+
+test('depots: lopende blijven in hun sessie, alleen een nieuw depot start; dubbele of lege regels niet', () => {
+  const lopend = new Map([['Depot A', {}], ['Depot B', {}]])
+  const db = [
+    { naam: 'Depot A', url: 'https://a/index.html' },
+    { naam: 'Depot B', url: 'https://b/index.html' },
+    { naam: 'Depot C', url: 'https://c/index.html' },
+    { naam: 'Depot C', url: 'https://c/index.html' },
+    { naam: 'Depot D', url: null },
+  ]
+  assert.deepEqual(nieuweDepots(lopend, db).map(d => d.naam), ['Depot C'])
+  assert.deepEqual(nieuweDepots(new Map([...lopend, ['Depot C', {}]]), db), [], 'volgende controle: niets nieuws, dus niemand logt opnieuw in')
+  assert.deepEqual(nieuweDepots(new Map(), db.slice(0, 2)).map(d => d.naam), ['Depot A', 'Depot B'], 'bij de start: elk depot één keer')
+  assert.deepEqual(nieuweDepots(lopend, null), [])
+})

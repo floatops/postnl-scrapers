@@ -23,6 +23,7 @@ import { draaiDepot } from './depot.js'
 import { HANDLERS } from './handlers.js'
 import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
+import { nieuweDepots } from './depots.js'
 
 function vereis(naam) {
   const v = process.env[naam]
@@ -97,8 +98,8 @@ async function main() {
   }
 
   log.log(`Sessiehouder gestart voor ${depots.length} depot(s), houder ${houder}`)
-  // Per depot één lus (één browser, één tabblad). Elke 15 minuten opnieuw kijken welke depots er
-  // zijn: een net toegevoegd depot krijgt zo zonder herstart een eigen lus.
+  // Per depot één lus (één browser, één tabblad, één login). Elke 15 minuten in de database kijken
+  // welke depots er zijn (geen PostNL-login): alleen een net toegevoegd depot krijgt een eigen lus.
   const lopend = new Map()
   const startDepot = (depot) => {
     if (lopend.has(depot.naam)) return
@@ -120,12 +121,12 @@ async function main() {
       },
     ))
   }
-  for (const d of depots) startDepot(d)
+  for (const d of nieuweDepots(lopend, depots)) startDepot(d)
   const depotCheck = setInterval(async () => {
     if (stop) return
     try {
       const nu = await getDepots(supabase, KLANT_ID, 'postnl')
-      for (const d of nu) if (!lopend.has(d.naam)) { log.log(`Nieuw depot ${d.naam}: eigen sessie gestart`); startDepot(d) }
+      for (const d of nieuweDepots(lopend, nu)) { log.log(`Nieuw depot ${d.naam}: eigen sessie gestart`); startDepot(d) }
     } catch (err) { log.warn(`Depots opnieuw lezen mislukt: ${err.message}`) }
   }, 15 * 60_000)
   // Wachten tot alle lussen klaar zijn, ook die er onderweg bij kwamen.
