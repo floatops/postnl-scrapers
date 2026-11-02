@@ -127,11 +127,20 @@ async function loginPostnl(page, depot) {
 
 // Opent een sessie; is het IP geblokkeerd, dan meteen opnieuw met het volgende IP
 // uit de pool (tot MAX_BLOKKADES_PER_OPEN). Andere fouten gaan direct door.
+// Chromium kan zonder aanleiding crashen ("Target page, context or browser has been closed";
+// 02-11 vier keer, alle browsers tegelijk, oorzaak onbekend). Dan één keer opnieuw.
+export const browserWeg = (err) => /has been closed|Target closed|browser has disconnected|Browser closed/i.test(String(err?.message ?? ''))
+
 async function openDepotSessie(depot) {
+  let crashes = 0
   for (let poging = 1; ; poging++) {
     try {
       return await openDepotSessieEenmaal(depot)
     } catch (err) {
+      if (browserWeg(err) && crashes++ < 1) {
+        console.warn(`[${depot.naam}] Browser gecrasht bij het openen — één keer opnieuw`)
+        continue
+      }
       if (!(err instanceof ProxyBlokkadeError) || poging >= MAX_BLOKKADES_PER_OPEN) throw err
       console.warn(`[${depot.naam}] ⛔ IP geblokkeerd (${err.message}) — opnieuw met het volgende IP (${poging}/${MAX_BLOKKADES_PER_OPEN})`)
     }
@@ -269,7 +278,8 @@ async function syncMonitorDepot(depot) {
   }
 
   try {
-    await page.waitForTimeout(1000)
+    // Crasht de browser hier al, dan vangt de eerste lezing hieronder dat op (nieuwe sessie).
+    await page.waitForTimeout(1000).catch(() => {})
     // Herhaald lezen tot het venster om is (zie CONFIG.vensterSec). Elke lezing
     // navigeert opnieuw naar de Ritmonitor via het bewezen pad (openRitmonitor:
     // inclusief OAuth-herlogin) i.p.v. een onbekende ververs-knop in de grid.
@@ -291,6 +301,18 @@ async function syncMonitorDepot(depot) {
         console.error(`[${depot.naam}] Lezing ${lezingen + 1} mislukt (${foutenAchtereen}/${CONFIG.maxFoutenAchtereen} achter elkaar): ${error.message.split('\n')[0]}`)
         // Geblokkeerd IP (alleen met de pool): niet wachten en opnieuw proberen op
         // hetzelfde IP, maar direct een sessie met het volgende IP.
+        // Browser gecrasht: niet wachten en opnieuw proberen in een dode browser, maar direct een
+        // nieuwe sessie (#562).
+        if (browserWeg(error)) {
+          try {
+            await vervangSessie(`browser gecrasht: ${error.message.split('\n')[0]}`)
+            continue
+          } catch (sessieErr) {
+            if (lezingen === 0) throw sessieErr
+            console.error(`[${depot.naam}] Nieuwe sessie na crash ook mislukt: ${sessieErr.message.split('\n')[0]}`)
+            break
+          }
+        }
         if (proxyPoolAan() && await uitkomstBijFout(error, page) === 'blokkade') {
           console.warn(`[${depot.naam}] ⛔ IP-BLOKKERING tijdens lezen — direct naar het volgende IP`)
           try {
