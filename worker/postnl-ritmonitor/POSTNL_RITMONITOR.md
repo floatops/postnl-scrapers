@@ -6,6 +6,13 @@ Zelfstandige worker (`worker/postnl-ritmonitor/`) die live bezorgvoortgang uit h
 
 **Ja — dit is ook de worker die bepaalt hoeveel uur een chauffeur gewerkt heeft** (zie [Werkuren](#werkuren--start-eind-werktijd) hieronder), maar niet als enige/primaire bron: Financiën (in de app-repo) gebruikt bij voorkeur `ritten.postnl_uren` (uit het AI-gescande dagrapport) en valt pas terug op de ritmonitor-tijden zolang er nog geen dagrapport gescand is.
 
+## Waar de code staat (sinds floatops/matransport#562)
+
+Openen, uitlezen en schrijven staan in `src/ritmonitor.js` (`maakRitmonitor()`, plus de pure `planMonitor()` en `rijenUitScherm()` met tests in `test/ritmonitor.test.js`). `src/index.js` is het losse script dat elke 7 minuten draait; de sessiehouder (`worker/postnl-sessie`) gebruikt dezelfde module. Wijzig het lezen of schrijven dus alleen in `ritmonitor.js`.
+
+- **Een rit is uniek op ritnummer + kanaal** (leeg = HD), zoals de unieke index van matransport#560. Rit 307 in Den Hoorn rijdt 's ochtends als HD en 's avonds als AD; tot #562 koppelde de ritmonitor alleen op ritnummer, waardoor de avondrit de stops en eindtijd van de ochtendrit overschreef. Ook de "verdwenen uit de grid"-stap rekent per ritnummer + kanaal. `ritmonitor_log` krijgt het kanaal mee (kolom uit #560; op een stack zonder die kolom faalt het loggen luid).
+- **Een databasefout is niet meer stil.** Mislukt een update, insert of log, dan gooit `opslaanMonitor()` een fout met `database: true`. Het script telt de lezing dan als mislukt, maar vervangt de browsersessie niet (het lag niet aan PostNL). Een mislukte chauffeurkoppeling komt in `worker_run_log.foutmelding` en laat de run niet hangen.
+
 ## Wat het schrijft
 
 Per rit, in de `ritten`-tabel:

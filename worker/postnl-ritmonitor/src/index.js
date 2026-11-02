@@ -26,8 +26,7 @@ import {
   kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout,
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
-import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd.js'
-import { teSchrijven } from './wijzigingen.js'
+import { maakRitmonitor } from './ritmonitor.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 
@@ -89,59 +88,6 @@ function vandaagNl() {
   }).formatToParts(new Date())
   const map = Object.fromEntries(parts.map(p => [p.type, p.value]))
   return `${map.year}-${map.month}-${map.day}`
-}
-
-function normaliseerRitnummer(value) {
-  const digits = String(value || '').match(/\d+/)?.[0] || ''
-  return digits ? String(parseInt(digits, 10)) : ''
-}
-
-// Reserve-ritten: 4-cijferig ritnummer, of het "shift"-cijfer (het eerste cijfer
-// van het ritnummer) is '9' — PostNL's eigen conventie voor reservechauffeurs
-// zonder vaste dienst. shift_tijden (matransport) kent alleen shift 1-6, dus een
-// reserve-rit heeft nooit een geldige shift-begintijd — de begintijd komt in
-// plaats daarvan uit de eerst gelezen "laatste actie"-tijd, niet het loutere
-// detectiemoment (zie opslaanMonitorInSupabase hieronder).
-function isReserveRitnummer(ritnummer) {
-  const s = String(ritnummer || '')
-  return s.length === 4 || s.charAt(0) === '9'
-}
-
-// Ad-ritten (avondritten): kanaal-code 'AD' uit de Ritmonitor-kolom "Kanaal".
-// Hebben geen shift (geen shift_tijden-data voor avondritten) en een vaste
-// begintijd van 17:00.
-function isAdKanaal(kanaal) {
-  return kanaal === 'AD'
-}
-
-function toNumber(value) {
-  if (!value) return null
-  const n = Number(String(value).trim().replace(/\./g, '').replace(',', '.'))
-  return Number.isFinite(n) ? n : null
-}
-
-// Zet een "HH:MM"-tijd uit shift_tijden (NL-lokaal) om naar een UTC ISO-string.
-// Shift-tijden komen uit de e-mail (altijd NL-lokale wandkloktijd, niet van
-// PostNL's Mendix-grid) — dus hier geen heuristiek nodig: gewoon de offset
-// van Europe/Amsterdam op die datum aftrekken.
-function shiftTijdNaarIso(datum, tijd) {
-  if (!datum || !tijd) return null
-  const m = String(tijd).match(/(\d{1,2}):(\d{2})/)
-  if (!m) return null
-  const asUtc = new Date(`${datum}T${m[1].padStart(2, '0')}:${m[2]}:00Z`)
-  if (Number.isNaN(asUtc.getTime())) return null
-  const offsetNaam = new Intl.DateTimeFormat('en', { timeZone: 'Europe/Amsterdam', timeZoneName: 'longOffset' })
-    .formatToParts(asUtc).find(p => p.type === 'timeZoneName')?.value || ''
-  const om = offsetNaam.match(/([+-])(\d{2}):(\d{2})/)
-  const offsetMin = om ? (om[1] === '-' ? -1 : 1) * (Number(om[2]) * 60 + Number(om[3])) : 0
-  return new Date(asUtc.getTime() - offsetMin * 60000).toISOString()
-}
-
-// "Tijdstip laatste actie" (HH:MM) → ISO-timestamp, in dezelfde tijdzone als de
-// browser-context rendert (timezoneId in openDepotSessie). Zie src/eindtijd.js
-// voor waarom hier niet meer tussen UTC en NL-lokaal gegokt wordt.
-function nlTijdstipNaarIso(datum, tekst, nuMs = Date.now()) {
-  return tijdstipNaarIso(datum, tekst, nuMs, CONFIG.timezone)
 }
 
 // detecteerBlok() (Akamai-/WAF-pagina herkennen) staat sinds #173 in
@@ -254,383 +200,11 @@ async function openInBrowser(browser, depot) {
   return { context, page }
 }
 
-// Koppelt chauffeur_id aan postnl_chauffeur — en corrigeert 'm ook als 'ie al
-// gezet was (geen .is('chauffeur_id', null) meer, sinds 2026-08-24). Een rit
-// mag nooit een andere chauffeur_id hebben dan wie PostNL's eigen data zegt
-// dat er reed — dat veld bepaalt wie voor de stops betaald krijgt. Zonder
-// deze correctie bleef een rit voor altijd aan de eerst-gekoppelde chauffeur
-// hangen, ook als er in werkelijkheid een chauffeurwissel was (bv. rit 333 op
-// 12 aug 2026: chauffeur_id wees naar Mulubrhan Haile terwijl postnl_chauffeur
-// al lang "Saboune, Y." zei — nooit gecorrigeerd doordat de oude .is(null)
-// -guard elke volgende sync blokkeerde).
-//
-// Dit botst niet met de oorspronkelijke reden voor die guard (issue #71: een
-// handmatige herindeling via RitForm/RitDetail mag niet worden teruggedraaid)
-// — .eq('postnl_chauffeur', u.postnl_naam) matcht sowieso nooit een rit met
-// postnl_chauffeur = null, en dat is precies het geval bij @Home/freelance-
-// ritten (geen PostNL-account, dus nooit een postnl_chauffeur-waarde) waar
-// handmatige chauffeur-wissel voor bedoeld is. Regulier gescrapete ritten
-// hébben altijd een postnl_chauffeur-waarde zodra ze in de Ritmonitor-grid
-// verschijnen, en daar is die waarde leidend.
-async function koppelChauffeurs() {
-  const klantId = KLANT_ID
-  const { data: users } = await supabase
-    .from('users').select('id, postnl_naam')
-    .eq('klant_id', klantId)
-    .not('postnl_naam', 'is', null).neq('postnl_naam', '')
-  if (!users?.length) return
-  let totaal = 0
-  for (const u of users) {
-    // .or(...) matcht alleen rijen die écht een andere chauffeur_id nodig
-    // hebben (null, of een andere waarde) — puur om onnodige writes en een
-    // opgeblazen "X bijgewerkt"-log te vermijden. Niet nodig voor correctheid:
-    // de DB-trigger trg_notify_rit_toegewezen (migration_v139) no-opt zelf al
-    // bij een ongewijzigde waarde, dus een overbodige write zou sowieso geen
-    // dubbele pushmelding veroorzaken.
-    const { data } = await supabase.from('ritten')
-      .update({ chauffeur_id: u.id })
-      .eq('klant_id', klantId)
-      .eq('postnl_chauffeur', u.postnl_naam)
-      .or(`chauffeur_id.is.null,chauffeur_id.neq.${u.id}`)
-      .select('id')
-    totaal += data?.length ?? 0
-  }
-  if (totaal > 0) console.log(`Chauffeurs gekoppeld/gecorrigeerd: ${totaal} ritten bijgewerkt`)
-}
-
-// ---- Ritmonitor-specifiek ---------------------------------------
-
-// Navigeert naar Planning → Ritmonitor. De Riteigenaar-grid (M&A Transport)
-// is daar al geselecteerd — daar NIET op klikken, anders deselecteer je 'm.
-async function openRitmonitor(page, depot) {
-  const depotUrl = depot.url
-  const planningLoc = () => page.locator('a.mx-name-menuBar1-2, a[title="Planning"]').first()
-  const isOAuth = () => page.url().includes('loginpostnl') || page.url().includes('/authorize')
-
-  // Mendix start de OAuth-redirect soms pas ná de goto (tijdens het laden van de app),
-  // waardoor een URL-check na goto het mist. Oplossing: poll elke seconde totdat het
-  // Planning-menu zichtbaar is of OAuth gedetecteerd wordt — dan herlogin en ga door.
-  async function waitForPlanning(maxMs = 90000) {
-    const deadline = Date.now() + maxMs
-    let herlogins = 0
-    while (Date.now() < deadline) {
-      if (isOAuth()) {
-        if (herlogins >= 3) throw new Error(`Planning-menu niet bereikbaar na ${herlogins} herlogins`)
-        herlogins++
-        console.log(`[${depot.naam}] OAuth-redirect gedetecteerd (herlogin ${herlogins})...`)
-        await loginPostnl(page, depot)
-        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
-        await page.waitForTimeout(2000)
-        continue
-      }
-      if (await planningLoc().isVisible()) return
-      await page.waitForTimeout(1000)
-    }
-    throw new Error(`Planning-menu niet zichtbaar na ${maxMs / 1000}s (url: ${page.url()})`)
-  }
-
-  await page.goto(depotUrl, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
-  await page.waitForTimeout(2000)
-  await waitForPlanning()
-
-  await planningLoc().click()
-  await page.waitForTimeout(600)
-  await page.locator('a[title="Ritmonitor"]').first().click()
-  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
-  await page.waitForTimeout(1500)
-}
-
-// Geeft { rijen, leegBevestigd }. leegBevestigd = PostNL zegt zelf dat de lijst
-// leeg is: overview-grid gevonden, eigen riteigenaar links geselecteerd (Mendix-
-// klasse 'selected') en de teller van die grid "0 tot 0 van 0" — twee keer, 2 s
-// na elkaar. PostNL haalt afgemelde ritten uit de Ritmonitor, dus 's avonds is de
-// lijst echt leeg (sessievideo 19-10 21:00 Waddinxveen, floatops/matransport#357).
-// 0 rijen zonder die bevestiging = niet uitgelezen.
-async function leesRitmonitor(page) {
-  const eerste = await leesRitmonitorEenmaal(page)
-  if (eerste.rijen.length > 0 || !eerste.leegVolgensTeller) return { rijen: eerste.rijen, leegBevestigd: false }
-  await page.waitForTimeout(2000)
-  const tweede = await leesRitmonitorEenmaal(page)
-  return { rijen: tweede.rijen, leegBevestigd: tweede.rijen.length === 0 && tweede.leegVolgensTeller }
-}
-
-async function leesRitmonitorEenmaal(page) {
-  const result = await page.evaluate(() => {
-    function cel(row, cls) {
-      return row.querySelector(`td.${cls}`)?.getAttribute('title')?.trim() || ''
-    }
-    // De overview-grid is de tabel met kolomkop "Stops te doen" (column16).
-    // Zo onderscheiden we 'm van de Riteigenaar-grid (column5) links.
-    const tables = Array.from(document.querySelectorAll('.mx-grid-content table'))
-    const target = tables.find(t => t.querySelector('th[title="Stops te doen"]'))
-    if (!target) return { rows: [], leegVolgensTeller: false, debug: 'Ritmonitor overview-grid niet gevonden' }
-
-    // Teller van de overview-grid zelf ("0 tot 0 van 0"), niet die van de
-    // Riteigenaar-grid links (die heeft z'n eigen "1 tot 1 van 1").
-    const gridWidget = target.closest('.mx-grid')
-    const teller = gridWidget?.textContent.replace(/\s+/g, ' ').match(/(\d+)\s*tot\s*(\d+)\s*van\s*(\d+)/)
-    const totaalVolgensTeller = teller ? Number(teller[3]) : null
-    const eigenaarTabel = tables.find(t => t !== target && /riteigenaar/i.test(t.closest('.mx-grid')?.textContent || ''))
-    const eigenaarGeselecteerd = !!eigenaarTabel?.querySelector('tbody tr.selected')
-
-    // Brievenbuss kolom dynamisch opzoeken via header-titel — het kolomnummer
-    // kan per Mendix-instantie verschillen van de Overview-shift-grid.
-    const brievenbussCol = (() => {
-      const th = Array.from(target.querySelectorAll('thead th')).find(
-        h => /brievenbuss/i.test(h.getAttribute('title') || h.textContent || '')
-      )
-      return th ? Array.from(th.classList).find(c => c.startsWith('mx-name-column')) : null
-    })()
-
-    const trs = Array.from(target.querySelectorAll('tbody tr[data-id]'))
-    const mapped = trs.map(row => ({
-      kanaal:          cel(row, 'mx-name-column1'),
-      ritnaam:         cel(row, 'mx-name-column2'),
-      chauffeur:       cel(row, 'mx-name-column3'),
-      laatsteActie:    cel(row, 'mx-name-column15'),
-      stopsTotaal:     cel(row, 'mx-name-column6'),
-      stopsTeDoen:     cel(row, 'mx-name-column16'),
-      brievenbusstops: brievenbussCol ? cel(row, brievenbussCol) : '',
-    }))
-    const f = mapped[0]
-    const leegVolgensTeller = totaalVolgensTeller === 0 && eigenaarGeselecteerd
-    return { rows: mapped, leegVolgensTeller, debug: `${mapped.length} rijen, teller=${totaalVolgensTeller}, eigenaar=${eigenaarGeselecteerd}, eerste={ritnaam:"${f?.ritnaam}",totaal:"${f?.stopsTotaal}",teDoen:"${f?.stopsTeDoen}",brievenbuss:"${f?.brievenbusstops}",col:"${brievenbussCol}"}` }
-  })
-  console.log(`[DEBUG ritmonitor] ${result.debug}`)
-
-  const rijen = result.rows
-    .filter(r => r.ritnaam && /^\d{3,4}/.test(r.ritnaam) && toNumber(r.stopsTotaal) !== null)
-    .map(r => {
-      const ritnummer = normaliseerRitnummer(r.ritnaam.match(/^\d+/)?.[0] || '')
-      return {
-        ritnummer,
-        ritnaam:         r.ritnaam,
-        chauffeur:       r.chauffeur || null,
-        kanaal:          r.kanaal || null,
-        laatsteActie:    r.laatsteActie || null,
-        stopsTotaal:     toNumber(r.stopsTotaal),
-        stopsTeDoen:     toNumber(r.stopsTeDoen),
-        brievenbusstops: toNumber(r.brievenbusstops),
-        // Ad-ritten (avond, kanaal AD) krijgen geen shiftlabel — er is geen
-        // shift_tijden-data voor avondritten, en het eerste ritnummer-cijfer
-        // zou anders per ongeluk een echte shift-badge/-tijd suggereren.
-        shift:           isAdKanaal(r.kanaal) ? null : (ritnummer.charAt(0) || null),
-      }
-    })
-  return { rijen, leegVolgensTeller: result.leegVolgensTeller }
-}
-
-async function opslaanMonitorInSupabase(rijen, datum, depotNaam, leegBevestigd = false) {
-  const nu = new Date().toISOString()
-  const klantId = KLANT_ID
-
-  const { data: bestaande } = await supabase
-    .from('ritten')
-    // Elk veld dat `velden` hieronder kan zetten moet hier staan: teSchrijven()
-    // vergelijkt ermee, en een ontbrekend veld telt als "gewijzigd".
-    .select('id, ritnummer, status, shift, postnl_stops_totaal, postnl_stops_te_doen, postnl_start_werktijd, postnl_eind_werktijd, postnl_monitor_opgehaald, postnl_laatste_actie, postnl_kanaal, postnl_chauffeur, postnl_briefbusstops')
-    // klant_id erbij (#462): twee klanten op dezelfde stack kunnen hetzelfde depot
-    // hebben; zonder dit filter werkte de worker de ritten van de ander bij.
-    .eq('klant_id', klantId).eq('datum', datum).eq('depot', depotNaam)
-
-  // Eerste rij per genormaliseerd ritnummer (dedup zoals de hoofd-sync).
-  const bestaandeMap = new Map()
-  for (const r of bestaande ?? []) {
-    const key = String(parseInt(r.ritnummer, 10))
-    if (!bestaandeMap.has(key)) bestaandeMap.set(key, r)
-  }
-
-  const teUpdaten = []
-  const teInserten = []
-  const logRijen = []
-  const runContext = {
-    klant_id: klantId,
-    depot: depotNaam,
-    datum,
-    rijen_gelezen: rijen.length,
-    lege_lijst_bevestigd: leegBevestigd,
-    bestaande_ritten: bestaande?.length ?? 0,
-  }
-
-  for (const rit of rijen) {
-    const existing = bestaandeMap.get(rit.ritnummer)
-
-    // Een 0-meting pas vertrouwen als "klaar" zodra de vóórgaande poll dat ook al liet zien.
-    // Bij een net aangemaakte rij toont de Mendix-grid de "stops te doen"-cel soms eenmalig
-    // foutief 0 voordat de echte waarde laadt — zonder deze bevestiging wordt de rit dan
-    // veel te vroeg als afgerond gemarkeerd (eind_werktijd vlak na start_werktijd).
-    const stopsTeDoenBevestigdNul = rit.stopsTeDoen === 0 && existing?.postnl_stops_te_doen === 0
-
-    const velden = {
-      postnl_stops_totaal:      rit.stopsTotaal,
-      postnl_stops_te_doen:     rit.stopsTeDoen,
-      postnl_laatste_actie:     rit.laatsteActie,
-      postnl_kanaal:            rit.kanaal,
-      postnl_chauffeur:         rit.chauffeur,
-      postnl_monitor_opgehaald: nu,
-      ...(rit.brievenbusstops !== null && { postnl_briefbusstops: rit.brievenbusstops }),
-      // Status op basis van ritmonitor: ritmonitor is leidend zodra stops_te_doen bekend is.
-      ...(rit.stopsTeDoen !== null && {
-        status: stopsTeDoenBevestigdNul ? 'gereden' : 'bezig',
-      }),
-      // Zelfherstellend: `shift` wordt alleen bij het aanmaken van een rij gezet
-      // (zie teInserten hieronder), nooit meer bij latere updates — een bestaande
-      // ad-rit-rij die vóór deze fix is aangemaakt houdt anders voor altijd zijn
-      // oude/foute shiftcijfer. Op elke poll opnieuw op null zetten voor ad-ritten
-      // corrigeert dat vanzelf voor elke nog actief gepollde rit.
-      ...(isAdKanaal(rit.kanaal) && { shift: null }),
-    }
-
-    // Starttijd: eerste sync waarbij chauffeur een stop heeft afgeleverd.
-    // Reserve-ritten (isReserveRitnummer) hebben geen shift_tijden-begintijd
-    // (die tabel kent alleen shift 1-6) — voor hen gebruiken we daarom niet het
-    // loutere detectiemoment, maar de eerst gelezen "laatste actie"-tijd zelf.
-    // Ad-ritten (isAdKanaal, avond) hebben een vaste begintijd van 17:00 — er
-    // is geen shift_tijden-data voor avondritten om op terug te vallen.
-    if (
-      rit.stopsTeDoen !== null &&
-      rit.stopsTotaal !== null &&
-      rit.stopsTeDoen < rit.stopsTotaal &&
-      !existing?.postnl_start_werktijd
-    ) {
-      if (isReserveRitnummer(rit.ritnummer)) {
-        velden.postnl_start_werktijd = nlTijdstipNaarIso(datum, rit.laatsteActie, new Date(nu).getTime()) || nu
-      } else if (isAdKanaal(rit.kanaal)) {
-        velden.postnl_start_werktijd = shiftTijdNaarIso(datum, '17:00') || nu
-      } else {
-        velden.postnl_start_werktijd = nu
-      }
-    }
-
-    // Eindtijd = het laatste "Tijdstip laatste actie" dat PostNL die dag voor deze rit
-    // registreerde (zie nieuweEindtijd). Op elke poll, ongeacht status of "stops te
-    // doen" — ook ná 'gereden' loopt hij door zolang de rit in de grid staat. Vanaf de
-    // poll waarop de rit start (ook als de starttijd deze poll pas gezet wordt).
-    //
-    // Zolang status niet 'gereden' is, is dit een voorlopige waarde (chauffeur kan
-    // nog bezig zijn); de front-end toont dat onderscheid — zie RITTEN_ARCHITECTUUR.md.
-    const eindIso = nieuweEindtijd({
-      gestart: Boolean(existing?.postnl_start_werktijd || velden.postnl_start_werktijd),
-      huidigeEindIso: existing?.postnl_eind_werktijd ?? null,
-      laatsteActieIso: nlTijdstipNaarIso(datum, rit.laatsteActie, new Date(nu).getTime()),
-    })
-    if (eindIso) velden.postnl_eind_werktijd = eindIso
-
-    // Diagnostisch loggen: wat las de worker + welke beslissing nam hij voor deze rit.
-    // Alleen als er iets veranderde t.o.v. de vorige lezing — sinds het herhaald
-    // lezen (CONFIG.vensterSec) zou elke identieke herhaling het logboek anders
-    // zes keer zo snel laten groeien zonder informatie toe te voegen.
-    const actie = !existing ? 'nieuw'
-      : stopsTeDoenBevestigdNul ? 'eind-nul'
-      : velden.postnl_start_werktijd ? 'start-gezet'
-      : velden.postnl_eind_werktijd ? 'eind-bijgewerkt'
-      : 'gelezen'
-    const veranderd = !existing
-      || existing.postnl_stops_totaal !== rit.stopsTotaal
-      || existing.postnl_stops_te_doen !== rit.stopsTeDoen
-      || (existing.postnl_laatste_actie ?? null) !== (rit.laatsteActie ?? null)
-      || (velden.status != null && existing.status !== velden.status)
-      || Boolean(velden.postnl_start_werktijd || velden.postnl_eind_werktijd)
-    if (veranderd) logRijen.push({
-      ...runContext,
-      ritnummer:     rit.ritnummer,
-      stops_totaal:  rit.stopsTotaal,
-      stops_te_doen: rit.stopsTeDoen,
-      laatste_actie: rit.laatsteActie,
-      actie,
-    })
-
-    if (existing) {
-      // Alleen wat echt anders is, plus hoogstens elke 5 min de hartslag
-      // postnl_monitor_opgehaald (zie wijzigingen.js, floatops/matransport#462).
-      const diff = teSchrijven(existing, velden, new Date(nu).getTime())
-      if (diff) teUpdaten.push({ id: existing.id, velden: diff })
-    } else {
-      // Rit nog niet via Dagplanning aangemaakt → minimale rij zodat het live toch toont.
-      teInserten.push({
-        datum,
-        status:    'gepland',
-        shift:     rit.shift,
-        ritnummer: rit.ritnummer,
-        depot:     depotNaam,
-        klant_id:  klantId,
-        postnl_ritnaam: rit.ritnaam,
-        ...velden,
-      })
-    }
-  }
-
-  // ── Verdwenen-uit-grid → afronden (veilig, met dubbele-miss-bevestiging) ──
-  // PostNL haalt een rit uit de Ritmonitor-grid zodra de chauffeur klaar is.
-  // Zo'n rit bereikt "te doen = 0" vaak nooit (onbezorgbare stops blijven staan),
-  // dus de nul-detectie hierboven pakt 'm niet — zonder deze pass blijft hij eeuwig
-  // op zijn laatste "te doen"-waarde hangen en toont "bezig · N te gaan" terwijl de
-  // chauffeur allang klaar is (de bug bij o.a. rit 640).
-  //
-  // Waarom de oude simpele "verdwenen → gereden" ooit is verwijderd: een half-geladen
-  // Mendix-grid liet bezige ritten eenmalig verdwijnen → die werden dan vals afgerond.
-  // Daarom eisen we nu dat de rit al MEERDERE polls niet meer gezien is, af te leiden
-  // uit de ouderdom van postnl_monitor_opgehaald (die ververst elke keer dat we 'm
-  // lezen). Een transient half-geladen grid herstelt de volgende poll → timer reset.
-  const AFWEZIG_DREMPEL_MIN = 20   // ≈ 3 gemiste polls bij de 7-min-cron
-  const gelezenNummers = new Set(rijen.map(r => r.ritnummer))
-
-  // Alleen als deze scrape rijen opleverde, of PostNL's teller een lege lijst
-  // bevestigde (zie leesRitmonitor). Een onbevestigde lege lijst kan een
-  // mislukte/half-geladen grid zijn; dan niets afronden.
-  if (rijen.length > 0 || leegBevestigd) {
-    for (const [key, r] of bestaandeMap) {
-      if (gelezenNummers.has(key)) continue                    // nog in de grid
-      // 'gereden' is de enige "al afgerond"-check — postnl_eind_werktijd staat
-      // inmiddels vrijwel altijd al gevuld (continue update hierboven, zie
-      // 2026-08-24), dus die kan niet meer als "al klaar"-signaal dienen.
-      if (r.status === 'gereden') continue                     // al afgerond
-      if (!r.postnl_start_werktijd) continue                   // nooit begonnen
-      if (r.postnl_stops_totaal == null) continue
-      // Was hij echt onderweg? (voortgang gemaakt, niet nog volledig "te doen")
-      if (!(r.postnl_stops_te_doen != null && r.postnl_stops_te_doen < r.postnl_stops_totaal)) continue
-      // Dubbele-miss-bevestiging via ouderdom van de laatste meting.
-      const opgehaald = r.postnl_monitor_opgehaald ? new Date(r.postnl_monitor_opgehaald).getTime() : 0
-      if ((Date.now() - opgehaald) / 60000 < AFWEZIG_DREMPEL_MIN) continue
-
-      // Eindtijd: de continue update hierboven heeft de laatste registratie al
-      // opgeslagen; hier alleen nog aanvullen als dat om wat voor reden niet gebeurd is.
-      // Nooit een zelf afgeleide tijd (vroeger: het moment waarop we de rit het laatst
-      // zagen, als de registratie "onplausibel" leek) — de eindtijd bepaalt de
-      // uitbetaling en is uitsluitend wat PostNL registreerde. Is er geen registratie,
-      // dan blijft hij leeg en valt het op in Financiën.
-      const eindIso = nieuweEindtijd({
-        gestart: true,
-        huidigeEindIso: r.postnl_eind_werktijd,
-        laatsteActieIso: nlTijdstipNaarIso(datum, r.postnl_laatste_actie, new Date(nu).getTime()),
-      })
-
-      teUpdaten.push({ id: r.id, velden: {
-        status: 'gereden',
-        ...(eindIso && { postnl_eind_werktijd: eindIso }),
-        postnl_monitor_opgehaald: nu,
-      } })
-      logRijen.push({
-        ...runContext,
-        ritnummer:     key,
-        stops_totaal:  r.postnl_stops_totaal,
-        stops_te_doen: r.postnl_stops_te_doen,
-        laatste_actie: r.postnl_laatste_actie ?? null,
-        actie:         'verdwenen-afgerond',
-      })
-    }
-  }
-
-  console.log(`[${depotNaam}] Ritmonitor-run: ${rijen.length} gelezen, ${bestaande?.length ?? 0} bestaand`)
-
-  await Promise.all([
-    ...teUpdaten.map(({ id, velden }) => supabase.from('ritten').update(velden).eq('id', id)),
-    teInserten.length ? supabase.from('ritten').insert(teInserten) : Promise.resolve(),
-    logRijen.length ? supabase.from('ritmonitor_log').insert(logRijen) : Promise.resolve(),
-  ])
-
-  console.log(`[${depotNaam}] Ritmonitor ${datum}: bijgewerkt ${teUpdaten.length}, nieuw ${teInserten.length}`)
-}
+// Openen, lezen en schrijven van de Ritmonitor staan sinds floatops/matransport#562 in
+// ritmonitor.js, gedeeld met de sessiehouder (postnl-sessie). Dit script is het vangnet.
+const { koppelChauffeurs, openRitmonitor, leesRitmonitor, opslaanMonitor } = maakRitmonitor({
+  supabase, klantId: KLANT_ID, login: loginPostnl, tijdzone: CONFIG.timezone,
+})
 
 // Sessie-video naar worker-sessies (credentials-shared/src/sessieVideo.js).
 // Geslaagde sessie: {depot}-latest.webm, elke run overschreven. Mislukte of na
@@ -706,7 +280,7 @@ async function syncMonitorDepot(depot) {
         sessieLezingen++
         foutenAchtereen = 0
         console.log(`[${depot.naam}] Ritmonitor lezing ${lezingen}: ${rijen.length} ritten gelezen${leegBevestigd ? ' (lege lijst bevestigd door PostNL)' : ''}`)
-        await opslaanMonitorInSupabase(rijen, vandaag, depot.naam, leegBevestigd)
+        await opslaanMonitor(rijen, vandaag, depot.naam, leegBevestigd)
         rijenAantal = Math.max(rijenAantal, rijen.length)
       } catch (error) {
         foutenAchtereen++
@@ -734,7 +308,8 @@ async function syncMonitorDepot(depot) {
         const wachtMs = Math.min(CONFIG.foutWachtSec * 1000, deadline - Date.now())
         if (wachtMs <= 0) { if (lezingen === 0) throw error; break }
         await new Promise(r => setTimeout(r, wachtMs))
-        if (foutenAchtereen >= Math.ceil(CONFIG.maxFoutenAchtereen / 2)) {
+        // Een databasefout ligt niet aan de browser: dan de sessie niet vervangen (#562).
+        if (foutenAchtereen >= Math.ceil(CONFIG.maxFoutenAchtereen / 2) && !error.database) {
           try {
             await vervangSessie(error.message.split('\n')[0])
           } catch (sessieErr) {
@@ -893,7 +468,9 @@ async function syncRitmonitor() {
     throw new Error(`Ritmonitor: alle depots faalden (${mislukt.map(m => m.depot).join(', ')})`)
   }
 
-  await koppelChauffeurs()
+  // Koppelen mag de run niet laten hangen: een fout komt in de run-log, de lezingen blijven geldig.
+  let koppelFout = null
+  try { await koppelChauffeurs() } catch (err) { koppelFout = err.message; console.error('Chauffeurs koppelen mislukt:', err.message) }
   const depotsOk = DEPOTS.length - mislukt.length
   await eindeRunLog(runLogId, {
     status: mislukt.length ? 'deels_mislukt' : 'ok',
@@ -903,6 +480,7 @@ async function syncRitmonitor() {
     lezingen: lezingenPerDepot,
     leeg_onbevestigd: leegOnbevestigd,
     video_paths: videoPaths.length ? videoPaths : null,
+    ...(koppelFout && { foutmelding: `Chauffeurs koppelen mislukt: ${koppelFout}` }),
   })
   if (mislukt.length) {
     console.warn(`Ritmonitor: gedeeltelijk gesynchroniseerd — overgeslagen: ${mislukt.map(m => m.depot).join(', ')}`)
