@@ -30,7 +30,8 @@ export function schermKanaal(antwoorden) {
 // `velden` bevat alleen kolommen die PostNL in deze antwoorden meestuurde. Het kanaal komt uit de
 // RideID, anders uit het kanaal van het scherm; is dat ook onbekend, dan is `kanaal` null en
 // schrijft de schrijver de rit niet (een gok tussen HD en AD gaf #560).
-export function dagplanningRitten(antwoorden) {
+// `negeer`: guids van ritten die bij een andere dag horen (dagVenster in dagplanningScherm.js).
+export function dagplanningRitten(antwoorden, { negeer = new Set() } = {}) {
   const kanaalScherm = schermKanaal(antwoorden)
   const ritten = objectenOver(antwoorden, T.rit)
   const nummers = objectenOver(antwoorden, T.nummer)
@@ -40,7 +41,7 @@ export function dagplanningRitten(antwoorden) {
   const uit = new Map()
   for (const n of nummers.values()) {
     const rit = ritten.get(n['OperationalPlanning.RideNumber_Ride'])
-    if (!rit) continue
+    if (!rit || negeer.has(rit.guid) || negeer.has(n.guid)) continue
     const delen = ritIdDelen(rit.RideID ?? n.RideID)
     const ritnummer = delen?.ritnummer ?? normaliseerRitnummer(rit.RideName)
     if (!ritnummer) continue

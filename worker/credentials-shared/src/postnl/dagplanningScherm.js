@@ -9,6 +9,7 @@
 // het openen gelezen, nog leeg, waarna de dagplanning Waddinxveen 6 uur lang stil oversloeg.
 // Een ontbrekende dag is nu een fout (`dagOntbreekt`), nooit een stille overslag.
 import { SEL_DAG } from './login.js'
+import { objectenOver } from './mendix.js'
 
 export const SEL_SHIFTS = '.mx-name-Shift_Grid_1'
 
@@ -43,6 +44,34 @@ export async function wachtOpObject(antwoorden, vanaf, objectType, ms) {
   return false
 }
 
+// Wacht tot er `stilMs` geen nieuw antwoord meer binnenkwam (hooguit `ms`). Kijkt naar
+// binnengekomen antwoorden, niet naar openstaande vragen (bij Den Hoorn blijft er één openstaan).
+export async function wachtTotStil(antwoorden, { stilMs = 2000, ms = 15_000 } = {}) {
+  const eind = Date.now() + ms
+  let aantal = antwoorden.length
+  let sinds = Date.now()
+  while (Date.now() < eind) {
+    await slaap(250)
+    if (antwoorden.length !== aantal) { aantal = antwoorden.length; sinds = Date.now() }
+    else if (Date.now() - sinds >= stilMs) return true
+  }
+  return false
+}
+
+// De antwoorden van de gekozen dag. `geopend` = aantal antwoorden vóór het openen van de
+// Dagplanning, `vanaf` = wat kiesDag teruggaf. Stond er eerst een andere dag open (rond middernacht
+// de volgende dag), dan komen ritten van die dag soms pas ná het wisselen binnen (Den Hoorn 03-11:
+// rit 114 van 03-11 in het venster van 02-11). Die ritten waren dan al vóór het wisselen gemeld:
+// `negeer` bevat ze, zodat de lezer ze overslaat.
+export function dagVenster(antwoorden, { geopend, vanaf }) {
+  if (vanaf == null) return { antwoorden: antwoorden.slice(geopend), negeer: new Set() }
+  const vooraf = antwoorden.slice(geopend, vanaf)
+  return {
+    antwoorden: antwoorden.slice(vanaf),
+    negeer: new Set([...objectenOver(vooraf, 'OperationalPlanning.Ride').keys(), ...objectenOver(vooraf, 'OperationalPlanning.RideNumber').keys()]),
+  }
+}
+
 // De dagen in de keuzelijst, pas als die gevuld is (hooguit `ms`).
 export async function dagenInKeuzelijst(page, ms = 20_000) {
   await page.waitForFunction((sel) => {
@@ -54,9 +83,9 @@ export async function dagenInKeuzelijst(page, ms = 20_000) {
 
 // Kiest de dag (label "DD-MM-JJJJ") en wacht tot de shifts van die dag binnen zijn.
 // Geeft { vanaf }: de index in `antwoorden` waar de data van deze dag begint als er opnieuw
-// gekozen moest worden, anders null (dan stond de dag al open en hoort alles sinds het openen
-// erbij). Rond middernacht staat de volgende dag al standaard open: de antwoorden van dát laden
-// horen niet bij de gekozen dag (02-11: de aantallen van 03-11 kwamen zo in de ritten van 02-11).
+// gekozen moest worden, anders null (dan stond de dag al open). Gebruik het met dagVenster.
+// Rond middernacht staat de volgende dag al standaard open: eerst die dag laten uitladen, dan pas
+// wisselen (03-11 00:10: de aantallen van 03-11 kwamen zo in de ritten van 02-11).
 export async function kiesDag(page, label, antwoorden, { ms = 20_000 } = {}) {
   const staatErin = await page.waitForFunction(({ sel, l }) => {
     const el = document.querySelector(sel)
@@ -67,6 +96,7 @@ export async function kiesDag(page, label, antwoorden, { ms = 20_000 } = {}) {
   const huidig = await keuzelijst.evaluate(el => el.options[el.selectedIndex]?.label.trim()).catch(() => null)
   let vanaf = null
   if (huidig !== label) {
+    await wachtTotStil(antwoorden, { ms })
     vanaf = antwoorden.length
     await keuzelijst.selectOption({ label })
     await wachtOpObject(antwoorden, vanaf, 'OperationalPlanning.Shift', ms)

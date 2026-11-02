@@ -5,6 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { dagplanningRitten, shiftsUit } from '../src/postnl/ritten.js'
 import { planRitten, ritSleutel, schrijfDagplanning } from '../src/postnl/schrijver.js'
+import { dagVenster } from '../src/postnl/dagplanningScherm.js'
 import { decimaalTekst, normaliseerDuur, ritIdDelen, deadlineUitTekst, getalUit } from '../src/postnl/tekst.js'
 
 const w = (value) => ({ value, readonly: true })
@@ -163,25 +164,35 @@ test('schrijfDagplanning: lezen en bijwerken altijd met klant_id; een databasefo
 })
 
 // 03-11 00:10: de volgende dag stond standaard open, daarna werd 02-11 gekozen. Zonder RideID
-// (datum null) had rit 448 twee versies; de schrijver nam de eerste (138 stops van 03-11).
-test('dagwissel: alleen de antwoorden na het kiezen van de dag tellen; twee versies worden niet geschreven', () => {
+// (datum null) had rit 448 twee versies; de schrijver nam de eerste (138 stops van 03-11). Bij
+// Den Hoorn kwam rit 114 van 03-11 bovendien pas ná het wisselen nog een keer binnen.
+test('dagwissel: alleen ritten van de gekozen dag tellen, ook als de vorige dag laat binnenkomt', () => {
   const dag = (ritGuid, stops, geautoriseerd) => ({ objects: [shiftObj('s3', '03'), ritNummer({
     guid: `n-${ritGuid}`, ritGuid, rideId: null, naam: '448', chauffeur: 'Jansen J', shiftGuid: 's3',
     stops, stuks: 200, volume: '1.5', gewicht: '300', brief: 0, duur: '5u', geautoriseerd,
   })] })
-  const antwoorden = [dag('morgen', 138, false), dag('vandaag', 122, true)]
-  const vanaf = 1 // kiesDag: hier begon het laden van de gekozen dag
+  const eerder = { objects: [] }                     // van vóór het openen van de Dagplanning
+  const antwoorden = [eerder, dag('morgen', 138, false), dag('vandaag', 122, true), dag('morgen', 138, false)]
+  const keuze = { geopend: 1, vanaf: 2 }             // standaarddag geladen, daarna 02-11 gekozen, late 03-11
   // Zonder RideID komt het kanaal van het scherm (Thuisbezorging).
-  const lees = (lijst) => dagplanningRitten(lijst).map(r => ({ ...r, kanaal: 'HD' }))
+  const lees = (lijst, opties) => dagplanningRitten(lijst, opties).map(r => ({ ...r, kanaal: 'HD' }))
 
-  const goed = planRitten({ bestaande: [], gelezen: lees(antwoorden.slice(vanaf)), klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
+  const venster = dagVenster(antwoorden, keuze)
+  const goed = planRitten({ bestaande: [], gelezen: lees(venster.antwoorden, { negeer: venster.negeer }), klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
   assert.equal(goed.inserts.length, 1)
   assert.equal(goed.inserts[0].postnl_stops, 122)
   assert.deepEqual(goed.tegenstrijdig, [])
 
-  const fout = planRitten({ bestaande: [], gelezen: lees(antwoorden), klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
+  // Alleen op tijd afkappen is niet genoeg: dan zit de late rit van 03-11 er nog in. Dan niets schrijven.
+  const fout = planRitten({ bestaande: [], gelezen: lees(antwoorden.slice(keuze.vanaf)), klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
   assert.deepEqual(fout.inserts, [], 'niet gokken welke versie klopt')
   assert.deepEqual(fout.tegenstrijdig, ['448'])
+})
+
+test('dagVenster: stond de dag al open, dan telt alles sinds het openen en wordt niets genegeerd', () => {
+  const v = dagVenster([{ a: 1 }, { b: 2 }, { c: 3 }], { geopend: 1, vanaf: null })
+  assert.deepEqual(v.antwoorden, [{ b: 2 }, { c: 3 }])
+  assert.equal(v.negeer.size, 0)
 })
 
 test('planRitten: dezelfde rit twee keer met gelijke waarden is geen tegenstrijdigheid', () => {

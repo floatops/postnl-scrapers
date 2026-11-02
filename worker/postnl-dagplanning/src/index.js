@@ -20,7 +20,7 @@ import { vandaagNl as vandaagNlGedeeld } from '../../credentials-shared/src/post
 import { naarDepot, openDagplanning } from '../../credentials-shared/src/postnl/login.js'
 import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
 import { startRunLog as startRunLogGedeeld, eindeRunLog as eindeRunLogGedeeld } from '../../credentials-shared/src/runLog.js'
-import { verzamelAntwoorden, dagenInKeuzelijst, kiesDag, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
+import { verzamelAntwoorden, dagenInKeuzelijst, kiesDag, dagVenster, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -185,8 +185,7 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
 
     let totaalGesynced = 0
     for (const { datum, label } of teSyncen) {
-      // Per dag een schoon venster: alleen antwoorden vanaf het moment dat déze dag gekozen is
-      // (kiesDag geeft dat begin). Lukt een shift niet, dan de hele dag opnieuw met een nieuw venster:
+      // Per dag een schoon venster: alleen antwoorden en ritten van déze dag (dagVenster). Lukt een shift niet, dan de hele dag opnieuw met een nieuw venster:
       // een herladen pagina toont eerst de standaarddag, en die data mag er niet tussen komen.
       let ritten = null
       let shifts = []
@@ -196,14 +195,14 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
           await openDagplanning(page, depot)
           // Ontbreekt de dag, dan gooit kiesDag (dagOntbreekt): dat telt als fout, nooit stil overslaan.
           const { vanaf } = await kiesDag(page, label, antwoorden)
-          const begin = vanaf ?? geopend
           // Shifts zoals PostNL ze vandaag toont, niet een vaste lijst.
           shifts = await shiftsOpScherm(page)
           for (const shift of shifts) {
             const uitkomst = await kiesShift(page, shift, antwoorden)
             if (uitkomst === 'geen_ritten') console.log(`[${depot.naam}] Shift ${shift}: geen ritten ontvangen (lege shift)`)
           }
-          ritten = dagplanningRitten(antwoorden.slice(begin)).filter(r => !r.datum || r.datum === datum)
+          const venster = dagVenster(antwoorden, { geopend, vanaf })
+          ritten = dagplanningRitten(venster.antwoorden, { negeer: venster.negeer }).filter(r => !r.datum || r.datum === datum)
         } catch (err) {
           if (err.dagOntbreekt || poging >= 2) throw err
           console.log(`[${depot.naam}] ${datum}: opnieuw na fout (${eersteRegel(err)})`)
