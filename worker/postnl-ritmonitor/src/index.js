@@ -23,10 +23,12 @@ import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 import {
-  kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout,
+  kiesProxy, sluitProxyAf, isBlokStatus, uitkomstBijFout,
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { maakRitmonitor } from './ritmonitor.js'
+import { login } from '../../credentials-shared/src/postnl/login.js'
+import { startRunLog as startRunLogGedeeld, eindeRunLog as eindeRunLogGedeeld } from '../../credentials-shared/src/runLog.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
 
@@ -93,35 +95,10 @@ function vandaagNl() {
 // detecteerBlok() (Akamai-/WAF-pagina herkennen) staat sinds #173 in
 // credentials-shared/src/proxyPool.js, gedeeld met postnl-dagplanning.
 
-const SEL_LOGIN_VELD = 'input[type="text"], input[type="email"]'
-
+// Inloggen: de gedeelde versie (credentials-shared/src/postnl/login.js, #562).
 async function loginPostnl(page, depot) {
   console.log(`[${depot.naam}] Login pagina URL:`, page.url())
-  // Het invoerveld staat soms al in de DOM terwijl het nog verborgen is (de
-  // PCI-loginpagina hydrateert traag): 8 van de 34 mislukte depot-runs in de week
-  // vóór 2026-09-17 strandden op "locator resolved to hidden" na 15 s. Langer
-  // wachten en anders één keer herladen kost hooguit een halve minuut van het
-  // leesvenster; een mislukte login kost het depot de hele run.
-  try {
-    await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
-  } catch {
-    const blok = await detecteerBlok(page)
-    console.warn(`[${depot.naam}] Loginveld niet zichtbaar na 45 s${blok.isBlok ? ' — ⛔ MOGELIJKE IP-BLOKKERING' : ''} (titel: "${blok.title}")`)
-    if (blok.isBlok) console.error(`[${depot.naam}] Body: ${blok.snippet}`)
-    // Met de pool helpt herladen niet: dit IP is geblokkeerd. Meteen afbreken, zodat
-    // de sessie het als blokkade afsluit en met het volgende IP opnieuw begint.
-    if (blok.isBlok && proxyPoolAan()) throw new ProxyBlokkadeError(`Loginpagina geblokkeerd: ${blok.title || blok.snippet.slice(0, 80)}`)
-    await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
-    await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
-  }
-  await page.locator(SEL_LOGIN_VELD).first().fill(depot.username)
-  await page.locator('input[type="password"]').first().fill(depot.password)
-  await page.locator('button[data-trn-key="login.butlogin"]').click()
-  // Wacht tot we van de loginpagina af zijn. NIET op '**pnl-oompd**' wachten:
-  // de login-URL bevat die string zelf (in de redirect-param) → vals-positief.
-  await page.waitForFunction(() => !window.location.hostname.includes('loginpostnl'), { timeout: 90000 }).catch(() => {})
-  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {})
-  if (page.url().includes('loginpostnl')) throw new Error(`Login mislukt. URL na login: ${page.url()}`)
+  await login(page, depot)
   console.log(`[${depot.naam}] Ingelogd, URL:`, page.url())
 }
 
@@ -220,6 +197,14 @@ const { openRitmonitor, leesRitmonitor, opslaanMonitor } = maakRitmonitor({
 // fouten vervangen sessie: fout/{depot}-{tijdstip}.webm, 30 dagen bewaard
 // (floatops/matransport#360). Pas aanroepen ná context.close().
 async function bewaarSessieVideo(video, depotNaam, mislukt = false) {
+  try { return await bewaarSessieVideoEenmaal(video, depotNaam, mislukt) } finally {
+    // De tijdelijke map van de opname weg: die bleef staan (4046 mappen in /tmp op 02-11, #562).
+    const map = await video?.path().then(p => path.dirname(p)).catch(() => null)
+    if (map) await fs.rm(map, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+async function bewaarSessieVideoEenmaal(video, depotNaam, mislukt) {
   if (!mislukt) return bewaarVideo(supabase, video, latestPad(KLANT_ID, 'postnl-ritmonitor', depotNaam), `[${depotNaam}] `)
   const pad = await bewaarVideo(supabase, video, foutPad(KLANT_ID, 'postnl-ritmonitor', depotNaam), `[${depotNaam}] `)
   if (pad) await ruimOudeFoutVideosOp(supabase, KLANT_ID, 'postnl-ritmonitor')
@@ -388,46 +373,22 @@ async function syncMonitorDepot(depot) {
 // een directe link terug naar de Actions-log van deze run, zodat je bij een
 // mislukte run niet meer handmatig door `gh run list` hoeft te zoeken naar het
 // juiste tijdstip. null buiten GitHub Actions (bv. lokaal testen).
-function githubRunUrl() {
-  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env
-  if (!GITHUB_SERVER_URL || !GITHUB_REPOSITORY || !GITHUB_RUN_ID) return null
-  return `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
-}
+// worker_run_log: de gedeelde versie (credentials-shared/src/runLog.js, #562).
+const startRunLog = () => startRunLogGedeeld(supabase, { worker: 'postnl-ritmonitor', klantId: KLANT_ID })
+const eindeRunLog = (id, velden) => eindeRunLogGedeeld(supabase, id, velden)
 
-async function startRunLog() {
-  try {
-    // supabase-js gooit NIET bij een databasefout maar geeft { error } terug; zonder
-    // deze check verdween een mislukte insert (bv. onbekende klant_id) geruisloos en
-    // bleef de wachtdog blind voor deze run. Gevonden 2026-09-20 bij de stack-b-proefrun.
-    const { data, error } = await supabase.from('worker_run_log')
-      .insert({ worker_naam: 'postnl-ritmonitor', klant_id: KLANT_ID, run_url: githubRunUrl() })
-      .select('id').single()
-    if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
-    return data?.id ?? null
-  } catch (error) {
-    console.error('startRunLog mislukt (sync gaat gewoon door):', error.message)
-    return null
-  }
-}
-
-async function eindeRunLog(runLogId, velden) {
-  if (!runLogId) return
-  try {
-    let { error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', runLogId)
-    // Omgeving zonder de kolom leeg_onbevestigd (migratie #357 nog niet
-    // gepromoveerd, bv. Stack B): zonder die kolom afsluiten i.p.v. de run op
-    // 'gestart' te laten hangen.
-    if (error && /leeg_onbevestigd/.test(error.message ?? '')) {
-      const { leeg_onbevestigd, ...rest } = velden
-      ;({ error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...rest }).eq('id', runLogId))
-    }
-    if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
-  } catch (error) {
-    console.error('eindeRunLog mislukt:', error.message)
+// Achtergebleven tijdelijke videomappen (ouder dan een dag) van eerdere runs opruimen.
+async function ruimTijdelijkeMappenOp() {
+  const namen = await fs.readdir(os.tmpdir()).catch(() => [])
+  for (const n of namen.filter(n => n.startsWith('sessie-video-'))) {
+    const p = path.join(os.tmpdir(), n)
+    const st = await fs.stat(p).catch(() => null)
+    if (st && Date.now() - st.mtimeMs > 86400_000) await fs.rm(p, { recursive: true, force: true }).catch(() => {})
   }
 }
 
 async function syncRitmonitor() {
+  await ruimTijdelijkeMappenOp()
   const DEPOTS = await getDepots(supabase, KLANT_ID, 'postnl')
   // De sessiehouder (#562) heeft elke login: dan is dit vangnet-script niet nodig. Geen run-log,
   // geen login. De sessiehouder schrijft zelf de postnl-ritmonitor-runs.

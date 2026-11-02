@@ -10,13 +10,18 @@ import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 
 import {
-  kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout,
+  kiesProxy, sluitProxyAf, uitkomstBijFout,
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
-import { schrijfDagplanning, markeerGereden as markeerRittenGereden } from '../../credentials-shared/src/postnl/schrijver.js'
-import { decimaalTekst } from '../../credentials-shared/src/postnl/tekst.js'
+import { schrijfDagplanning, markeerGereden as markeerRittenGereden, beschikbareKolommen } from '../../credentials-shared/src/postnl/schrijver.js'
+import { vandaagNl as vandaagNlGedeeld } from '../../credentials-shared/src/postnl/tekst.js'
+import { naarDepot, openDagplanning, SEL_DAG } from '../../credentials-shared/src/postnl/login.js'
+import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
+import { startRunLog as startRunLogGedeeld, eindeRunLog as eindeRunLogGedeeld } from '../../credentials-shared/src/runLog.js'
+// Dag en shift kiezen in de Dagplanning: de schermfuncties van de planner, niet nog een kopie.
+import { volgMendix, kiesDag, leesShifts, kiesShift } from '../../postnl-planner/src/mendix.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -27,7 +32,6 @@ const MAX_BLOKKADES_PER_DEPOT = Number(process.env.PROXY_MAX_BLOKKADES || 3)
 const CONFIG = {
   cronTime: process.env.CRON_TIME || '0 23 * * *',
   timezone: process.env.TZ || 'Europe/Amsterdam',
-  shifts: (process.env.POSTNL_SHIFTS || '01,02,03,04,05,06,07').split(',').map(s => s.trim()).filter(Boolean),
   headless: String(process.env.POSTNL_HEADLESS ?? 'true').toLowerCase() !== 'false',
   slowMo: Number(process.env.POSTNL_SLOWMO || 0),
   storageState: process.env.POSTNL_STORAGE_STATE || '.postnl-auth-state.json',
@@ -48,70 +52,7 @@ const supabase = createClient(
 const KLANT_ID = requireEnv('KLANT_ID')
 
 function vandaagNl() {
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: CONFIG.timezone,
-    year: 'numeric', month: '2-digit', day: '2-digit',
-  }).formatToParts(new Date())
-  const map = Object.fromEntries(parts.map(p => [p.type, p.value]))
-  return `${map.year}-${map.month}-${map.day}`
-}
-
-function normaliseerRitnummer(value) {
-  const digits = String(value || '').match(/\d+/)?.[0] || ''
-  return digits ? String(parseInt(digits, 10)) : ''
-}
-
-function toNumber(value) {
-  if (!value) return null
-  const n = Number(String(value).trim().replace(/\./g, '').replace(',', '.'))
-  return Number.isFinite(n) ? n : null
-}
-
-// Normaliseert de geplande ritduur uit het Dagplanning-grid naar "H:MM".
-// Het portaal is niet consistent in notatie, dus geaccepteerd worden o.a.
-// "5:33", "5.33", "5,33", "5:33:00", "5u33", "5 uur 33" en "333" (minuten).
-// Alles wat geen plausibele duur oplevert wordt null — liever geen waarde dan
-// een verkeerde, want hier hangt straks een eindtijd-berekening aan.
-function normaliseerDuur(value) {
-  const raw = String(value || '').trim()
-  if (!raw) return null
-
-  // "5u 27m" is wat het portaal daadwerkelijk toont (bevestigd 2026-09-07);
-  // ook "5u27m", "5 uur 27 min" en "5u" (zonder minuten) worden geaccepteerd.
-  const uurMin = raw.match(/^(\d{1,2})\s*u(?:ur)?\s*(?:(\d{1,2})\s*m(?:in)?\.?)?$/i)
-  if (uurMin) {
-    const uren = parseInt(uurMin[1], 10)
-    const min = uurMin[2] ? parseInt(uurMin[2], 10) : 0
-    if (min > 59 || uren > 23) return null
-    return `${uren}:${String(min).padStart(2, '0')}`
-  }
-
-  // Alleen minuten: "45m", "45 min"
-  const alleenMin = raw.match(/^(\d{1,3})\s*m(?:in)?\.?$/i)
-  if (alleenMin) {
-    const m = parseInt(alleenMin[1], 10)
-    if (m > 24 * 60) return null
-    return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`
-  }
-
-  const hhmm = raw.match(/^(\d{1,2})\s*(?::|\.|,)\s*(\d{1,2})(?::\d{1,2})?$/)
-  if (hhmm) {
-    const uren = parseInt(hhmm[1], 10)
-    const min = parseInt(hhmm[2], 10)
-    if (min > 59 || uren > 23) return null
-    return `${uren}:${String(min).padStart(2, '0')}`
-  }
-
-  // Kaal getal = minuten (bv. "333" → 5:33). Onder de 15 min of boven de 24 uur
-  // is het vrijwel zeker geen ritduur maar een andere kolom die we per ongeluk lezen.
-  const minuten = raw.match(/^(\d{1,4})$/)
-  if (minuten) {
-    const m = parseInt(minuten[1], 10)
-    if (m < 15 || m > 24 * 60) return null
-    return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}`
-  }
-
-  return null
+  return vandaagNlGedeeld(new Date(), CONFIG.timezone)
 }
 
 // Converts DD-MM-YYYY label to YYYY-MM-DD
@@ -121,253 +62,17 @@ function labelNaarDatum(label) {
   return `${jaar}-${maand.padStart(2, '0')}-${dag.padStart(2, '0')}`
 }
 
-async function loginPostnl(page, depot) {
-  console.log(`[${depot.naam}] Login pagina URL:`, page.url())
-  try {
-    await page.locator('input[type="text"], input[type="email"]').first().waitFor({ timeout: 15000 })
-  } catch (err) {
-    const blok = await detecteerBlok(page)
-    if (blok.isBlok) {
-      console.warn(`[${depot.naam}] Loginveld niet zichtbaar — ⛔ MOGELIJKE IP-BLOKKERING (titel: "${blok.title}")`)
-      if (proxyPoolAan()) throw new ProxyBlokkadeError(`Loginpagina geblokkeerd: ${blok.title || blok.snippet.slice(0, 80)}`)
-    }
-    throw err
-  }
-  await page.locator('input[type="text"], input[type="email"]').first().fill(depot.username)
-  await page.locator('input[type="password"]').first().fill(depot.password)
-  await page.locator('button[data-trn-key="login.butlogin"]').click()
-  // Wacht tot we van de loginpagina af zijn. NIET op '**pnl-oompd**' wachten:
-  // de login-URL bevat die string zelf (in de redirect-param) → vals-positief,
-  // en op sommige runners (GitHub Actions) mist waitForURL de OAuth-redirect.
-  await page.waitForFunction(() => !window.location.hostname.includes('loginpostnl'), { timeout: 90000 }).catch(() => {})
-  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {})
-  if (page.url().includes('loginpostnl')) throw new Error(`Login mislukt. URL na login: ${page.url()}`)
-  console.log(`[${depot.naam}] Ingelogd, URL:`, page.url())
-}
+// Lezen gebeurt sinds floatops/matransport#562 uit de Mendix-antwoorden met de gedeelde lezer
+// (credentials-shared/src/postnl/ritten.js), net als de sessiehouder; schrijven met de gedeelde
+// schrijver (schrijver.js: sleutel ritnummer + kanaal, klantfilter, niets verwijderen). Inloggen
+// en de Dagplanning openen met credentials-shared/src/postnl/login.js.
 
-class PageReloadError extends Error {
-  constructor(shift) { super(`Pagina herlaadde tijdens shift ${shift}`) }
-}
+const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
+const eersteRegel = (e) => String(e?.message ?? e).split(/\r?\n/)[0]
+let kolommenCache = null
 
-async function leesShift(page, shift, depotHostname) {
-  function checkPagina() {
-    if (!page.url().includes(depotHostname)) throw new PageReloadError(shift)
-  }
-
-  // Scope click to the shift grid — div.mx-datagrid-data-wrapper contains exactly the shift number
-  const rij = page.locator('.mx-name-Shift_Grid_1 div.mx-datagrid-data-wrapper')
-    .filter({ hasText: new RegExp(`^\\s*${shift}\\s*$`) }).first()
-  try {
-    await rij.waitFor({ state: 'visible', timeout: 8000 })
-  } catch {
-    checkPagina()
-    // Staat de shifttabel er helemaal niet, dan zijn we niet (meer) op de
-    // Dagplanning, bv. door PostNL teruggezet naar de startpagina (zelfde host,
-    // dus checkPagina ziet het niet). Dat is een fout, geen lege shift (#361).
-    if (await page.locator('.mx-name-Shift_Grid_1').count() === 0) throw new PageReloadError(shift)
-    console.log(`Shift ${shift}: niet beschikbaar op deze datum`)
-    return []
-  }
-
-  await rij.click()
-  await page.waitForLoadState('networkidle', { timeout: 8000 }).catch(() => {})
-  checkPagina()
-  await page.waitForTimeout(1500)
-  checkPagina()
-
-  let rijen
-  try {
-    const result = await page.evaluate(() => {
-      function cel(row, cls) {
-        return row.querySelector(`td.${cls}`)?.getAttribute('title')?.trim() || ''
-      }
-      // Zelfde als cel(), maar valt terug op de zichtbare celtekst. Mendix zet
-      // lang niet op elke kolom een title-attribuut — de Ritduur-kolom heeft er
-      // geen, waardoor cel() daar altijd '' teruggaf terwijl de waarde gewoon
-      // in de cel stond.
-      function celTekst(row, cls) {
-        const td = row.querySelector(`td.${cls}`)
-        if (!td) return ''
-        return (td.getAttribute('title') || td.textContent || '').trim()
-      }
-      // th[title="Ritten"] is in the SHIFT GRID header (shows rit count per shift).
-      // We need the rit DETAIL grid — exclude the shift grid's content divs.
-      const shiftGrid = document.querySelector('.mx-name-Shift_Grid_1')
-      const divs = Array.from(document.querySelectorAll('.mx-grid-content'))
-        .filter(d => !shiftGrid || !shiftGrid.contains(d))
-      // Duur-kolom (geplande ritduur volgens PostNL) dynamisch opzoeken via de
-      // header-titel — zelfde aanpak als de Brievenbuss-kolom in de ritmonitor.
-      // Bewust NIET op een vast kolomnummer: de overige kolommen hier (7/8/11-14/17)
-      // zijn ooit handmatig afgeleid en breken stil bij een Mendix-herschikking.
-      //
-      // ⚠️ PER GRID opzoeken, niet over alle grids samen. Er staan hier vier
-      // .mx-grid-content-divs op de pagina en dezelfde logische kolom heeft per
-      // grid een ánder mx-name-columnN. Zoek je de header globaal en pas je die
-      // klasse toe op rijen uit elk grid, dan lees je in het rit-grid een kolom
-      // die daar iets anders (of niets) betekent — precies waarom dit eerst
-      // stil leeg bleef.
-      //
-      // Het label is "Ritduur". Géén \b vóór "duur" gebruiken: in "Ritduur"
-      // staat geen woordgrens tussen "Rit" en "duur". De losse varianten blijven
-      // als terugval staan voor als PostNL het label ooit wijzigt.
-      const DUUR_RE = /ritduur|rittijd|\bduur\b|\buren\b/i
-      function duurKolomVan(grid) {
-        const th = Array.from(grid.querySelectorAll('thead th')).find(
-          h => DUUR_RE.test(h.getAttribute('title') || h.textContent || '')
-        )
-        return th ? Array.from(th.classList).find(c => c.startsWith('mx-name-column')) : null
-      }
-
-      const perGrid = divs.map(d => ({ duurCol: duurKolomVan(d), rows: Array.from(d.querySelectorAll('tbody tr[data-id]')) }))
-      const rows = perGrid.flatMap(g => g.rows)
-
-      const mapped = perGrid.flatMap(({ duurCol, rows: gridRows }) => gridRows.map(row => ({
-        ritnaam:         cel(row, 'mx-name-column7'),
-        chauffeur:       cel(row, 'mx-name-column8'),
-        stops:           cel(row, 'mx-name-column11'),
-        stuks:           cel(row, 'mx-name-column12'),
-        volume:          cel(row, 'mx-name-column13'),
-        brievenbusstops: cel(row, 'mx-name-column17'),
-        gewicht:         cel(row, 'mx-name-column14'),
-        duur:            duurCol ? celTekst(row, duurCol) : '',
-      })))
-      // Sample een rij die écht een rit is: ritnaam-patroon én een gevulde
-      // stops-cel. Alleen op ritnaam filteren pakt nog steeds rijen uit een
-      // ander grid, die daarna toch wegvallen in de filter hieronder.
-      const f = mapped.find(r => /^\d{3,4}/.test(r.ritnaam || '') && r.stops) || mapped[0]
-      // Vindt de regex de kolom nergens, log dan ALLE headers per grid — anders
-      // is dit vanaf hier blind debuggen zonder toegang tot het portaal.
-      const headerDump = perGrid.some(g => g.duurCol)
-        ? `duurCol per grid: ${perGrid.map((g, i) => `#${i}=${g.duurCol || '-'}(${g.rows.length}r)`).join(' ')}`
-        : `duurCol=NIET GEVONDEN, headers per grid: ${divs.map((d, i) => `#${i}[${
-            Array.from(d.querySelectorAll('thead th'))
-              .map(h => (h.getAttribute('title') || h.textContent || '').trim())
-              .filter(Boolean).join(' | ')}]`).join(' ')}`
-      return {
-        rows: mapped,
-        debug: `${rows.length} rijen van ${divs.length} non-shift grids, eerste={ritnaam:"${f?.ritnaam}",stops:"${f?.stops}",duur:"${f?.duur}"}; ${headerDump}`,
-      }
-    })
-    console.log(`[DEBUG shift ${shift}] ${result.debug}`)
-    rijen = result.rows
-  } catch (err) {
-    if (err.message.includes('context')) throw new PageReloadError(shift)
-    throw err
-  }
-
-  const resultaat = rijen
-    .filter(r => r.ritnaam && /^\d{3,4}/.test(r.ritnaam) && toNumber(r.stops) !== null)
-    .map(r => {
-      const ritnummer = normaliseerRitnummer(r.ritnaam.match(/^\d+/)?.[0] || '')
-      return {
-        ritnaam:         r.ritnaam,
-        ritnummer,
-        chauffeur:       r.chauffeur || null,
-        stops:           toNumber(r.stops),
-        stuks:           toNumber(r.stuks),
-        volume:          r.volume || null,
-        brievenbusstops: toNumber(r.brievenbusstops),
-        gewicht:         r.gewicht || null,
-        duur:            normaliseerDuur(r.duur),
-        shift:           ritnummer.charAt(0) || shift,
-      }
-    })
-
-  console.log(`Shift ${shift}: ${resultaat.length} ritten`)
-  return resultaat
-}
-
-// Schrijven naar `ritten` gaat sinds floatops/matransport#562 via de gedeelde schrijver
-// (credentials-shared/src/postnl/schrijver.js), dezelfde als de sessiehouder:
-// - een rit is uniek op ritnummer + kanaal; de Dagplanning toont alleen HD-ritten (#560);
-// - altijd op klant_id gefilterd, ook bij het lezen van wat er al staat;
-// - geen "dubbelen verwijderen" meer: die stap haalde de AD-rit (bv. 307 's avonds) weg;
-// - alleen gewijzigde velden, en een databasefout gooit in plaats van stil te blijven.
-async function opslaanInSupabase(alleRitten, datum, depotNaam, markeerGereden = false, statusVoorNieuw = 'gepland') {
-  const gelezen = alleRitten.map(r => ({
-    ritnummer: r.ritnummer,
-    kanaal: 'HD',
-    shift: r.shift,
-    velden: {
-      postnl_stops:         r.stops,
-      postnl_stuks:         r.stuks,
-      postnl_volume:        decimaalTekst(r.volume),
-      postnl_briefbusstops: r.brievenbusstops,
-      postnl_gewicht:       decimaalTekst(r.gewicht),
-      postnl_geplande_duur: r.duur,
-      postnl_chauffeur:     r.chauffeur,
-      postnl_shift:         r.shift,
-      postnl_ritnaam:       r.ritnaam,
-    },
-  }))
-  const uit = await schrijfDagplanning(supabase, { klantId: KLANT_ID, datum, depot: depotNaam, gelezen, statusNieuw: statusVoorNieuw })
-  if (markeerGereden) {
-    await markeerRittenGereden(supabase, { klantId: KLANT_ID, datum, depot: depotNaam })
-    console.log(`[${depotNaam}] Ritten van ${datum} op Gereden gezet`)
-  }
-  console.log(`[${depotNaam}] ${datum}: bijgewerkt ${uit.bijgewerkt}, nieuw ${uit.nieuw}`)
-}
-
-// Navigates to dagplanning and returns the date select locator (or null if absent).
-// Always navigates via the root URL so Mendix resets its state cleanly.
-async function openDagplanning(page, depotUrl, depot) {
-  await page.goto(depotUrl, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
-  await page.waitForTimeout(2000)
-
-  // OAuth-sessie soms niet volledig gevestigd na login — herlogin als we teruggestuurd worden
-  if (page.url().includes('loginpostnl') || page.url().includes('/authorize')) {
-    console.log(`[${depot?.naam ?? depotUrl}] Herleid naar login in openDagplanning — herlogin...`)
-    await loginPostnl(page, depot)
-    await page.waitForTimeout(3000)
-  }
-
-  await page.locator('a.mx-name-menuBar1-2, a[title="Planning"]').first().waitFor({ state: 'visible', timeout: 60000 })
-  await page.locator('a.mx-name-menuBar1-2, a[title="Planning"]').first().click()
-  await page.waitForTimeout(600)
-  await page.locator('a.mx-name-menuBar1-2-0, a[title="Dagplanning"]').first().click()
-  await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
-  await page.waitForTimeout(1000)
-
-  const datumSelect = page.locator('select.form-control').first()
-  return (await datumSelect.count() > 0) ? datumSelect : null
-}
-
-// GitHub Actions zet deze env-vars automatisch — geeft een directe link naar
-// de Actions-log van deze run terug voor worker_run_log. null buiten Actions.
-function githubRunUrl() {
-  const { GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID } = process.env
-  if (!GITHUB_SERVER_URL || !GITHUB_REPOSITORY || !GITHUB_RUN_ID) return null
-  return `${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}`
-}
-
-// Gestructureerd run-niveau-logboek in worker_run_log (migration_v150, uitgebreid
-// in migration_v158 met deze worker) — zelfde patroon als postnl-ritmonitor.
-// Best-effort: een logging-probleem mag de eigenlijke sync nooit blokkeren.
-async function startRunLog() {
-  try {
-    // supabase-js gooit NIET bij een databasefout maar geeft { error } terug; zonder
-    // deze check verdween een mislukte insert (bv. onbekende klant_id) geruisloos en
-    // bleef de wachtdog blind voor deze run. Gevonden 2026-09-20 bij de stack-b-proefrun.
-    const { data, error } = await supabase.from('worker_run_log')
-      .insert({ worker_naam: 'postnl-dagplanning', klant_id: KLANT_ID, run_url: githubRunUrl() })
-      .select('id').single()
-    if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
-    return data?.id ?? null
-  } catch (error) {
-    console.error('startRunLog mislukt (sync gaat gewoon door):', error.message)
-    return null
-  }
-}
-
-async function eindeRunLog(runLogId, velden) {
-  if (!runLogId) return
-  try {
-    const { error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', runLogId)
-    if (error) throw new Error(`${error.code ?? ''} ${error.message}`.trim())
-  } catch (error) {
-    console.error('eindeRunLog mislukt:', error.message)
-  }
-}
+const startRunLog = () => startRunLogGedeeld(supabase, { worker: 'postnl-dagplanning', klantId: KLANT_ID })
+const eindeRunLog = (id, velden) => eindeRunLogGedeeld(supabase, id, velden)
 
 // Sessie-video's van deze run, per depot de laatste (een retry overschrijft
 // hetzelfde pad). Gaat als video_paths mee in worker_run_log.
@@ -456,112 +161,80 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
   const page = await context.newPage()
   let mislukt = false
 
+  // Alle Mendix-antwoorden van deze sessie: daaruit leest de gedeelde lezer de ritten.
+  const antwoorden = []
+  page.on('response', (res) => { if (res.url().includes('/xas/')) res.json().then(j => antwoorden.push(j)).catch(() => {}) })
+  const mendix = volgMendix(page)
+
   try {
-    const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null)
-    if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
+    await naarDepot(page, depot)
+    console.log(`[${depot.naam}] Ingelogd, URL:`, page.url())
+    await openDagplanning(page, depot)
+    kolommenCache ??= await beschikbareKolommen(supabase)
+    const beschikbaar = await page.locator(SEL_DAG).first().evaluate(el => Array.from(el.options).map(o => o.label.trim()).filter(Boolean)).catch(() => [])
 
-    if (page.url().includes('loginpostnl') || page.url().includes('/login') || page.url().includes('/authorize')) {
-      await loginPostnl(page, depot)
-    }
-
-    await page.waitForTimeout(3000)
-    await page.screenshot({ path: `screenshot-${depot.naam.toLowerCase().replace(' ', '-')}.png` }).catch(e => console.log('Screenshot fout (niet kritiek):', e.message))
-    console.log(`[${depot.naam}] Pagina URL:`, page.url())
-
-    const eersteSelect = await openDagplanning(page, depot.url, depot)
-    let teSyncen = []
-
+    let teSyncen
     if (syncDatum) {
-      const [jaar, maand, dag] = syncDatum.split('-')
-      teSyncen = [{ datum: syncDatum, label: `${dag}-${maand}-${jaar}` }]
+      teSyncen = [{ datum: syncDatum, label: dagLabel(syncDatum) }]
       console.log(`[${depot.naam}] Specifieke datum: ${syncDatum}`)
-    } else if (allesDatums && eersteSelect) {
-      const labels = await eersteSelect.evaluate(el =>
-        Array.from(el.options).map(o => o.label.trim()).filter(Boolean)
-      )
-      teSyncen = labels
+    } else if (allesDatums) {
+      teSyncen = beschikbaar
         .map(label => ({ label, datum: labelNaarDatum(label) }))
         .filter(d => d.datum && d.datum <= vandaag)
         .sort((a, b) => a.datum.localeCompare(b.datum))
       console.log(`[${depot.naam}] Te syncen datums: ${teSyncen.map(d => d.label).join(', ')}`)
     } else {
-      const [jaar, maand, dag] = vandaag.split('-')
-      teSyncen = [{ datum: vandaag, label: `${dag}-${maand}-${jaar}` }]
+      teSyncen = [{ datum: vandaag, label: dagLabel(vandaag) }]
     }
 
     let totaalGesynced = 0
-    for (const { datum, label: datumLabel } of teSyncen) {
-      const datumSelect = await openDagplanning(page, depot.url, depot)
-
-      if (datumSelect) {
-        const optieAanwezig = await datumSelect.evaluate(
-          (el, lbl) => Array.from(el.options).some(o => o.label.trim() === lbl),
-          datumLabel
-        )
-        if (!optieAanwezig) {
-          console.log(`[${depot.naam}] Datum ${datumLabel} niet in dropdown, overgeslagen`)
-          continue
-        }
-        await datumSelect.selectOption({ label: datumLabel })
-        await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
-        await page.waitForTimeout(1500)
-        console.log(`[${depot.naam}] Datum geselecteerd: ${datumLabel}`)
+    for (const { datum, label } of teSyncen) {
+      if (!beschikbaar.includes(label)) {
+        console.log(`[${depot.naam}] Datum ${label} niet in de keuzelijst, overgeslagen`)
+        continue
       }
-
-      const depotHostname = new URL(depot.url).hostname
-      const alleRitten = []
+      const vanaf = antwoorden.length
+      await openDagplanning(page, depot)
+      await kiesDag(page, mendix, label)
+      // Shifts zoals PostNL ze vandaag toont, niet een vaste lijst.
+      const shifts = await leesShifts(page)
       const nietUitgelezen = []
-      for (const shift of CONFIG.shifts) {
-        let geprobeerd = 0
-        while (geprobeerd < 2) {
-          geprobeerd++
+      for (const shift of shifts) {
+        try {
+          await kiesShift(page, mendix, shift)
+        } catch (err) {
+          console.log(`[${depot.naam}] Shift ${shift}: opnieuw na fout (${eersteRegel(err)})`)
           try {
-            alleRitten.push(...await leesShift(page, shift, depotHostname))
-            break
-          } catch (err) {
-            if (!(err instanceof PageReloadError) || geprobeerd >= 2) {
-              console.log(`[${depot.naam}] Shift ${shift}: overgeslagen na fout: ${err.message}`)
-              nietUitgelezen.push(shift)
-              break
-            }
-            console.log(`[${depot.naam}] Shift ${shift}: pagina herlaadde — Dagplanning opnieuw openen...`)
-            const herlaadSelect = await openDagplanning(page, depot.url, depot)
-            if (herlaadSelect) {
-              const optie = await herlaadSelect.evaluate(
-                (el, lbl) => Array.from(el.options).some(o => o.label.trim() === lbl),
-                datumLabel
-              )
-              if (optie) {
-                await herlaadSelect.selectOption({ label: datumLabel })
-                await page.waitForLoadState('networkidle', { timeout: 15000 }).catch(() => {})
-                await page.waitForTimeout(1500)
-              }
-            }
+            await openDagplanning(page, depot)
+            await kiesDag(page, mendix, label)
+            await kiesShift(page, mendix, shift)
+          } catch (err2) {
+            console.log(`[${depot.naam}] Shift ${shift}: overgeslagen na fout: ${eersteRegel(err2)}`)
+            nietUitgelezen.push(shift)
           }
         }
       }
+      await mendix.wacht().catch(() => {})
 
-      // Een shift die niet uitgelezen kon worden maakt de hele poging mislukt:
-      // anders meldde de run stil "0 ritten" met status ok (#361). syncMetRetry
-      // probeert het opnieuw en de video gaat naar fout/.
-      if (nietUitgelezen.length) {
-        throw new Error(`Shift(s) ${nietUitgelezen.join(', ')} niet uitgelezen voor ${datum}`)
-      }
+      // Een shift die niet uitgelezen kon worden maakt de hele poging mislukt: anders meldde de
+      // run stil "0 ritten" met status ok (#361). syncMetRetry probeert het opnieuw.
+      if (nietUitgelezen.length) throw new Error(`Shift(s) ${nietUitgelezen.join(', ')} niet uitgelezen voor ${datum}`)
 
-      // Dedupliceer op ritnummer — als de tabel per shift dezelfde ritten toont,
-      // bewaar de eerste (meest volledig ingevulde) versie
-      const uniekRitten = [...new Map(alleRitten.map(r => [r.ritnummer, r])).values()]
-      console.log(`[${depot.naam}] Totaal gevonden voor ${datum}: ${alleRitten.length} ritten (${uniekRitten.length} uniek)`)
-
+      const ritten = dagplanningRitten(antwoorden.slice(vanaf)).filter(r => !r.datum || r.datum === datum)
+      console.log(`[${depot.naam}] ${datum}: ${shifts.length} shift(s), ${ritten.length} ritten`)
       const isVerleden = datum < vandaag
-      await opslaanInSupabase(
-        uniekRitten,
-        datum,
-        depot.naam,
-        markeerGereden && !isVerleden,
-        isVerleden ? 'gereden' : 'gepland'
-      )
-      totaalGesynced += uniekRitten.length
+      const uit = await schrijfDagplanning(supabase, {
+        klantId: KLANT_ID, datum, depot: depot.naam, gelezen: ritten, kolommen: kolommenCache,
+        statusNieuw: isVerleden ? 'gereden' : 'gepland',
+      })
+      // Niet stil: een rit zonder bekend kanaal is niet geschreven (een gok gaf #560).
+      if (uit.kanaalOnbekend.length) throw new Error(`Kanaal onbekend voor rit(ten) ${uit.kanaalOnbekend.join(', ')}: niet geschreven`)
+      if (markeerGereden && !isVerleden) {
+        await markeerRittenGereden(supabase, { klantId: KLANT_ID, datum, depot: depot.naam })
+        console.log(`[${depot.naam}] Ritten van ${datum} op Gereden gezet`)
+      }
+      console.log(`[${depot.naam}] ${datum}: bijgewerkt ${uit.bijgewerkt}, nieuw ${uit.nieuw}`)
+      totaalGesynced += ritten.length
     }
 
     if (depot.storageState) await context.storageState({ path: depot.storageState })

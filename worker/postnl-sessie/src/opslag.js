@@ -2,6 +2,7 @@
 // databasefout gooit (nooit stil), behalve bij het loggen van gebeurtenissen: dat mag de sessie
 // niet stilleggen, maar komt wel in de console en in de volgende run-log.
 import { mergeInstellingen } from './instellingen.js'
+import { startRunLog, eindeRunLog } from '../../credentials-shared/src/runLog.js'
 
 async function vereis(belofte, wat) {
   const { data, error } = await belofte
@@ -79,19 +80,7 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) log.warn(`Sessie-slot vrijgeven mislukt (verloopt vanzelf): ${error.message}`)
     },
 
-    async runStart(worker) {
-      const { data, error } = await supabase.from('worker_run_log').insert({ worker_naam: worker, klant_id: klantId }).select('id').single()
-      if (error) { log.error(`worker_run_log starten mislukt (${worker}): ${error.message}`); return null }
-      return data.id
-    },
-    async runEinde(id, velden) {
-      if (!id) return
-      let { error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...velden }).eq('id', id)
-      if (error && /leeg_onbevestigd/.test(error.message ?? '')) {
-        const { leeg_onbevestigd, ...rest } = velden
-        ;({ error } = await supabase.from('worker_run_log').update({ afgerond_at: new Date().toISOString(), ...rest }).eq('id', id))
-      }
-      if (error) log.error(`worker_run_log afsluiten mislukt: ${error.message}`)
-    },
+    runStart: (worker) => startRunLog(supabase, { worker, klantId }),
+    runEinde: (id, velden) => eindeRunLog(supabase, id, velden),
   }
 }
