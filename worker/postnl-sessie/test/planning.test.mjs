@@ -136,19 +136,48 @@ test('instellingen: klantwaarden overschrijven, rommel valt terug op de standaar
   assert.equal('onbekend' in c, false)
 })
 
-import { nieuweDepots } from '../src/depots.js'
+import { depotWijzigingen, vingerafdruk } from '../src/depots.js'
 
-test('depots: lopende blijven in hun sessie, alleen een nieuw depot start; dubbele of lege regels niet', () => {
-  const lopend = new Map([['Depot A', {}], ['Depot B', {}]])
-  const db = [
-    { naam: 'Depot A', url: 'https://a/index.html' },
-    { naam: 'Depot B', url: 'https://b/index.html' },
-    { naam: 'Depot C', url: 'https://c/index.html' },
-    { naam: 'Depot C', url: 'https://c/index.html' },
-    { naam: 'Depot D', url: null },
-  ]
-  assert.deepEqual(nieuweDepots(lopend, db).map(d => d.naam), ['Depot C'])
-  assert.deepEqual(nieuweDepots(new Map([...lopend, ['Depot C', {}]]), db), [], 'volgende controle: niets nieuws, dus niemand logt opnieuw in')
-  assert.deepEqual(nieuweDepots(new Map(), db.slice(0, 2)).map(d => d.naam), ['Depot A', 'Depot B'], 'bij de start: elk depot één keer')
-  assert.deepEqual(nieuweDepots(lopend, null), [])
+test('depots: lopende blijven in hun sessie; nieuw start, gewijzigde login herstart, uitgezet stopt', () => {
+  const A = { naam: 'Depot A', url: 'https://a/index.html', username: 'a', password: 'p1' }
+  const B = { naam: 'Depot B', url: 'https://b/index.html', username: 'b', password: 'p2' }
+  const lopend = new Map([[A.naam, vingerafdruk(A)], [B.naam, vingerafdruk(B)]])
+  const leeg = { starten: [], herstarten: [], stoppen: [] }
+  assert.deepEqual(depotWijzigingen(lopend, [A, B]), leeg, 'niets veranderd: niemand logt opnieuw in')
+  const C = { naam: 'Depot C', url: 'https://c/index.html', username: 'c', password: 'p3' }
+  assert.deepEqual(depotWijzigingen(lopend, [A, B, C, { ...C }]).starten.map(d => d.naam), ['Depot C'], 'nieuw depot, dubbel in de lijst telt één keer')
+  assert.deepEqual(depotWijzigingen(lopend, [A, { ...B, password: 'nieuw' }]).herstarten.map(d => d.naam), ['Depot B'], 'nieuw wachtwoord: opnieuw inloggen')
+  assert.deepEqual(depotWijzigingen(lopend, [A, { ...B, url: 'https://b2/index.html' }]).herstarten.map(d => d.naam), ['Depot B'], 'andere portaal-URL')
+  assert.deepEqual(depotWijzigingen(lopend, [A]).stoppen, ['Depot B'], 'uitgezet of verwijderd: stoppen')
+  assert.deepEqual(depotWijzigingen(new Map(), [A, B, { naam: 'Zonder URL', url: null }]).starten.map(d => d.naam), ['Depot A', 'Depot B'], 'bij de start elk depot met een URL één keer')
+  assert.deepEqual(depotWijzigingen(lopend, null).stoppen.sort(), ['Depot A', 'Depot B'])
+})
+
+import { maakDepotBeheer } from '../src/depots.js'
+
+test('depotbeheer: nieuw depot start, gewijzigde login stopt en start opnieuw, uitgezet stopt, wacht tot alles klaar', async () => {
+  const log = { log() {} }
+  const gestart = []
+  // Nep-lus: loopt tot lus.stop gezet wordt.
+  const startLus = async (depot, lus) => { gestart.push(depot.naam); while (!lus.stop) await new Promise(r => setTimeout(r, 2)) }
+  let gestopt = false
+  const b = maakDepotBeheer({ startLus, log, isGestopt: () => gestopt })
+  const A = { naam: 'A', url: 'u-a', username: 'a', password: '1' }
+  const B = { naam: 'B', url: 'u-b', username: 'b', password: '2' }
+  b.verwerk([A, B], 'start')
+  await new Promise(r => setTimeout(r, 10))
+  assert.deepEqual(gestart, ['A', 'B'])
+  b.verwerk([A, B], 'seintje zonder wijziging')
+  await new Promise(r => setTimeout(r, 10))
+  assert.deepEqual(gestart, ['A', 'B'], 'geen wijziging: niemand opnieuw')
+  b.verwerk([A, { ...B, password: 'nieuw' }, { naam: 'C', url: 'u-c', username: 'c', password: '3' }], 'inloggegevens gewijzigd')
+  await new Promise(r => setTimeout(r, 30))
+  assert.deepEqual(gestart, ['A', 'B', 'C', 'B'], 'B opnieuw met het nieuwe wachtwoord, C nieuw')
+  b.verwerk([{ ...B, password: 'nieuw' }, { naam: 'C', url: 'u-c', username: 'c', password: '3' }], 'A uitgezet')
+  await new Promise(r => setTimeout(r, 30))
+  assert.equal(b.lopend.has('A'), false, 'A gestopt')
+  gestopt = true
+  for (const l of b.lopend.values()) l.stop = true
+  await b.wacht(5)
+  assert.equal(b.lopend.size, 0)
 })

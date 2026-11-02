@@ -23,7 +23,8 @@ import { draaiDepot } from './depot.js'
 import { HANDLERS } from './handlers.js'
 import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
-import { nieuweDepots } from './depots.js'
+import { maakDepotBeheer } from './depots.js'
+import fs from 'node:fs/promises'
 
 function vereis(naam) {
   const v = process.env[naam]
@@ -98,44 +99,48 @@ async function main() {
   }
 
   log.log(`Sessiehouder gestart voor ${depots.length} depot(s), houder ${houder}`)
-  // Per depot één lus (één browser, één tabblad, één login). Elke 15 minuten in de database kijken
-  // welke depots er zijn (geen PostNL-login): alleen een net toegevoegd depot krijgt een eigen lus.
-  const lopend = new Map()
-  const startDepot = (depot) => {
-    if (lopend.has(depot.naam)) return
-    teller.depot(depot.naam)
-    lopend.set(depot.naam, draaiDepot({
-      depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun,
-      stop: () => stop,
-      schatting: () => schattingen[depot.naam] ?? null,
-      telRitmonitor: (d, r) => teller.tel(d, r),
-      handlers: HANDLERS,
-      ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor },
-      maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),
-    }).then(
-      (uit) => ({ depot: depot.naam, uit }),
-      async (err) => {
+  // Per depot één lus (één browser, één tabblad, één login), elk met een eigen stop-vlag.
+  // Een PostNL-login toevoegen, wijzigen, uitzetten of verwijderen op Inloggegevens geeft een
+  // seintje: de database-trigger postnl_sessie_koppeling → VPS → het wekkerbestand. Dan worden de
+  // depots opnieuw gelezen (database, geen PostNL-login) en per depot gestart, opnieuw ingelogd of
+  // gestopt (depots.js). Eens per uur hetzelfde als vangnet, voor een seintje dat verloren ging.
+  const beheer = maakDepotBeheer({
+    log, isGestopt: () => stop,
+    startLus: (depot, lus) => {
+      teller.depot(depot.naam)
+      return draaiDepot({
+        depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun,
+        stop: () => stop || lus.stop,
+        schatting: () => schattingen[depot.naam] ?? null,
+        telRitmonitor: (d, r) => teller.tel(d, r),
+        handlers: HANDLERS,
+        ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor },
+        maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),
+      }).catch(async (err) => {
         exitCode = exitCode || 1
         await melden({ soort: 'depot_gestopt', depot: depot.naam, detail: String(err?.message ?? err).slice(0, 300) })
-        return { depot: depot.naam, fout: err }
-      },
-    ))
-  }
-  for (const d of nieuweDepots(lopend, depots)) startDepot(d)
-  const depotCheck = setInterval(async () => {
+      })
+    },
+  })
+  const herlees = async (reden) => {
     if (stop) return
-    try {
-      const nu = await getDepots(supabase, KLANT_ID, 'postnl')
-      for (const d of nieuweDepots(lopend, nu)) { log.log(`Nieuw depot ${d.naam}: eigen sessie gestart`); startDepot(d) }
-    } catch (err) { log.warn(`Depots opnieuw lezen mislukt: ${err.message}`) }
-  }, 15 * 60_000)
-  // Wachten tot alle lussen klaar zijn, ook die er onderweg bij kwamen.
-  while (true) {
-    const aantal = lopend.size
-    await Promise.all(lopend.values())
-    if (lopend.size === aantal) break
+    try { beheer.verwerk(await getDepots(supabase, KLANT_ID, 'postnl'), reden) } catch (err) { log.warn(`Depots opnieuw lezen mislukt (${reden}): ${err.message}`) }
   }
-  clearInterval(depotCheck)
+
+  beheer.verwerk(depots, 'start')
+
+  const WEKKER = process.env.POSTNL_SESSIE_WEKKER
+  const wekkerTijd = async () => (WEKKER ? (await fs.stat(WEKKER).catch(() => null))?.mtimeMs ?? null : null)
+  let laatsteWekker = await wekkerTijd()
+  const wekkerCheck = setInterval(async () => {
+    const t = await wekkerTijd()
+    if (t && t !== laatsteWekker) { laatsteWekker = t; await herlees('inloggegevens gewijzigd') }
+  }, 15_000)
+  const uurCheck = setInterval(() => herlees('controle per uur'), 3600_000)
+
+  // Wachten tot alle lussen klaar zijn, ook die er onderweg bij kwamen of opnieuw startten.
+  await beheer.wacht()
+  clearInterval(wekkerCheck); clearInterval(uurCheck)
   await teller.flush()
   clearInterval(codeCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
 }

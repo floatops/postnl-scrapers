@@ -1,6 +1,6 @@
 # postnl-sessie (de sessiehouder)
 
-Per klant één proces op de VPS dat per depot **één PostNL-sessie** open houdt zolang er werk is, in één tabblad. Elk depot heeft een eigen browser met één tabblad (eigen login, eigen slot); een depot dat later in de inloggegevens bijkomt, krijgt binnen 15 minuten een eigen sessie, zonder herstart. Daarin lopen de ochtendlezing, de definitieve lezing per shift en de ritmonitor achter elkaar, zodat workers elkaar nooit meer wegduwen (PostNL verdraagt per login maar één sessie, #361). Aanleiding en plan: floatops/matransport#562.
+Per klant één proces op de VPS dat per depot **één PostNL-sessie** open houdt zolang er werk is, in één tabblad. Elk depot heeft een eigen browser met één tabblad (eigen login, eigen slot). Een PostNL-login toevoegen, wijzigen, uitzetten of verwijderen op Instellingen → Inloggegevens geeft via de database-trigger `postnl_sessie_koppeling` een seintje (VPS → wekkerbestand `POSTNL_SESSIE_WEKKER`): de sessiehouder leest de depots opnieuw en start een nieuw depot, logt opnieuw in bij een gewijzigde login, of stopt een uitgezet depot (`src/depots.js`, getest). Lopende depots zonder wijziging blijven in hun sessie. Eens per uur dezelfde controle als vangnet. Daarin lopen de ochtendlezing, de definitieve lezing per shift en de ritmonitor achter elkaar, zodat workers elkaar nooit meer wegduwen (PostNL verdraagt per login maar één sessie, #361). Aanleiding en plan: floatops/matransport#562.
 
 ## Wanneer doet hij wat
 
