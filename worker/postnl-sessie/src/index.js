@@ -126,7 +126,10 @@ async function main() {
   })
   const herlees = async (reden) => {
     if (stop) return
-    try { beheer.verwerk(await getDepots(supabase, KLANT_ID, 'postnl'), reden) } catch (err) { log.warn(`Depots opnieuw lezen mislukt (${reden}): ${err.message}`) }
+    try {
+      const w = beheer.verwerk(await getDepots(supabase, KLANT_ID, 'postnl'), reden)
+      if (!w.starten.length && !w.herstarten.length && !w.stoppen.length) log.log(`Depots gecontroleerd (${reden}): geen wijziging`)
+    } catch (err) { log.warn(`Depots opnieuw lezen mislukt (${reden}): ${err.message}`) }
   }
 
   beheer.verwerk(depots, 'start')

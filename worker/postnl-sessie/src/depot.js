@@ -50,6 +50,7 @@ export async function draaiDepot(deps) {
     if (!sessie) return
     const s = sessie
     sessie = null
+    log.log(`${label} Sessie dicht (${reden})`)
     await s.sluiten(reden, extra).catch(e => log.error(`${label} Sessie sluiten mislukt: ${e.message}`))
   }
 
@@ -150,6 +151,11 @@ export async function draaiDepot(deps) {
       if (recent.length > 20) recent.shift()
 
       const incident = soort !== 'gezond'
+      // Elke taak behalve de ritmonitor (elke minuut, die staat samengevat in de run-log) in het log.
+      if (!incident && !fout && taak !== 'ritmonitor') {
+        const l = uitkomst?.run?.lezingen?.[depot.naam]
+        log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
+      }
       const tracePad = sessie ? await sessie.taakEinde(taak, { incident }) : null
       if (incident) {
         log.warn(`${label} ${taak}: ${soort}${fout ? ` (${String(fout.message).split('\n')[0]})` : ''} → ${actie}`)
