@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, rittenUit,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, rittenUit,
   selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen,
 } from '../src/logica.js'
 
@@ -165,4 +165,11 @@ test('trace staat aan, tenzij hij in de omgeving uit staat', () => {
 test('alleen traces ouder dan de bewaartermijn gaan weg', () => {
   const namen = ['den-hoorn-ophalen-2026-10-01_08-00-00.zip', 'den-hoorn-ophalen-2026-11-01_08-00-00.zip', 'iets-anders.webm']
   assert.deepEqual(teOudeTraces(namen, new Date('2026-11-02T08:00:00Z')), ['den-hoorn-ophalen-2026-10-01_08-00-00.zip'])
+})
+
+test('alleen verplaatsen binnen dezelfde shift', () => {
+  const a = { ritnaam: '0217 maasdijk', shift: '02' }
+  assert.equal(shiftReden(a, { ritnaam: '0211 x', shift: '02' }), null)
+  assert.match(shiftReden(a, { ritnaam: '0704 y', shift: '07' }), /binnen dezelfde shift/)
+  assert.equal(shiftReden(a, null), null)
 })

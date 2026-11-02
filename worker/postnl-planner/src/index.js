@@ -18,7 +18,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, selectieKlopt, stopNaarRij,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -207,6 +207,8 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
   const bron = ritten.find(r => r.rit_id === v.van_rit_id)
   const doel = ritten.find(r => r.rit_id === v.naar_rit_id)
   if (!bron) return { status: 'overgeslagen', melding: 'De bronrit staat niet meer in de planning.' }
+  const andereShift = shiftReden(bron, doel)
+  if (andereShift) return { status: 'overgeslagen', melding: andereShift }
 
   await opStap(`${bron.ritnaam} openen`, 0.1)
   await kiesShift(page, mendix, bron.shift)

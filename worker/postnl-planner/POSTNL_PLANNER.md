@@ -8,6 +8,8 @@ De app maakt een rij in `planning_taken`; `planning-taak` roept `POST /run/postn
 
 ## Proefstand: `PLANNER_ECHT`
 
+**Alleen binnen dezelfde shift** (regel eigenaar 03-11): een verplaatsing naar een rit van een andere shift zet de worker op `overgeslagen` (`shiftReden`), vóór hij iets in PostNL opent. De app biedt alleen ritten van dezelfde shift aan.
+
 **Echt verplaatsen gebeurt alleen met `PLANNER_ECHT=ja` in de omgeving van de worker.** Zonder die instelling selecteert hij de stops, controleert hij alles, stopt hij vóór de dubbelklik en zet hij de verplaatsing op `overgeslagen` met de melding "Proefstand". Naar een **geautoriseerde** doelrit dubbelklikt hij altijd, ook met `PLANNER_ECHT=ja`: PostNL weigert dat zelf, en de melding komt in de app. Zet hem pas aan nadat een geslaagde verplaatsing op een toestel is gezien en op de opname is nagekeken.
 
 ## De handeling in PostNL

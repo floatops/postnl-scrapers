@@ -195,6 +195,12 @@ export function redenNietUitvoeren({ doelRit, deadline, nu = new Date() }) {
   return null
 }
 
+// PostNL verplaatst alleen binnen dezelfde shift (regel eigenaar 03-11). Null als het mag.
+export function shiftReden(bron, doel) {
+  if (!bron || !doel || bron.shift === doel.shift) return null
+  return `Alleen verplaatsen binnen dezelfde shift: ${bron.ritnaam} zit in shift ${bron.shift}, ${doel.ritnaam} in shift ${doel.shift}.`
+}
+
 // Ritnummer zoals in de tabel ritten: zonder voorloopnullen ("0217 maasdijk" wordt "217").
 export function ritnummerVan(ritnaam) {
   const m = String(ritnaam ?? '').match(/^\s*(\d+)/)
