@@ -1,0 +1,108 @@
+// Wat elke taak in de browser doet (floatops/matransport#562). Elke handler krijgt de open sessie
+// en de dagstatus, en geeft { dag, run } terug: de nieuwe dagstatus en wat er in worker_run_log
+// moet. Lukt iets niet, dan gooit hij: de depot-lus classificeert de fout en herstelt.
+import { openDagplanning } from '../../credentials-shared/src/postnl/login.js'
+import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
+import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
+import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
+import { kiesDag, leesShifts, kiesShift, leesDeadlineTekst } from '../../postnl-planner/src/mendix.js'
+import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor } from './dagstatus.js'
+
+const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
+
+export class DagNietBeschikbaar extends Error {}
+
+// Dagplanning openen op de dag van vandaag. Staat de dag er nog niet: DagNietBeschikbaar.
+async function naarDag(sessie, datum) {
+  await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+  try {
+    await kiesDag(sessie.page, sessie.mendix, dagLabel(datum))
+  } catch (err) {
+    if (/staat niet in de PostNL-planning/.test(err.message)) throw new DagNietBeschikbaar(err.message)
+    throw err
+  }
+}
+
+// Eén shift kiezen en de antwoorden + deadline van PostNL teruggeven.
+async function leesShift(sessie, shift, datum) {
+  const vanaf = sessie.antwoorden.length
+  await kiesShift(sessie.page, sessie.mendix, shift)
+  await sessie.mendix.wacht()
+  const deadline = deadlineUitTekst(await leesDeadlineTekst(sessie.page), datum)
+  return { antwoorden: sessie.antwoorden.slice(vanaf), deadline }
+}
+
+async function schrijf(ctx, gelezen, datum) {
+  const uit = await schrijfDagplanning(ctx.supabase, { klantId: ctx.klantId, datum, depot: ctx.depot.naam, gelezen, kolommen: ctx.kolommen })
+  if (uit.kanaalOnbekend.length) {
+    // Niet stil: deze ritten zijn niet geschreven, en dat staat in de run-log.
+    throw Object.assign(new Error(`Kanaal onbekend voor rit(ten) ${uit.kanaalOnbekend.join(', ')}: niet geschreven`), { deels: uit })
+  }
+  return uit
+}
+
+export const HANDLERS = {
+  // Volle lezing: alle shifts, ritten aanmaken, deadline per shift één keer vastleggen.
+  async ochtend(ctx, dag) {
+    const { sessie, nu } = ctx
+    try {
+      await naarDag(sessie, dag.datum)
+    } catch (err) {
+      if (err instanceof DagNietBeschikbaar) return { dag: naOchtendNietBeschikbaar(dag, { nu, cfg: ctx.cfg }), run: null, melding: 'dag nog niet in PostNL' }
+      throw err
+    }
+    const shifts = await leesShifts(sessie.page)
+    if (!shifts.length) throw new Error('Geen shifts zichtbaar in de Dagplanning')
+    const alle = [...sessie.antwoorden]
+    const perShift = {}
+    for (const shift of shifts) {
+      const r = await leesShift(sessie, shift, dag.datum)
+      alle.push(...r.antwoorden)
+      perShift[shift] = { deadline: r.deadline }
+    }
+    const ritten = dagplanningRitten(alle).filter(r => !r.datum || r.datum === dag.datum)
+    for (const [shift, s] of Object.entries(perShift)) {
+      const vanShift = ritten.filter(r => r.shiftPostnl === String(parseInt(shift, 10)))
+      s.geautoriseerd = vanShift.length > 0 && vanShift.every(r => r.geautoriseerd === true)
+      s.ritten = vanShift.length
+    }
+    const uit = await schrijf(ctx, ritten, dag.datum)
+    sessie.lezingen++
+    return {
+      dag: naOchtend(dag, { nu, shifts: perShift }),
+      run: { worker: 'postnl-dagplanning', status: 'ok', depots_ok: 1, rijen_gelezen: ritten.length,
+        lezingen: { [ctx.depot.naam]: { soort: 'ochtend', shifts: Object.keys(perShift).length, bijgewerkt: uit.bijgewerkt, nieuw: uit.nieuw } } },
+    }
+  },
+
+  // Eén shift na zijn deadline: geautoriseerd? Dan (of via het vangnet) de definitieve lezing.
+  async definitief(ctx, dag, { shift }) {
+    const { sessie, nu } = ctx
+    await naarDag(sessie, dag.datum)
+    const r = await leesShift(sessie, shift, dag.datum)
+    const ritten = dagplanningRitten(sessie.antwoorden)
+      .filter(x => (!x.datum || x.datum === dag.datum) && x.shiftPostnl === String(parseInt(shift, 10)))
+    const geautoriseerd = ritten.length > 0 && ritten.every(x => x.geautoriseerd === true)
+    const besluit = naDefinitief(dag, shift, { nu, geautoriseerd, cfg: ctx.cfg })
+    if (!besluit.schrijven) return { dag: besluit.dag, run: null, melding: `shift ${shift} nog niet geautoriseerd` }
+    const uit = await schrijf(ctx, ritten, dag.datum)
+    sessie.lezingen++
+    return {
+      dag: besluit.dag,
+      run: { worker: 'postnl-dagplanning', status: 'ok', depots_ok: 1, rijen_gelezen: ritten.length,
+        lezingen: { [ctx.depot.naam]: { soort: 'definitief', shift, vangnet: besluit.vangnet, deadline: r.deadline, bijgewerkt: uit.bijgewerkt, nieuw: uit.nieuw } } },
+      ...(besluit.vangnet ? { melding: 'autorisatie_niet_gezien', gebeurtenis: { soort: 'autorisatie_niet_gezien', shift } } : {}),
+    }
+  },
+
+  async ritmonitor(ctx, dag) {
+    const { sessie, nu, ritmonitor } = ctx
+    await ritmonitor.openRitmonitor(sessie.page, sessie.depot)
+    const { rijen, leegBevestigd } = await ritmonitor.leesRitmonitor(sessie.page)
+    await ritmonitor.opslaanMonitor(rijen, dag.datum, sessie.depot.naam, leegBevestigd)
+    sessie.lezingen++
+    const reden = Object.values(dag.shifts ?? {}).some(s => s.geautoriseerdOm) ? 'autorisatie' : Object.values(dag.shifts ?? {}).some(s => s.vangnet) ? 'vangnet_shift' : 'vangnet_tijd'
+    // Telt mee in de samengevatte ritmonitor-run (index.js), niet een rij per lezing.
+    return { dag: naRitmonitor(dag, { nu, reden }), ritmonitor: { rijen: rijen.length, leegBevestigd } }
+  },
+}

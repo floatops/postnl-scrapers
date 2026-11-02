@@ -28,7 +28,7 @@ import {
 } from '../../credentials-shared/src/proxyPool.js'
 import { maakRitmonitor } from './ritmonitor.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
-import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
+import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -227,9 +227,13 @@ async function syncMonitorDepot(depot) {
   const wachtStart = Date.now()
   const slot = await pakSessieSlot(supabase, {
     klantId: KLANT_ID, depot: depot.naam, worker: 'postnl-ritmonitor',
-    seconden: CONFIG.vensterSec + 180, maxWachtMs: 150_000, label: `[${depot.naam}] `,
+    seconden: CONFIG.vensterSec + 180, maxWachtMs: 240_000, label: `[${depot.naam}] `, wijkVoorSessiehouder: true,
   })
   const gewacht = Date.now() - wachtStart
+  // De sessiehouder (#562) leest deze login al: niets doen. Bezet door een ander: overslaan,
+  // nooit tegelijk inloggen.
+  if (slot.overgenomen) return { rijen: 0, lezingen: 0, videoPath: null, foutVideoPaths: [], leegBevestigd: false, overgenomen: true }
+  if (slot.bezet) throw Object.assign(new Error('Sessie-slot bezet door een ander proces: deze run overgeslagen'), { lezingen: 0, foutVideoPaths: [] })
 
   let browser, context, page, sessie
   try {
@@ -402,8 +406,14 @@ async function eindeRunLog(runLogId, velden) {
 }
 
 async function syncRitmonitor() {
-  const runLogId = await startRunLog()
   const DEPOTS = await getDepots(supabase, KLANT_ID, 'postnl')
+  // De sessiehouder (#562) heeft elke login: dan is dit vangnet-script niet nodig. Geen run-log,
+  // geen login. De sessiehouder schrijft zelf de postnl-ritmonitor-runs.
+  if (await sessiehouderHeeftAlles(supabase, KLANT_ID, DEPOTS.map(d => d.naam))) {
+    console.log('Sessiehouder actief voor alle depots: niets te doen')
+    return
+  }
+  const runLogId = await startRunLog()
   // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij
   // een ander IP, en het bewezen patroon (GitHub Actions) is elke run vers inloggen.
   if (proxyPoolAan()) for (const d of DEPOTS) d.storageState = null

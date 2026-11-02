@@ -1,0 +1,17 @@
+{
+  "name": "postnl-sessie",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node src/index.js",
+    "meet": "node scripts/meet.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "playwright:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "playwright": "1.63.0"
+  }
+}

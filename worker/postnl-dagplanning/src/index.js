@@ -14,7 +14,9 @@ import {
   proxyPoolAan, ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
-import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
+import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
+import { schrijfDagplanning, markeerGereden as markeerRittenGereden } from '../../credentials-shared/src/postnl/schrijver.js'
+import { decimaalTekst } from '../../credentials-shared/src/postnl/tekst.js'
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt
@@ -275,81 +277,35 @@ async function leesShift(page, shift, depotHostname) {
   return resultaat
 }
 
+// Schrijven naar `ritten` gaat sinds floatops/matransport#562 via de gedeelde schrijver
+// (credentials-shared/src/postnl/schrijver.js), dezelfde als de sessiehouder:
+// - een rit is uniek op ritnummer + kanaal; de Dagplanning toont alleen HD-ritten (#560);
+// - altijd op klant_id gefilterd, ook bij het lezen van wat er al staat;
+// - geen "dubbelen verwijderen" meer: die stap haalde de AD-rit (bv. 307 's avonds) weg;
+// - alleen gewijzigde velden, en een databasefout gooit in plaats van stil te blijven.
 async function opslaanInSupabase(alleRitten, datum, depotNaam, markeerGereden = false, statusVoorNieuw = 'gepland') {
-  const nu = new Date().toISOString()
-  const klantId = KLANT_ID
-
-  // Haal ALLE bestaande ritten op voor datum + depot (ook eventuele duplicaten)
-  const { data: bestaande } = await supabase
-    .from('ritten').select('id, ritnummer')
-    .eq('datum', datum).eq('depot', depotNaam)
-
-  // Groepeer op genormaliseerd ritnummer
-  const groepen = new Map()
-  for (const r of bestaande ?? []) {
-    const key = String(parseInt(r.ritnummer, 10))
-    if (!groepen.has(key)) groepen.set(key, [])
-    groepen.get(key).push(r.id)
-  }
-
-  // Verwijder dubbele rijen — bewaar enkel de eerste (oudste) per ritnummer
-  for (const [rnr, ids] of groepen) {
-    if (ids.length > 1) {
-      await supabase.from('ritten').delete().in('id', ids.slice(1))
-      console.log(`[${depotNaam}] ${datum}: rit ${rnr} had ${ids.length} dubbelen, ${ids.length - 1} verwijderd`)
-    }
-  }
-
-  // Bouw map: genormaliseerd ritnummer → enig overgebleven id
-  const bestaandeMap = new Map([...groepen.entries()].map(([k, ids]) => [k, ids[0]]))
-
-  const teUpdaten = []
-  const teInserten = []
-
-  for (const rit of alleRitten) {
-    const velden = {
-      postnl_stops:            rit.stops,
-      postnl_stuks:            rit.stuks,
-      postnl_volume:           rit.volume,
-      postnl_briefbusstops:    rit.brievenbusstops,
-      postnl_gewicht:          rit.gewicht,
-      postnl_geplande_duur:    rit.duur,
-      postnl_chauffeur:        rit.chauffeur,
-      postnl_shift:            rit.shift,
-      postnl_ritnaam:          rit.ritnaam,
-      postnl_laatst_opgehaald: nu,
-      postnl_sync_status:      'opgehaald',
-      postnl_sync_error:       null,
-    }
-
-    const id = bestaandeMap.get(rit.ritnummer)
-    if (id) {
-      teUpdaten.push({ id, ritnummer: rit.ritnummer, depot: depotNaam, ...velden })
-    } else {
-      teInserten.push({
-        datum,
-        status:    statusVoorNieuw,
-        shift:     rit.shift,
-        ritnummer: rit.ritnummer,
-        depot:     depotNaam,
-        klant_id:  klantId,
-        ...velden,
-      })
-    }
-  }
-
-  await Promise.all([
-    ...teUpdaten.map(({ id, ...v }) => supabase.from('ritten').update(v).eq('id', id)),
-    teInserten.length ? supabase.from('ritten').insert(teInserten) : Promise.resolve(),
-  ])
-
+  const gelezen = alleRitten.map(r => ({
+    ritnummer: r.ritnummer,
+    kanaal: 'HD',
+    shift: r.shift,
+    velden: {
+      postnl_stops:         r.stops,
+      postnl_stuks:         r.stuks,
+      postnl_volume:        decimaalTekst(r.volume),
+      postnl_briefbusstops: r.brievenbusstops,
+      postnl_gewicht:       decimaalTekst(r.gewicht),
+      postnl_geplande_duur: r.duur,
+      postnl_chauffeur:     r.chauffeur,
+      postnl_shift:         r.shift,
+      postnl_ritnaam:       r.ritnaam,
+    },
+  }))
+  const uit = await schrijfDagplanning(supabase, { klantId: KLANT_ID, datum, depot: depotNaam, gelezen, statusNieuw: statusVoorNieuw })
   if (markeerGereden) {
-    await supabase.from('ritten').update({ status: 'gereden' })
-      .eq('datum', datum).eq('depot', depotNaam).neq('status', 'gereden')
+    await markeerRittenGereden(supabase, { klantId: KLANT_ID, datum, depot: depotNaam })
     console.log(`[${depotNaam}] Ritten van ${datum} op Gereden gezet`)
   }
-
-  console.log(`[${depotNaam}] ${datum}: bijgewerkt ${teUpdaten.length}, nieuw ${teInserten.length}`)
+  console.log(`[${depotNaam}] ${datum}: bijgewerkt ${uit.bijgewerkt}, nieuw ${uit.nieuw}`)
 }
 
 // Navigates to dagplanning and returns the date select locator (or null if absent).
@@ -457,8 +413,11 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
   // de sessie terug naar de startpagina en gaf stil "0 ritten".
   const slot = await pakSessieSlot(supabase, {
     klantId: KLANT_ID, depot: depot.naam, worker: 'postnl-dagplanning',
-    seconden: 600, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] `,
+    seconden: 600, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] `, wijkVoorSessiehouder: true,
   })
+  // De sessiehouder (#562) leest deze login al; bezet door een ander = overslaan, nooit tegelijk.
+  if (slot.overgenomen) { console.log(`[${depot.naam}] Sessiehouder actief: niets te doen`); return 0 }
+  if (slot.bezet) throw new Error('Sessie-slot bezet door een ander proces: deze poging overgeslagen')
   try {
     return await syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, vandaag)
   } finally {
@@ -696,6 +655,15 @@ const runAll  = process.argv.includes('--all')  || process.env.RUN_ALL  === 'tru
 const runDatum = process.argv.find(a => /^\d{4}-\d{2}-\d{2}$/.test(a)) || process.env.SYNC_DATUM || null
 
 async function syncMetRetry(markeer, allesDatums = false, syncDatum = null, pogingen = 3) {
+  // De sessiehouder (#562) heeft elke login: dan is dit vangnet-script niet nodig (geen run-log).
+  // Een expliciete datum of --all (handmatig herstel) draait wel, met het slot zoals altijd.
+  if (!allesDatums && !syncDatum) {
+    const depots = await getDepots(supabase, KLANT_ID, 'postnl')
+    if (await sessiehouderHeeftAlles(supabase, KLANT_ID, depots.map(d => d.naam))) {
+      console.log('Sessiehouder actief voor alle depots: niets te doen')
+      return
+    }
+  }
   const runLogId = await startRunLog()
   sessieVideos.clear()
   for (let poging = 1; poging <= pogingen; poging++) {
