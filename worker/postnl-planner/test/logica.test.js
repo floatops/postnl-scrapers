@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, rittenUit,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, rittenUit,
   selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen,
 } from '../src/logica.js'
 
@@ -155,4 +155,16 @@ test('fout in gewone taal voor de planner', () => {
   assert.match(foutVoorPlanner('PostNL reageerde niet binnen de wachttijd'), /niet op tijd/)
   assert.equal(foutVoorPlanner('Dag 31-10-2026 staat niet in de PostNL-planning.'), 'Dag 31-10-2026 staat niet in de PostNL-planning.')
   assert.match(foutVoorPlanner('iets raars'), /Er ging iets mis/)
+})
+
+test('trace staat tot en met de einddatum aan, en is met de omgeving te forceren', () => {
+  assert.equal(traceAan(new Date('2026-11-08T21:00:00Z'), {}), true)
+  assert.equal(traceAan(new Date('2026-11-08T23:30:00Z'), {}), false)
+  assert.equal(traceAan(new Date('2026-11-02T08:00:00Z'), { PLANNER_TRACE: 'uit' }), false)
+  assert.equal(traceAan(new Date('2027-01-01T08:00:00Z'), { PLANNER_TRACE: 'aan' }), true)
+})
+
+test('alleen traces ouder dan de bewaartermijn gaan weg', () => {
+  const namen = ['den-hoorn-ophalen-2026-10-01_08-00-00.zip', 'den-hoorn-ophalen-2026-11-01_08-00-00.zip', 'iets-anders.webm']
+  assert.deepEqual(teOudeTraces(namen, new Date('2026-11-02T08:00:00Z')), ['den-hoorn-ophalen-2026-10-01_08-00-00.zip'])
 })

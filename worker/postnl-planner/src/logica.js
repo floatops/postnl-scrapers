@@ -217,3 +217,24 @@ export function foutVoorPlanner(bericht) {
   if (/geblokkeerd|403/i.test(t)) return 'PostNL weigerde de verbinding. Probeer het over een paar minuten opnieuw.'
   return 'Er ging iets mis bij PostNL. Probeer het opnieuw; blijft het misgaan, meld het dan.'
 }
+
+// Playwright-trace naast de video, tijdelijk (keuze eigenaar 02-11): per stap een schermafdruk, de
+// HTML van de pagina en het netwerkverkeer, om een nieuw scherm van PostNL meteen te begrijpen.
+export const TRACE_TOT = '2026-11-08'
+export const TRACE_BEWAAR_DAGEN = 14
+
+export function traceAan(nu = new Date(), env = process.env) {
+  if (env.PLANNER_TRACE === 'uit') return false
+  if (env.PLANNER_TRACE === 'aan') return true
+  const vandaag = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Amsterdam' }).format(nu)
+  return vandaag <= TRACE_TOT
+}
+
+// Traces ouder dan de bewaartermijn, op de tijdstempel in de naam ("...-2026-11-02_06-48-04.zip").
+export function teOudeTraces(namen, nu = new Date(), dagen = TRACE_BEWAAR_DAGEN) {
+  const grens = new Date(nu.getTime() - dagen * 86_400_000).toISOString().slice(0, 10)
+  return namen.filter(n => {
+    const m = n.match(/-(\d{4}-\d{2}-\d{2})_\d{2}-\d{2}-\d{2}\.zip$/)
+    return m && m[1] < grens
+  })
+}

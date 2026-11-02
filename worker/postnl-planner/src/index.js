@@ -15,10 +15,10 @@ import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, proxyPoolAan, ProxyBlokkadeError } from '../../credentials-shared/src/proxyPool.js'
-import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
+import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, selectieKlopt, stopNaarRij,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -81,6 +81,8 @@ async function openDagplanning(page, depot) {
   const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => null)
   if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
   if (page.url().includes('loginpostnl') || page.url().includes('/authorize')) await login(page, depot)
+  // Pas na het inloggen: zo komt het wachtwoord nooit in de trace.
+  if (traceAan()) await page.context().tracing.start({ screenshots: true, snapshots: true }).catch(() => {})
   // Vlak na het inloggen komt een klik op het menu soms niet aan en blijft PostNL op de
   // startpagina staan (02-11 06:26, op de video). Dan nog eens.
   const planning = page.locator('a.mx-name-menuBar1-2, a[title="Planning"]').first()
@@ -365,6 +367,8 @@ async function metSessie(depot, doorvoeren, werk) {
     throw err
   } finally {
     await afmelden(page)
+    const tracePad = traceAan() ? path.join(videoDir, 'trace.zip') : null
+    if (tracePad) await context.tracing.stop({ path: tracePad }).catch(() => {})
     const video = page.video()
     await context.close().catch(() => {})
     await browser.close().catch(() => {})
@@ -373,6 +377,7 @@ async function metSessie(depot, doorvoeren, werk) {
     const videoPad = await bewaarVideo(supabase, video,
       bewaren ? foutPad(KLANT_ID, WORKER, depot.naam, new Date(), doorvoeren ? '-doorvoeren' : '') : latestPad(KLANT_ID, WORKER, depot.naam), `[${depot.naam}] `).catch(() => null)
     if (bewaren) await ruimOudeFoutVideosOp(supabase, KLANT_ID, WORKER).catch(() => {})
+    laatsteTrace = tracePad ? await bewaarTrace(tracePad, depot.naam, doorvoeren ? 'doorvoeren' : 'ophalen') : null
     await slot.los()
     await fs.rm(videoDir, { recursive: true, force: true }).catch(() => {})
     laatsteVideo = videoPad ? { depot: depot.naam, storage_path: videoPad, ...(mislukt && { soort: 'mislukte_poging' }), ...(doorvoeren && !mislukt && { soort: 'doorvoer' }) } : null
@@ -380,6 +385,25 @@ async function metSessie(depot, doorvoeren, werk) {
 }
 
 let laatsteVideo = null
+let laatsteTrace = null
+
+// Best-effort, zoals de video: een trace mag een opdracht nooit laten mislukken. Ruimt de oude op.
+async function bewaarTrace(lokaal, depotNaam, soort) {
+  try {
+    const map = `${KLANT_ID}/${WORKER}/trace`
+    const pad = `${map}/${depotSlug(depotNaam)}-${soort}-${nlTijdstempel()}.zip`
+    const { error } = await supabase.storage.from(BUCKET).upload(pad, await fs.readFile(lokaal), { contentType: 'application/zip', upsert: true })
+    if (error) throw error
+    console.log(`[${depotNaam}] Trace opgeslagen: ${pad}`)
+    const { data } = await supabase.storage.from(BUCKET).list(map, { limit: 1000 })
+    const weg = teOudeTraces((data ?? []).map(o => o.name))
+    if (weg.length) await supabase.storage.from(BUCKET).remove(weg.map(n => `${map}/${n}`))
+    return { depot: depotNaam, storage_path: pad, soort: 'trace' }
+  } catch (err) {
+    console.error('Trace-opslag mislukt (gaat gewoon door):', err.message)
+    return null
+  }
+}
 let tellingDoorvoer = {}
 
 async function verwerk(taak) {
@@ -424,7 +448,7 @@ async function verwerk(taak) {
       status: fout ? 'mislukt' : tellingDoorvoer.mislukt ? 'deels_mislukt' : 'ok', afgerond_at: new Date().toISOString(),
       rijen_gelezen: Object.values(tellingDoorvoer).reduce((n, x) => n + x, 0),
       foutmelding: fout ? fout.message.slice(0, 500) : Object.keys(tellingDoorvoer).length ? JSON.stringify(tellingDoorvoer) : null,
-      video_paths: laatsteVideo ? [laatsteVideo] : null,
+      video_paths: [laatsteVideo, laatsteTrace].filter(Boolean).length ? [laatsteVideo, laatsteTrace].filter(Boolean) : null,
     }).eq('id', run.id)
   }
 }
