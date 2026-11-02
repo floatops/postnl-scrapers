@@ -259,7 +259,7 @@ async function syncMonitorDepot(depot) {
     if (pad) foutVideoPaths.push(pad)
     ;({ browser, context, page, sessie } = await openDepotSessie(depot))
     sessieLezingen = 0
-    await page.waitForTimeout(1000)
+    await new Promise(r => setTimeout(r, 1000))
   }
 
   try {
@@ -332,7 +332,9 @@ async function syncMonitorDepot(depot) {
         continue
       }
       if (Date.now() + CONFIG.intervalSec * 1000 > deadline) break
-      await page.waitForTimeout(CONFIG.intervalSec * 1000)
+      // Niet via de page wachten: crasht de browser tijdens het wachten, dan gooit dat buiten de
+      // foutafhandeling hierboven. Zo ziet de volgende lezing de crash en opent een nieuwe sessie.
+      await new Promise(r => setTimeout(r, CONFIG.intervalSec * 1000))
     }
 
     if (depot.storageState) await context.storageState({ path: depot.storageState })
