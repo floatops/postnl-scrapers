@@ -14,10 +14,13 @@ const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-$
 export class DagNietBeschikbaar extends Error {}
 
 // Dagplanning openen op de dag van vandaag. Staat de dag er nog niet: DagNietBeschikbaar.
+// Geeft de index in sessie.antwoorden waar de data van deze dag begint (zie kiesDag).
 async function naarDag(sessie, datum) {
+  const geopend = sessie.antwoorden.length
   await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
   try {
-    await kiesDag(sessie.page, dagLabel(datum), sessie.antwoorden)
+    const { vanaf } = await kiesDag(sessie.page, dagLabel(datum), sessie.antwoorden)
+    return vanaf ?? geopend
   } catch (err) {
     if (err.dagOntbreekt) throw new DagNietBeschikbaar(err.message)
     throw err
@@ -34,6 +37,9 @@ async function leesShift(sessie, shift, datum) {
 
 async function schrijf(ctx, gelezen, datum) {
   const uit = await schrijfDagplanning(ctx.supabase, { klantId: ctx.klantId, datum, depot: ctx.depot.naam, gelezen, kolommen: ctx.kolommen })
+  if (uit.tegenstrijdig?.length) {
+    throw Object.assign(new Error(`Twee verschillende versies van rit(ten) ${uit.tegenstrijdig.join(', ')}: niet geschreven`), { deels: uit })
+  }
   if (uit.kanaalOnbekend.length) {
     // Niet stil: deze ritten zijn niet geschreven, en dat staat in de run-log.
     throw Object.assign(new Error(`Kanaal onbekend voor rit(ten) ${uit.kanaalOnbekend.join(', ')}: niet geschreven`), { deels: uit })
@@ -45,15 +51,16 @@ export const HANDLERS = {
   // Volle lezing: alle shifts, ritten aanmaken, deadline per shift één keer vastleggen.
   async ochtend(ctx, dag) {
     const { sessie, nu } = ctx
+    let begin
     try {
-      await naarDag(sessie, dag.datum)
+      begin = await naarDag(sessie, dag.datum)
     } catch (err) {
       if (err instanceof DagNietBeschikbaar) return { dag: naOchtendNietBeschikbaar(dag, { nu, cfg: ctx.cfg }), run: null, melding: 'dag nog niet in PostNL' }
       throw err
     }
     const shifts = await shiftsOpScherm(sessie.page)
     if (!shifts.length) throw new Error('Geen shifts zichtbaar in de Dagplanning')
-    const alle = [...sessie.antwoorden]
+    const alle = sessie.antwoorden.slice(begin)
     const perShift = {}
     for (const shift of shifts) {
       const r = await leesShift(sessie, shift, dag.datum)
@@ -78,9 +85,9 @@ export const HANDLERS = {
   // Eén shift na zijn deadline: geautoriseerd? Dan (of via het vangnet) de definitieve lezing.
   async definitief(ctx, dag, { shift }) {
     const { sessie, nu } = ctx
-    await naarDag(sessie, dag.datum)
+    const begin = await naarDag(sessie, dag.datum)
     const r = await leesShift(sessie, shift, dag.datum)
-    const ritten = dagplanningRitten(sessie.antwoorden)
+    const ritten = dagplanningRitten(sessie.antwoorden.slice(begin))
       .filter(x => (!x.datum || x.datum === dag.datum) && x.shiftPostnl === String(parseInt(shift, 10)))
     const geautoriseerd = ritten.length > 0 && ritten.every(x => x.geautoriseerd === true)
     const besluit = naDefinitief(dag, shift, { nu, geautoriseerd, cfg: ctx.cfg })

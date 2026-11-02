@@ -52,11 +52,19 @@ export function planRitten({ bestaande, gelezen, klantId, datum, depot, nu, stat
   const updates = []
   const inserts = []
   const kanaalOnbekend = []
+  // Twee verschillende versies van dezelfde rit (bv. van twee dagen): niet gokken, niet schrijven.
+  const versies = new Map()
+  for (const rit of gelezen) {
+    if (!rit.kanaal) continue
+    const s = ritSleutel(rit.ritnummer, rit.kanaal)
+    versies.set(s, [...(versies.get(s) ?? []), JSON.stringify(rit.velden)])
+  }
+  const tegenstrijdig = [...versies].filter(([, v]) => new Set(v).size > 1).map(([s]) => s.split('|')[0])
   const gezien = new Set()
   for (const rit of gelezen) {
     if (!rit.kanaal) { kanaalOnbekend.push(normaliseerRitnummer(rit.ritnummer)); continue }
     const sleutel = ritSleutel(rit.ritnummer, rit.kanaal)
-    if (gezien.has(sleutel)) continue
+    if (gezien.has(sleutel) || tegenstrijdig.includes(sleutel.split('|')[0])) continue
     gezien.add(sleutel)
     const velden = {
       ...filterKolommen(rit.velden, kolommen),
@@ -80,7 +88,7 @@ export function planRitten({ bestaande, gelezen, klantId, datum, depot, nu, stat
       })
     }
   }
-  return { updates, inserts, kanaalOnbekend }
+  return { updates, inserts, kanaalOnbekend, tegenstrijdig }
 }
 
 const LEES_KOLOMMEN = ['id', 'ritnummer', 'postnl_kanaal', 'postnl_stops', 'postnl_stuks', 'postnl_volume', 'postnl_gewicht',
@@ -113,7 +121,7 @@ export async function schrijfDagplanning(supabase, { klantId, datum, depot, gele
     await vereis(supabase.from('ritten').update(u.velden).eq('id', u.id).eq('klant_id', klantId), 'rit bijwerken')
   }
   if (plan.inserts.length) await vereis(supabase.from('ritten').insert(plan.inserts), 'ritten aanmaken')
-  return { bijgewerkt: plan.updates.length, nieuw: plan.inserts.length, kanaalOnbekend: plan.kanaalOnbekend }
+  return { bijgewerkt: plan.updates.length, nieuw: plan.inserts.length, kanaalOnbekend: plan.kanaalOnbekend, tegenstrijdig: plan.tegenstrijdig }
 }
 
 // Ritten van een dag in het verleden op Gereden zetten, alleen van deze klant en dit depot.

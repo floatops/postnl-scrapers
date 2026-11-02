@@ -53,6 +53,10 @@ export async function dagenInKeuzelijst(page, ms = 20_000) {
 }
 
 // Kiest de dag (label "DD-MM-JJJJ") en wacht tot de shifts van die dag binnen zijn.
+// Geeft { vanaf }: de index in `antwoorden` waar de data van deze dag begint als er opnieuw
+// gekozen moest worden, anders null (dan stond de dag al open en hoort alles sinds het openen
+// erbij). Rond middernacht staat de volgende dag al standaard open: de antwoorden van dát laden
+// horen niet bij de gekozen dag (02-11: de aantallen van 03-11 kwamen zo in de ritten van 02-11).
 export async function kiesDag(page, label, antwoorden, { ms = 20_000 } = {}) {
   const staatErin = await page.waitForFunction(({ sel, l }) => {
     const el = document.querySelector(sel)
@@ -61,12 +65,14 @@ export async function kiesDag(page, label, antwoorden, { ms = 20_000 } = {}) {
   if (!staatErin) throw Object.assign(new Error(`Dag ${label} staat niet in de keuzelijst van PostNL`), { dagOntbreekt: true })
   const keuzelijst = page.locator(SEL_DAG).first()
   const huidig = await keuzelijst.evaluate(el => el.options[el.selectedIndex]?.label.trim()).catch(() => null)
+  let vanaf = null
   if (huidig !== label) {
-    const vanaf = antwoorden.length
+    vanaf = antwoorden.length
     await keuzelijst.selectOption({ label })
     await wachtOpObject(antwoorden, vanaf, 'OperationalPlanning.Shift', ms)
   }
   await page.locator(`${SEL_SHIFTS} tbody tr td`).first().waitFor({ state: 'visible', timeout: ms })
+  return { vanaf }
 }
 
 // De shifts zoals het scherm ze toont ("01", "03", …), niet een vaste lijst.

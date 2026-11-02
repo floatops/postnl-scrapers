@@ -157,7 +157,36 @@ test('schrijfDagplanning: lezen en bijwerken altijd met klant_id; een databasefo
   const sb = nepSupabase({ bestaande: [{ id: 'x', ritnummer: '114', postnl_kanaal: null, postnl_stops: 4 }] })
   const uit = await schrijfDagplanning(sb, { klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU,
     gelezen: [{ ritnummer: '114', kanaal: 'HD', shift: '1', velden: { postnl_stops: 5 } }] })
-  assert.deepEqual(uit, { bijgewerkt: 1, nieuw: 0, kanaalOnbekend: [] })
+  assert.deepEqual(uit, { bijgewerkt: 1, nieuw: 0, kanaalOnbekend: [], tegenstrijdig: [] })
   for (const q of sb.log) assert.ok(q.filters.some(([k, v]) => k === 'klant_id' && v === 'k'), `${q.soort} zonder klant_id`)
   await assert.rejects(schrijfDagplanning(nepSupabase({ fout: { message: 'kapot' } }), { klantId: 'k', datum: 'd', depot: 'D', gelezen: [] }), /kapot/)
+})
+
+// 03-11 00:10: de volgende dag stond standaard open, daarna werd 02-11 gekozen. Zonder RideID
+// (datum null) had rit 448 twee versies; de schrijver nam de eerste (138 stops van 03-11).
+test('dagwissel: alleen de antwoorden na het kiezen van de dag tellen; twee versies worden niet geschreven', () => {
+  const dag = (ritGuid, stops, geautoriseerd) => ({ objects: [shiftObj('s3', '03'), ritNummer({
+    guid: `n-${ritGuid}`, ritGuid, rideId: null, naam: '448', chauffeur: 'Jansen J', shiftGuid: 's3',
+    stops, stuks: 200, volume: '1.5', gewicht: '300', brief: 0, duur: '5u', geautoriseerd,
+  })] })
+  const antwoorden = [dag('morgen', 138, false), dag('vandaag', 122, true)]
+  const vanaf = 1 // kiesDag: hier begon het laden van de gekozen dag
+  // Zonder RideID komt het kanaal van het scherm (Thuisbezorging).
+  const lees = (lijst) => dagplanningRitten(lijst).map(r => ({ ...r, kanaal: 'HD' }))
+
+  const goed = planRitten({ bestaande: [], gelezen: lees(antwoorden.slice(vanaf)), klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
+  assert.equal(goed.inserts.length, 1)
+  assert.equal(goed.inserts[0].postnl_stops, 122)
+  assert.deepEqual(goed.tegenstrijdig, [])
+
+  const fout = planRitten({ bestaande: [], gelezen: lees(antwoorden), klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
+  assert.deepEqual(fout.inserts, [], 'niet gokken welke versie klopt')
+  assert.deepEqual(fout.tegenstrijdig, ['448'])
+})
+
+test('planRitten: dezelfde rit twee keer met gelijke waarden is geen tegenstrijdigheid', () => {
+  const rit = { ritnummer: '12', kanaal: 'HD', shift: '1', velden: { postnl_stops: 5 } }
+  const plan = planRitten({ bestaande: [], gelezen: [rit, { ...rit }], klantId: 'k', datum: 'd', depot: 'D', nu: NU })
+  assert.equal(plan.inserts.length, 1)
+  assert.deepEqual(plan.tegenstrijdig, [])
 })

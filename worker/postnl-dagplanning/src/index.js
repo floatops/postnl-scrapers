@@ -185,35 +185,30 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
 
     let totaalGesynced = 0
     for (const { datum, label } of teSyncen) {
-      const vanaf = antwoorden.length
-      await openDagplanning(page, depot)
-      // Ontbreekt de dag, dan gooit kiesDag (dagOntbreekt): dat telt als fout, nooit stil overslaan.
-      await kiesDag(page, label, antwoorden)
-      // Shifts zoals PostNL ze vandaag toont, niet een vaste lijst.
-      const shifts = await shiftsOpScherm(page)
-      const nietUitgelezen = []
-      for (const shift of shifts) {
+      // Per dag een schoon venster: alleen antwoorden vanaf het moment dat déze dag gekozen is
+      // (kiesDag geeft dat begin). Lukt een shift niet, dan de hele dag opnieuw met een nieuw venster:
+      // een herladen pagina toont eerst de standaarddag, en die data mag er niet tussen komen.
+      let ritten = null
+      let shifts = []
+      for (let poging = 1; poging <= 2 && !ritten; poging++) {
+        const geopend = antwoorden.length
         try {
-          const uitkomst = await kiesShift(page, shift, antwoorden)
-          if (uitkomst === 'geen_ritten') console.log(`[${depot.naam}] Shift ${shift}: geen ritten ontvangen (lege shift)`)
-        } catch (err) {
-          console.log(`[${depot.naam}] Shift ${shift}: opnieuw na fout (${eersteRegel(err)})`)
-          try {
-            await openDagplanning(page, depot)
-            await kiesDag(page, label, antwoorden)
-            await kiesShift(page, shift, antwoorden)
-          } catch (err2) {
-            console.log(`[${depot.naam}] Shift ${shift}: overgeslagen na fout: ${eersteRegel(err2)}`)
-            nietUitgelezen.push(shift)
+          await openDagplanning(page, depot)
+          // Ontbreekt de dag, dan gooit kiesDag (dagOntbreekt): dat telt als fout, nooit stil overslaan.
+          const { vanaf } = await kiesDag(page, label, antwoorden)
+          const begin = vanaf ?? geopend
+          // Shifts zoals PostNL ze vandaag toont, niet een vaste lijst.
+          shifts = await shiftsOpScherm(page)
+          for (const shift of shifts) {
+            const uitkomst = await kiesShift(page, shift, antwoorden)
+            if (uitkomst === 'geen_ritten') console.log(`[${depot.naam}] Shift ${shift}: geen ritten ontvangen (lege shift)`)
           }
+          ritten = dagplanningRitten(antwoorden.slice(begin)).filter(r => !r.datum || r.datum === datum)
+        } catch (err) {
+          if (err.dagOntbreekt || poging >= 2) throw err
+          console.log(`[${depot.naam}] ${datum}: opnieuw na fout (${eersteRegel(err)})`)
         }
       }
-
-      // Een shift die niet uitgelezen kon worden maakt de hele poging mislukt: anders meldde de
-      // run stil "0 ritten" met status ok (#361). syncMetRetry probeert het opnieuw.
-      if (nietUitgelezen.length) throw new Error(`Shift(s) ${nietUitgelezen.join(', ')} niet uitgelezen voor ${datum}`)
-
-      const ritten = dagplanningRitten(antwoorden.slice(vanaf)).filter(r => !r.datum || r.datum === datum)
       console.log(`[${depot.naam}] ${datum}: ${shifts.length} shift(s), ${ritten.length} ritten`)
       const isVerleden = datum < vandaag
       const uit = await schrijfDagplanning(supabase, {
@@ -222,6 +217,7 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
       })
       // Niet stil: een rit zonder bekend kanaal is niet geschreven (een gok gaf #560).
       if (uit.kanaalOnbekend.length) throw new Error(`Kanaal onbekend voor rit(ten) ${uit.kanaalOnbekend.join(', ')}: niet geschreven`)
+      if (uit.tegenstrijdig.length) throw new Error(`Twee verschillende versies van rit(ten) ${uit.tegenstrijdig.join(', ')}: niet geschreven`)
       if (markeerGereden && !isVerleden) {
         await markeerRittenGereden(supabase, { klantId: KLANT_ID, datum, depot: depot.naam })
         console.log(`[${depot.naam}] Ritten van ${datum} op Gereden gezet`)
