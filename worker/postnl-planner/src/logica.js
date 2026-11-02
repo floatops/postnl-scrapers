@@ -218,16 +218,13 @@ export function foutVoorPlanner(bericht) {
   return 'Er ging iets mis bij PostNL. Probeer het opnieuw; blijft het misgaan, meld het dan.'
 }
 
-// Playwright-trace naast de video, tijdelijk (keuze eigenaar 02-11): per stap een schermafdruk, de
-// HTML van de pagina en het netwerkverkeer, om een nieuw scherm van PostNL meteen te begrijpen.
-export const TRACE_TOT = '2026-11-08'
+// Playwright-trace naast de video (keuze eigenaar 02-11, zonder einddatum): per stap een
+// schermafdruk, de HTML van de pagina en het netwerkverkeer, om een nieuw scherm van PostNL
+// meteen te begrijpen. Uitzetten: PLANNER_TRACE=uit in de omgeving van de worker.
 export const TRACE_BEWAAR_DAGEN = 14
 
-export function traceAan(nu = new Date(), env = process.env) {
-  if (env.PLANNER_TRACE === 'uit') return false
-  if (env.PLANNER_TRACE === 'aan') return true
-  const vandaag = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Amsterdam' }).format(nu)
-  return vandaag <= TRACE_TOT
+export function traceAan(env = process.env) {
+  return env.PLANNER_TRACE !== 'uit'
 }
 
 // Traces ouder dan de bewaartermijn, op de tijdstempel in de naam ("...-2026-11-02_06-48-04.zip").

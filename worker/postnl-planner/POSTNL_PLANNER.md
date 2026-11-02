@@ -68,12 +68,12 @@ De keuzelijst `.mx-name-referenceSelector1 select` bij de open rit. Bij een geau
 
 PostNL slaat de gekozen chauffeur **direct** op en toont dan "Wijzig chauffeur: Wilt u de gekozen chauffeur voor de nog komende ritten van dit scenario koppelen?". De worker kiest altijd **"Nee, koppel de chauffeur alleen voor de rit van vandaag"**: een wissel uit Plannen raakt nooit andere dagen. Een ander venster op dat moment = fout, de worker klikt dan niets aan. Tot deze fix bleef de vraag open staan en liep de worker vast, terwijl de wissel zelf al was opgeslagen.
 
-## Playwright-trace (tijdelijk, t/m 08-11)
+## Playwright-trace (aan, zonder einddatum)
 
 Naast de video bewaart de worker bij elke run een trace: per stap een schermafdruk, de HTML van de pagina en het netwerkverkeer. Zo is een nieuw scherm of een nieuwe vraag van PostNL meteen te volgen. Pad: `worker-sessies/{klant_id}/postnl-planner/trace/{depot}-{ophalen|doorvoeren}-{tijdstip}.zip`, ook in `worker_run_log.video_paths` (soort `trace`), 14 dagen bewaard. Bekijken: `npx playwright show-trace <bestand>`.
 
 - Start pas **na het inloggen**: het wachtwoord staat er nooit in. Wel sessiecookies van PostNL, die na het afmelden aan het eind van de run niet meer werken; de bucket is privé.
-- Aan tot en met `TRACE_TOT` (`src/logica.js`). `PLANNER_TRACE=uit` of `aan` in de omgeving overschrijft dat.
+- Staat aan tot `PLANNER_TRACE=uit` in de omgeving van de worker (`/opt/matransport/.env`) staat. Ongeveer 9 MB per run, 14 dagen bewaard.
 
 ## Terugzoeken
 

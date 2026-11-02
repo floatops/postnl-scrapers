@@ -157,11 +157,9 @@ test('fout in gewone taal voor de planner', () => {
   assert.match(foutVoorPlanner('iets raars'), /Er ging iets mis/)
 })
 
-test('trace staat tot en met de einddatum aan, en is met de omgeving te forceren', () => {
-  assert.equal(traceAan(new Date('2026-11-08T21:00:00Z'), {}), true)
-  assert.equal(traceAan(new Date('2026-11-08T23:30:00Z'), {}), false)
-  assert.equal(traceAan(new Date('2026-11-02T08:00:00Z'), { PLANNER_TRACE: 'uit' }), false)
-  assert.equal(traceAan(new Date('2027-01-01T08:00:00Z'), { PLANNER_TRACE: 'aan' }), true)
+test('trace staat aan, tenzij hij in de omgeving uit staat', () => {
+  assert.equal(traceAan({}), true)
+  assert.equal(traceAan({ PLANNER_TRACE: 'uit' }), false)
 })
 
 test('alleen traces ouder dan de bewaartermijn gaan weg', () => {
