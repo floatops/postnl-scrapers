@@ -40,12 +40,14 @@ Meer dan 4 logins per uur per depot = 10 min pauze + melding `te_veel_logins` (n
 
 Gemeten, niet aangenomen: gewone lezingen laten een sessie gewoon verlopen (`einde_reden = 'verlopen'`). Vanaf 3 metingen is de schatting het 10e percentiel van de laatste 30 dagen; vóór schrijvend werk wordt een sessie dan vernieuwd als hij dichter dan 15 min bij dat einde zit.
 
-## Opnames
+## Opnames (op de schijf van de VPS)
 
-- **Trace:** na het inloggen gestart (geen wachtwoord in de trace), daarna een chunk per taak. Geslaagd: `{klant}/postnl-sessie/trace/{depot}-{taak}-latest.zip`; incident: `…/trace/fout/{depot}-{taak}-{tijd}.zip` (30 dagen).
-- **Video:** per browser-context. Een segment eindigt bij sluiten of, met `contextWissel` aan, elke 30 min (nieuwe context met dezelfde cookies, geen login). Zonder incident `{depot}-latest.webm`, met incident naar `fout/`. Zonder contextwissel wordt de browser elke `browserVernieuwenUur` vernieuwd (nieuwe login), zodat een video nooit uren lang wordt.
-- Lokale proef met een echte Chromium tegen een nagemaakt portaal: `node scripts/proef-lokaal.mjs` (inloggen, trace-chunks, contextwissel, gegooid/verlopen herkennen, video bij sluiten).
-- Meting op PostNL zelf (stap 0, 's avonds na 23:00): `scripts/meet.mjs`. Uitkomst in `worker-sessies/{klant}/postnl-sessie/meting/{datum}/{depot}/meting.json` plus video's, traces en schermafdrukken.
+Opnames staan op de VPS, niet in de database-opslag (die is duur; de VPS heeft ruimte): `$OPNAME_ROOT` (standaard `/var/log/workers/postnl/opnames`) `/{klant}/{depot}/`.
+- **Trace:** na het inloggen gestart (geen wachtwoord in de trace), daarna een chunk per taak. Geslaagd: `trace-{taak}-latest.zip`; incident: `fout/trace-{taak}-{tijd}.zip`.
+- **Video:** per browser-context. Een segment eindigt bij sluiten of, met `contextWissel` aan, elke 30 min (nieuwe context met dezelfde cookies, geen login). Zonder incident `video-latest.webm`, met incident `fout/video-{tijd}.webm`. Zonder contextwissel wordt de browser elke `browserVernieuwenUur` vernieuwd (nieuwe login), zodat een video nooit uren lang wordt.
+- `fout/` wordt na 30 dagen door de worker zelf opgeruimd (bij elke login). `postnl_sessies.video_path` en de gebeurtenissen bevatten het pad op de VPS. Bekijken: `scp matransport-vps:<pad> .` en `npx playwright show-trace <zip>`.
+- Lokale proef met een echte Chromium tegen een nagemaakt portaal: `node scripts/proef-lokaal.mjs`.
+- Meting op PostNL zelf (stap 0): `scripts/meet.mjs` → `$OPNAME_ROOT/meting/{datum}/{depot}/` met `meting.json`, video's, traces en schermafdrukken. Overdag met `--zonder-levensduur` (anders houdt hij het slot uren vast); de levensduur meet de sessiehouder zelf.
 
 ## Logboek en wachtdogs
 

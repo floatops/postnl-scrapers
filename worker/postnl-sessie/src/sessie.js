@@ -6,15 +6,36 @@
 // - Trace: na het inloggen één keer gestart, daarna een chunk per taak. Wachtwoorden komen zo
 //   nooit in de trace.
 // - Alle Mendix-antwoorden van de huidige taak worden bewaard (`antwoorden`) voor de lezers.
+// - Opnames (trace, video) gaan naar de schijf van de VPS, niet naar de database-opslag (duur):
+//   $OPNAME_ROOT/{klant}/{depot}/…-latest.* en …/fout/…-{tijd}.* (30 dagen, zelf opgeruimd).
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
 import { naarDepot } from '../../credentials-shared/src/postnl/login.js'
 import { volgMendix } from '../../postnl-planner/src/mendix.js'
-import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
+import { depotSlug, nlTijdstempel, BEWAAR_DAGEN } from '../../credentials-shared/src/sessieVideo.js'
 
 export const WORKER = 'postnl-sessie'
+export const OPNAME_ROOT = process.env.OPNAME_ROOT || '/var/log/workers/postnl/opnames'
+
+// Kopieert een opname naar de VPS-map. Geslaagd: …-latest (overschreven); incident: fout/ met tijd.
+export async function bewaarOpname(map, bron, naam, ext, incident) {
+  const doel = incident ? path.join(map, 'fout', `${naam}-${nlTijdstempel()}.${ext}`) : path.join(map, `${naam}-latest.${ext}`)
+  await fs.mkdir(path.dirname(doel), { recursive: true })
+  await fs.copyFile(bron, doel)
+  return doel
+}
+
+// Foutopnames ouder dan BEWAAR_DAGEN weg.
+export async function ruimOpnamesOp(map, nu = Date.now()) {
+  const fout = path.join(map, 'fout')
+  const namen = await fs.readdir(fout).catch(() => [])
+  for (const n of namen) {
+    const st = await fs.stat(path.join(fout, n)).catch(() => null)
+    if (st && nu - st.mtimeMs > BEWAAR_DAGEN * 86400_000) await fs.rm(path.join(fout, n), { force: true })
+  }
+}
 const VIDEO = { width: 1280, height: 720 }
 
 export class Sessie {
@@ -32,6 +53,7 @@ export class Sessie {
     this.herlogins = 0
     this.incidentInSegment = false
     this.depotHost = new URL(depot.url).hostname
+    this.opnameMap = path.join(OPNAME_ROOT, klantId, depotSlug(depot.naam))
   }
 
   get open() { return Boolean(this.page && !this.page.isClosed()) }
@@ -43,6 +65,7 @@ export class Sessie {
     if (process.env.CHROMIUM_EXECUTABLE_PATH) opties.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
     if (this.proxy) opties.proxy = this.proxy.proxy
     try {
+      await ruimOpnamesOp(this.opnameMap).catch(() => {})
       this.browser = await this.chromium.launch(opties)
       await this.#nieuweContext()
       await naarDepot(this.page, this.depot, { log: this.log })
@@ -98,13 +121,7 @@ export class Sessie {
     const lokaal = path.join(this.videoDir ?? os.tmpdir(), `trace-${naam}-${Date.now()}.zip`)
     try {
       await this.context.tracing.stopChunk({ path: lokaal })
-      const map = `${this.klantId}/${WORKER}/trace`
-      const pad = incident
-        ? `${map}/fout/${depotSlug(this.depot.naam)}-${naam}-${nlTijdstempel()}.zip`
-        : `${map}/${depotSlug(this.depot.naam)}-${naam}-latest.zip`
-      const { error } = await this.supabase.storage.from(BUCKET).upload(pad, await fs.readFile(lokaal), { contentType: 'application/zip', upsert: true })
-      if (error) throw error
-      return pad
+      return await bewaarOpname(this.opnameMap, lokaal, `trace-${naam}`, 'zip', incident)
     } catch (err) {
       this.log.warn(`[${this.depot.naam}] Trace opslaan mislukt (gaat door): ${err.message}`)
       return null
@@ -137,11 +154,15 @@ export class Sessie {
   async #bewaarVideo(page, dir, incident) {
     const video = page?.video()
     if (!video) return null
-    const pad = incident ? foutPad(this.klantId, WORKER, this.depot.naam) : latestPad(this.klantId, WORKER, this.depot.naam)
-    const opgeslagen = await bewaarVideo(this.supabase, video, pad, `[${this.depot.naam}] `).catch(() => null)
-    if (incident && opgeslagen) await ruimOudeFoutVideosOp(this.supabase, this.klantId, WORKER).catch(() => {})
-    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
-    return opgeslagen
+    try {
+      const bron = await video.path()
+      return await bewaarOpname(this.opnameMap, bron, 'video', 'webm', incident)
+    } catch (err) {
+      this.log.warn(`[${this.depot.naam}] Video opslaan mislukt (gaat door): ${err.message}`)
+      return null
+    } finally {
+      await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+    }
   }
 
   // Sluiten met een reden (verlopen, gegooid, blokkade, nacht, leeg, herstart, …). Idempotent.

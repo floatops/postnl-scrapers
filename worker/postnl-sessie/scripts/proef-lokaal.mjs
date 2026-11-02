@@ -9,7 +9,8 @@ import path from 'node:path'
 import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
-import { Sessie } from '../src/sessie.js'
+process.env.OPNAME_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'opnames-'))
+const { Sessie } = await import('../src/sessie.js')
 import { classificeer } from '../src/gezondheid.js'
 import { mergeInstellingen } from '../src/instellingen.js'
 import { SEL_PLANNING } from '../../credentials-shared/src/postnl/login.js'
@@ -39,8 +40,13 @@ const server = http.createServer((req, res) => {
 await new Promise(r => server.listen(0, '127.0.0.1', r))
 const url = `http://127.0.0.1:${server.address().port}/index.html`
 
-const uploads = []
-const supabase = { storage: { from: () => ({ upload: async (pad, buf) => { uploads.push({ pad, kb: Math.round(buf.length / 1024) }); return { error: null } }, list: async () => ({ data: [] }), remove: async () => ({}) }) } }
+const supabase = {}
+async function opnames() {
+  const uit = []
+  const loop = async (d) => { for (const n of await fs.readdir(d, { withFileTypes: true }).catch(() => [])) { const p = path.join(d, n.name); if (n.isDirectory()) await loop(p); else uit.push({ pad: p.split(path.sep).join('/'), kb: Math.round((await fs.stat(p)).size / 1024) }) } }
+  await loop(process.env.OPNAME_ROOT)
+  return uit
+}
 const opslag = { sessieStart: async () => 'sessie-1', sessieBij: async (id, v) => { opslag.laatst = v } }
 const depot = { naam: 'Proefdepot', url, username: 'u', password: 'p' }
 const s = new Sessie({ depot, klantId: 'k', supabase, chromium, opslag, cfg: mergeInstellingen({}), log: { log() {}, warn: console.warn, error: console.error } })
@@ -53,16 +59,16 @@ try {
   await s.taakBegin('ritmonitor')
   await s.page.reload()
   const pad1 = await s.taakEinde('ritmonitor')
-  assert.match(pad1, /trace\/proefdepot-ritmonitor-latest\.zip$/)
+  assert.match(pad1.split(path.sep).join('/'),/proefdepot\/trace-ritmonitor-latest\.zip$/)
   await s.taakBegin('ritmonitor')
   await s.page.reload()
   const pad2 = await s.taakEinde('ritmonitor', { incident: true })
-  assert.match(pad2, /trace\/fout\/proefdepot-ritmonitor-/)
+  assert.match(pad2.split(path.sep).join('/'),/proefdepot\/fout\/trace-ritmonitor-/)
   console.log('✔ trace-chunk per taak: geslaagd → latest, incident → fout/')
 
   const nogIngelogd = await s.nieuwSegment()
   assert.equal(nogIngelogd, true, 'contextwissel met dezelfde cookies blijft ingelogd')
-  assert.ok(uploads.some(u => /postnl-sessie\/proefdepot-latest\.webm$/.test(u.pad) || /postnl-sessie\/fout\//.test(u.pad)), 'video van het vorige segment opgeslagen')
+  assert.ok((await opnames()).some(u => /video-/.test(u.pad) && u.pad.endsWith('.webm')), 'video van het vorige segment opgeslagen')
   console.log('✔ nieuw videosegment zonder nieuwe login, vorige video opgeslagen')
 
   gegooid = true
@@ -79,9 +85,9 @@ try {
 
   await s.sluiten('verlopen')
   assert.equal(opslag.laatst.einde_reden, 'verlopen')
-  assert.ok(uploads.some(u => /postnl-sessie\/fout\/proefdepot-/.test(u.pad) && u.pad.endsWith('.webm')), 'video van een incident naar fout/')
+  assert.ok((await opnames()).some(u => /\/fout\/video-/.test(u.pad)), 'video van een incident naar fout/')
   console.log('✔ sluiten: reden vastgelegd, video naar fout/')
-  console.log('Uploads:', uploads.map(u => `${u.pad.split('/').slice(-2).join('/')} (${u.kb} kB)`).join(', '))
+  console.log('Opnames op schijf:', (await opnames()).map(u => `${u.pad.split('/').slice(-2).join('/')} (${u.kb} kB)`).join(', '))
 } finally {
   await s.sluiten('herstart').catch(() => {})
   server.close()

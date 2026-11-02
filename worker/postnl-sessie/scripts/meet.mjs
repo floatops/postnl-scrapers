@@ -1,9 +1,9 @@
 // Stap 0 van floatops/matransport#562: meten hoe een PostNL-sessie zich gedraagt, vóór de
 // sessiehouder erop vertrouwt. Draait 's avonds na 23:00 (geen andere workers), houdt het
-// sessie-slot vast, en legt alles vast met video, trace en schermafdrukken in
-// worker-sessies/{klant}/postnl-sessie/meting/{datum}/ plus een meting.json met de uitkomsten.
+// sessie-slot vast, en legt alles vast met video, trace en schermafdrukken op de schijf van de
+// VPS (niet in de database): $OPNAME_ROOT/meting/{datum}/{depot}/ plus meting.json.
 //
-//   KLANT_ID=… DEPOT="…" PROXY_POOL=true node scripts/meet.mjs [--tot 06:45]
+//   KLANT_ID=… DEPOT="…" PROXY_POOL=true node scripts/meet.mjs [--tot 06:45] [--zonder-levensduur]
 //
 // Metingen:
 //  1. contextwissel: blijft de sessie ingelogd in een nieuwe context met dezelfde cookies en IP?
@@ -21,7 +21,7 @@ import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
 import { naarDepot, isLoginPagina, SEL_PLANNING } from '../../credentials-shared/src/postnl/login.js'
-import { BUCKET, depotSlug } from '../../credentials-shared/src/sessieVideo.js'
+import { depotSlug } from '../../credentials-shared/src/sessieVideo.js'
 import { vandaagNl, minutenNl } from '../../credentials-shared/src/postnl/tekst.js'
 
 const KLANT_ID = process.env.KLANT_ID
@@ -29,6 +29,8 @@ const DEPOT_NAAM = process.env.DEPOT
 const totArg = process.argv.indexOf('--tot')
 const TOT = totArg > 0 ? process.argv[totArg + 1] : '06:45'
 const [totU, totM] = TOT.split(':').map(Number)
+const ZONDER_LEVENSDUUR = process.argv.includes('--zonder-levensduur')
+const OPNAME_ROOT = process.env.OPNAME_ROOT || '/var/log/workers/postnl/opnames'
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
 const houder = `postnl-sessie-meting:${process.pid}:${randomUUID().slice(0, 8)}`
 const werkmap = await fs.mkdtemp(path.join(os.tmpdir(), 'postnl-meting-'))
@@ -37,12 +39,13 @@ const stap = (naam, data) => { const r = { naam, at: new Date().toISOString(), .
 
 const depot = (await getDepots(supabase, KLANT_ID, 'postnl')).find(d => d.naam === DEPOT_NAAM)
 if (!depot) throw new Error(`Depot ${DEPOT_NAAM} niet gevonden`)
-const map = `${KLANT_ID}/postnl-sessie/meting/${vandaagNl()}/${depotSlug(depot.naam)}`
+const map = path.join(OPNAME_ROOT, 'meting', vandaagNl(), depotSlug(depot.naam))
+await fs.mkdir(map, { recursive: true })
 const sleutel = `${KLANT_ID}:${depot.naam}`
 
-async function upload(lokaal, naam, type) {
-  const { error } = await supabase.storage.from(BUCKET).upload(`${map}/${naam}`, await fs.readFile(lokaal), { contentType: type, upsert: true })
-  if (error) console.error(`upload ${naam}: ${error.message}`)
+// Bewaren op de schijf van de VPS (genoeg ruimte; de database-opslag is duur).
+async function upload(lokaal, naam) {
+  await fs.copyFile(lokaal, path.join(map, naam)).catch(e => console.error(`bewaren ${naam}: ${e.message}`))
 }
 async function schermafdruk(page, naam) {
   const p = path.join(werkmap, `${naam}.png`)
@@ -123,7 +126,9 @@ try {
   await sluit(b, 'tweede login klaar')
   await sluit(a, 'na tweede-login-test')
 
-  // 4. levensduur: verse sessie, elke minuut verversen tot PostNL hem beëindigt.
+  // 4. levensduur: verse sessie, elke minuut verversen tot PostNL hem beëindigt. Overdag overslaan
+  // (--zonder-levensduur): dat houdt het slot uren vast. De sessiehouder meet het zelf.
+  if (ZONDER_LEVENSDUUR) throw Object.assign(new Error('levensduur overgeslagen'), { klaar: true })
   // Zonder video: een hele nacht is te groot. Elke 15 min een schermafdruk, plus het einde.
   const c = await nieuweBrowser('c-levensduur', { video: false })
   await naarDepot(c.page, depot)
@@ -156,5 +161,5 @@ try {
   const p = path.join(werkmap, 'meting.json')
   await fs.writeFile(p, JSON.stringify(uitkomst, null, 2))
   await upload(p, 'meting.json', 'application/json')
-  console.log(`Meting opgeslagen in ${BUCKET}/${map}`)
+  console.log(`Meting opgeslagen in ${map}`)
 }
