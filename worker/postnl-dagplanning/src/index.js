@@ -255,38 +255,32 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
   }
 }
 
-async function syncPostnlStops(markeerGereden = false, allesDatums = false, syncDatum = null) {
-  const actieveDepots = await getDepots(supabase, KLANT_ID, 'postnl')
-  // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij
-  // een ander IP, en het bewezen patroon (GitHub Actions) is elke run vers inloggen.
-  if (proxyPoolAan()) for (const d of actieveDepots) d.storageState = null
-  if (actieveDepots.length === 0) throw new Error('Geen depots geconfigureerd (klant_credentials leeg voor deze klant)')
+// Per depot apart (#562): een fout bij het ene depot laat het andere gewoon doorgaan. Dat kan
+// sinds de gedeelde schrijver niets meer verwijdert en een rit veilig opnieuw schrijft
+// (sleutel ritnummer + kanaal); tot dan sloeg een fout bij Den Hoorn Waddinxveen over.
+// `alleen`: alleen deze depots (de herkansing doet alleen wat faalde).
+async function syncPostnlStops(markeerGereden = false, allesDatums = false, syncDatum = null, alleen = null) {
+  const alleDepots = await getDepots(supabase, KLANT_ID, 'postnl')
+  // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij een ander IP.
+  if (proxyPoolAan()) for (const d of alleDepots) d.storageState = null
+  if (alleDepots.length === 0) throw new Error('Geen depots geconfigureerd (klant_credentials leeg voor deze klant)')
   // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
-  installeerNeutraleConsole({ klantId: KLANT_ID, depots: actieveDepots })
-  console.log(`Start PostNL sync voor ${actieveDepots.map(d => d.naam).join(', ')}`)
+  installeerNeutraleConsole({ klantId: KLANT_ID, depots: alleDepots })
+  const depots = alleen ? alleDepots.filter(d => alleen.includes(d.naam)) : alleDepots
+  console.log(`Start PostNL sync voor ${depots.map(d => d.naam).join(', ')}`)
   const depotsOk = []
+  const mislukt = []
   let ritenTotaal = 0
-  for (const depot of actieveDepots) {
+  for (const depot of depots) {
     try {
-      const aantal = await syncDepot(depot, markeerGereden, allesDatums, syncDatum)
+      ritenTotaal += (await syncDepot(depot, markeerGereden, allesDatums, syncDatum)) ?? 0
       depotsOk.push(depot.naam)
-      ritenTotaal += aantal ?? 0
     } catch (error) {
-      // Geen per-depot-isolatie (bewust anders dan postnl-ritmonitor) — één
-      // mislukte depot laat syncMetRetry de HELE poging opnieuw proberen,
-      // want dagplanning's dedup/insert-logica is niet idempotent-veilig
-      // genoeg om een halve batch achter te laten en later bij te werken.
-      // Wel context aan de error hangen zodat de run-log ziet hoe ver we kwamen.
-      error.depotsOk = depotsOk
-      error.depotsTotaal = actieveDepots.length
-      error.ritenTotaal = ritenTotaal
-      error.depotNaam = depot.naam
-      throw error
+      console.error(`[${depot.naam}] Mislukt (andere depots gaan door): ${String(error.message).split('\n')[0]}`)
+      mislukt.push({ depot: depot.naam, fout: String(error.message).slice(0, 300) })
     }
   }
-  // Chauffeurs koppelen doet de database (#562), niet meer dit script.
-  console.log('Alle depots gesynchroniseerd')
-  return { depotsOk, ritenTotaal, depotsTotaal: actieveDepots.length }
+  return { depotsOk, mislukt, ritenTotaal, depotsTotaal: alleDepots.length }
 }
 
 const runOnce = process.argv.includes('--once') || process.env.RUN_ONCE === 'true'
@@ -305,30 +299,43 @@ async function syncMetRetry(markeer, allesDatums = false, syncDatum = null, pogi
   }
   const runLogId = await startRunLog()
   sessieVideos.clear()
+  const ok = new Set()
+  let teDoen = null
+  let laatste = []
+  let ritenTotaal = 0
+  let totaal = 0
   for (let poging = 1; poging <= pogingen; poging++) {
+    let uit
     try {
-      const { depotsOk, ritenTotaal } = await syncPostnlStops(markeer, allesDatums, syncDatum)
-      await eindeRunLog(runLogId, { status: 'ok', depots_ok: depotsOk.length, rijen_gelezen: ritenTotaal, video_paths: videoPaths() })
-      return
+      uit = await syncPostnlStops(markeer, allesDatums, syncDatum, teDoen)
     } catch (err) {
-      console.error(`Poging ${poging}/${pogingen} mislukt:`, err.message)
-      if (poging < pogingen) {
-        const wacht = poging * 30000
-        console.log(`Wacht ${wacht / 1000}s voor volgende poging...`)
-        await new Promise(r => setTimeout(r, wacht))
-      } else {
-        await eindeRunLog(runLogId, {
-          status: 'mislukt',
-          depots_ok: err.depotsOk?.length ?? 0,
-          depots_mislukt: err.depotNaam ? [{ depot: err.depotNaam, fout: err.message }] : null,
-          rijen_gelezen: err.ritenTotaal ?? null,
-          foutmelding: err.message,
-          video_paths: videoPaths(),
-        })
-        process.exit(1)
-      }
+      // Alleen bij een fout vóór de depots (bv. geen inloggegevens): dan heeft herkansen geen zin.
+      await eindeRunLog(runLogId, { status: 'mislukt', foutmelding: err.message, video_paths: videoPaths() })
+      console.error(err.message)
+      process.exit(1)
+    }
+    uit.depotsOk.forEach(d => ok.add(d))
+    ritenTotaal += uit.ritenTotaal
+    totaal = uit.depotsTotaal
+    laatste = uit.mislukt
+    if (!laatste.length) break
+    teDoen = laatste.map(m => m.depot)
+    if (poging < pogingen) {
+      const wacht = poging * 30000
+      console.log(`Poging ${poging}/${pogingen}: ${teDoen.join(', ')} mislukt — opnieuw over ${wacht / 1000}s, alleen die`)
+      await new Promise(r => setTimeout(r, wacht))
     }
   }
+  const status = !laatste.length ? 'ok' : ok.size ? 'deels_mislukt' : 'mislukt'
+  await eindeRunLog(runLogId, {
+    status, depots_ok: ok.size, rijen_gelezen: ritenTotaal,
+    depots_mislukt: laatste.length ? laatste : null,
+    ...(status === 'mislukt' ? { foutmelding: `Alle depots faalden: ${laatste.map(m => `${m.depot} (${m.fout})`).join('; ')}` } : {}),
+    video_paths: videoPaths(),
+  })
+  console.log(status === 'ok' ? 'Alle depots gesynchroniseerd' : `Dagplanning ${status}: ${laatste.map(m => m.depot).join(', ')} niet gelukt (van ${totaal})`)
+  // Exit 1 alleen als geen enkel depot lukte, net als de ritmonitor (de proefperiode kijkt hiernaar).
+  if (status === 'mislukt') process.exit(1)
 }
 
 if (runOnce || runAll || runDatum) {
