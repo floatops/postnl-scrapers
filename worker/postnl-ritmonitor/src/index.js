@@ -211,7 +211,7 @@ async function openInBrowser(browser, depot) {
 
 // Openen, lezen en schrijven van de Ritmonitor staan sinds floatops/matransport#562 in
 // ritmonitor.js, gedeeld met de sessiehouder (postnl-sessie). Dit script is het vangnet.
-const { koppelChauffeurs, openRitmonitor, leesRitmonitor, opslaanMonitor } = maakRitmonitor({
+const { openRitmonitor, leesRitmonitor, opslaanMonitor } = maakRitmonitor({
   supabase, klantId: KLANT_ID, login: loginPostnl, tijdzone: CONFIG.timezone,
 })
 
@@ -500,9 +500,7 @@ async function syncRitmonitor() {
     throw new Error(`Ritmonitor: alle depots faalden (${mislukt.map(m => m.depot).join(', ')})`)
   }
 
-  // Koppelen mag de run niet laten hangen: een fout komt in de run-log, de lezingen blijven geldig.
-  let koppelFout = null
-  try { await koppelChauffeurs() } catch (err) { koppelFout = err.message; console.error('Chauffeurs koppelen mislukt:', err.message) }
+  // Chauffeurs koppelen doet de database (#562), niet meer dit script.
   const depotsOk = DEPOTS.length - mislukt.length
   await eindeRunLog(runLogId, {
     status: mislukt.length ? 'deels_mislukt' : 'ok',
@@ -512,7 +510,6 @@ async function syncRitmonitor() {
     lezingen: lezingenPerDepot,
     leeg_onbevestigd: leegOnbevestigd,
     video_paths: videoPaths.length ? videoPaths : null,
-    ...(koppelFout && { foutmelding: `Chauffeurs koppelen mislukt: ${koppelFout}` }),
   })
   if (mislukt.length) {
     console.warn(`Ritmonitor: gedeeltelijk gesynchroniseerd — overgeslagen: ${mislukt.map(m => m.depot).join(', ')}`)

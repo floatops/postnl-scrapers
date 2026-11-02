@@ -135,7 +135,7 @@ Náást `--once` (wat GitHub Actions gebruikt) heeft `src/index.js` ook een daem
 
 ## Chauffeur-koppeling
 
-`koppelChauffeurs()` draait na elke succesvolle run (ook bij gedeeltelijk mislukte depots): matcht `ritten.postnl_chauffeur` (tekst zoals PostNL 'm toont) tegen `users.postnl_naam` binnen dezelfde klant, en zet `chauffeur_id` daarop — **niet alleen waar dat nog leeg was**: een rit mag nooit op een andere chauffeur blijven staan dan wie PostNL's eigen data rapporteert, want dat veld bepaalt wie voor de stops betaald krijgt. `@Home`/freelance-ritten (geen `postnl_chauffeur`-waarde) blijven hierdoor automatisch buiten bereik — de match-voorwaarde zelf sluit `null` al uit. Per-klant `users`-lijst wordt één keer opgehaald, dan per gebruiker een gerichte update — geen bulk-matching op naam-gelijkenis.
+**Sinds floatops/matransport#562 doet de database dit, niet de worker.** De trigger `trg_rit_chauffeur_koppeling` op `ritten` zet `chauffeur_id` zodra `postnl_chauffeur` nieuw is of wijzigt: de medewerker met precies die `users.postnl_naam` in dezelfde klant (hoofdletters en spaties maken niet uit, bij naamgenoten niets). Een handmatige keuze blijft staan zolang PostNL dezelfde naam meldt (#362). `trg_users_postnl_naam_koppelen` koppelt bestaande ritten zodra een PostNL-naam wordt ingevuld. De oude `koppelChauffeurs()` (na elke run alle ritten nalopen) is daarmee weg; vóór het weghalen gecontroleerd dat er geen enkele rit was die de trigger zou missen. `@Home`/freelance-ritten (geen `postnl_chauffeur`) blijven buiten bereik.
 
 ## Per-depot foutisolatie
 

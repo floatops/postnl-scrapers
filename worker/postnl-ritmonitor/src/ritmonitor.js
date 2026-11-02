@@ -248,31 +248,8 @@ async function vereis(belofte, wat) {
 // Alles wat Supabase of een browser nodig heeft. `login(page, depot)` is de inlogfunctie van de
 // aanroeper (vangnet-script of sessiehouder).
 export function maakRitmonitor({ supabase, klantId, login, tijdzone = TIJDZONE, log = console }) {
-  // Koppelt chauffeur_id aan postnl_chauffeur — en corrigeert 'm ook als 'ie al gezet was. Een
-  // rit mag nooit een andere chauffeur_id hebben dan wie PostNL's eigen data zegt dat er reed:
-  // dat veld bepaalt wie voor de stops betaald krijgt (rit 333, 12-08). Een handmatige keuze
-  // blijft staan via de trigger rit_chauffeur_handmatig (matransport #362).
-  async function koppelChauffeurs() {
-    const { data: users, error } = await supabase
-      .from('users').select('id, postnl_naam')
-      .eq('klant_id', klantId)
-      .not('postnl_naam', 'is', null).neq('postnl_naam', '')
-    if (error) throw databaseFout('chauffeurs lezen', error)
-    if (!users?.length) return 0
-    let totaal = 0
-    for (const u of users) {
-      const { data, error: e } = await supabase.from('ritten')
-        .update({ chauffeur_id: u.id })
-        .eq('klant_id', klantId)
-        .eq('postnl_chauffeur', u.postnl_naam)
-        .or(`chauffeur_id.is.null,chauffeur_id.neq.${u.id}`)
-        .select('id')
-      if (e) throw databaseFout('chauffeur koppelen', e)
-      totaal += data?.length ?? 0
-    }
-    if (totaal > 0) log.log(`Chauffeurs gekoppeld/gecorrigeerd: ${totaal} ritten bijgewerkt`)
-    return totaal
-  }
+  // Chauffeur koppelen (chauffeur_id bij postnl_chauffeur) doet sinds #562 de database:
+  // trigger trg_rit_chauffeur_koppeling op ritten en trg_users_postnl_naam_koppelen op users.
 
   // Navigeert naar Planning → Ritmonitor. De Riteigenaar-grid (M&A Transport) is daar al
   // geselecteerd — daar NIET op klikken, anders deselecteer je 'm.
@@ -385,7 +362,7 @@ export function maakRitmonitor({ supabase, klantId, login, tijdzone = TIJDZONE, 
     return plan
   }
 
-  return { koppelChauffeurs, openRitmonitor, leesRitmonitor, opslaanMonitor }
+  return { openRitmonitor, leesRitmonitor, opslaanMonitor }
 }
 
 // Puur: rijen zoals het scherm ze geeft → rijen voor planMonitor.
