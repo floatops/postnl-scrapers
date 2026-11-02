@@ -20,7 +20,7 @@ import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
-import { naarDepot, isLoginPagina, SEL_PLANNING } from '../../credentials-shared/src/postnl/login.js'
+import { naarDepot, openDagplanning, isLoginPagina, SEL_PLANNING, SEL_DAG } from '../../credentials-shared/src/postnl/login.js'
 import { depotSlug } from '../../credentials-shared/src/sessieVideo.js'
 import { vandaagNl, minutenNl } from '../../credentials-shared/src/postnl/tekst.js'
 
@@ -74,7 +74,15 @@ async function sluit(b, reden) {
 }
 const slotPak = async () => (await supabase.rpc('postnl_sessie_pak', { p_sleutel: sleutel, p_houder: houder, p_seconden: 600 })).data === true
 
-if (!(await slotPak())) throw new Error('Sessie-slot bezet: meting niet gestart')
+// Wachten tot het slot vrij is (een ritmonitor-run kan bezig zijn), hooguit 10 min. Nooit ertussen.
+{
+  const begin = Date.now()
+  while (!(await slotPak())) {
+    if (Date.now() - begin > 10 * 60_000) throw new Error('Sessie-slot 10 min bezet: meting niet gestart')
+    await new Promise(r => setTimeout(r, 5000))
+  }
+  stap('slot_gekregen', { gewachtSec: Math.round((Date.now() - begin) / 1000) })
+}
 const slotTimer = setInterval(() => slotPak().catch(() => {}), 120_000)
 
 try {
@@ -123,6 +131,28 @@ try {
     await b.page.waitForTimeout(3000)
     stap(`3_b_na_${wacht}s`, { ...(await staat(b.page)) })
   }
+
+  // 3b. Beide sessies werken echt in Mendix: om de beurt de Dagplanning openen. Na elke actie van
+  // de één kijken we (zonder te navigeren) of de ander nog op de Dagplanning staat, of
+  // teruggezet is naar de startpagina (#361: "Execution context destroyed", homepage).
+  const eersteRegel = (e) => String(e?.message ?? e).split(/\r?\n/)[0]
+  const opDagplanning = async (page) => ({ ...(await staat(page)), dagplanning: await page.locator(SEL_DAG).first().isVisible().catch(() => false) })
+  for (let ronde = 1; ronde <= 3; ronde++) {
+    for (const [doet, ander] of [[a, b], [b, a]]) {
+      let fout = null
+      await openDagplanning(doet.page, depot).catch(e => { fout = eersteRegel(e) })
+      await doet.page.waitForTimeout(3000)
+      stap(`3b_r${ronde}_${doet.label}_opent_dagplanning`, { fout, ...(await opDagplanning(doet.page)) })
+      // De ander niet laten navigeren: alleen kijken wat hij nu ziet, en één Mendix-actie (shift kiezen).
+      await ander.page.waitForTimeout(2000)
+      const voor = await opDagplanning(ander.page)
+      let actieFout = null
+      await ander.page.locator('.mx-name-Shift_Grid_1 tbody tr').first().click({ timeout: 10_000 }).catch(e => { actieFout = eersteRegel(e) })
+      await ander.page.waitForTimeout(4000)
+      stap(`3b_r${ronde}_${ander.label}_na_actie_van_${doet.label}`, { voor, actieFout, ...(await opDagplanning(ander.page)) })
+      await schermafdruk(ander.page, `05b-r${ronde}-${ander.label}-na-${doet.label}`)
+    }
+  }
   await sluit(b, 'tweede login klaar')
   await sluit(a, 'na tweede-login-test')
 
@@ -152,8 +182,7 @@ try {
   }
   await sluit(c, 'levensduur klaar')
 } catch (err) {
-  stap('fout', { fout: String(err.message).split('\n')[0] })
-  process.exitCode = 1
+  if (!err.klaar) { stap('fout', { fout: String(err.message).split('\n')[0] }); process.exitCode = 1 }
 } finally {
   clearInterval(slotTimer)
   await supabase.rpc('postnl_sessie_los', { p_sleutel: sleutel, p_houder: houder })
