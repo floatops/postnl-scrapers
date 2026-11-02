@@ -18,7 +18,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  adresSleutel, deadlineUitTekst, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, selectieKlopt, stopNaarRij,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -81,11 +81,18 @@ async function openDagplanning(page, depot) {
   const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => null)
   if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
   if (page.url().includes('loginpostnl') || page.url().includes('/authorize')) await login(page, depot)
+  // Vlak na het inloggen komt een klik op het menu soms niet aan en blijft PostNL op de
+  // startpagina staan (02-11 06:26, op de video). Dan nog eens.
   const planning = page.locator('a.mx-name-menuBar1-2, a[title="Planning"]').first()
   await planning.waitFor({ state: 'visible', timeout: 60_000 })
-  await planning.click()
-  await page.locator('a.mx-name-menuBar1-2-0, a[title="Dagplanning"]').first().click()
-  await page.locator('select.form-control').first().waitFor({ state: 'visible', timeout: 30_000 })
+  for (let poging = 1; ; poging++) {
+    await planning.click()
+    await page.locator('a.mx-name-menuBar1-2-0, a[title="Dagplanning"]').first().click({ timeout: 10_000 }).catch(() => {})
+    const open = await page.locator('select.form-control').first().waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false)
+    if (open) break
+    if (poging >= 3) throw new Error('Dagplanning ging niet open in PostNL')
+    await page.waitForTimeout(2_000)
+  }
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
 }
 
@@ -139,7 +146,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
           { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
       }
       rit.stops_gelezen = eigenStops.length
-      const opScherm = (await leesStopTabel(page)).length
+      const opScherm = (await leesStopTabel(page).catch(() => [])).length
       console.log(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord ${eigenStops.length}, scherm ${opScherm}`)
       // De deadline kan per rit verschillen; de tekst bij de open rit gaat voor.
       const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum)
@@ -147,6 +154,8 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
       const keuze = await leesChauffeurKeuze(page)
       rit.chauffeur_wijzigbaar = keuze.wijzigbaar
       rit.chauffeur_opties = keuze.opties
+    } else {
+      rit.stops_gelezen = 0
     }
     await opVoortgang(++klaar / Math.max(1, eigen.length), eigen[klaar]?.ritnaam)
   }
@@ -401,12 +410,12 @@ async function verwerk(taak) {
   }
 
   if (doorvoeren && fout) {
-    // Nog niet aangeraakt: terug naar concept. Stond er één op bezig, dan is dat onzeker.
+    // Nog niet aangeraakt: overgeslagen. Stond er één op bezig, dan is dat onzeker.
     await zetVerplaatsingenNaFout(taak.id, fout)
   }
   await zetTaak(taak.id, {
     status: fout ? 'mislukt' : 'klaar', voortgang: fout ? undefined : 100,
-    fout: fout ? fout.message.slice(0, 300) : null, afgerond_at: new Date().toISOString(),
+    fout: fout ? foutVoorPlanner(fout.message) : null, afgerond_at: new Date().toISOString(),
   })
   if (run?.id) {
     await supabase.from('worker_run_log').update({
@@ -421,7 +430,8 @@ async function verwerk(taak) {
 async function zetVerplaatsingenNaFout(taakId, fout) {
   await db(supabase.from('planning_verplaatsingen').update({ status: 'mislukt', melding: 'Onderbroken tijdens deze verplaatsing. Controleer deze stops in PostNL.' })
     .eq('taak_id', taakId).eq('status', 'bezig'), 'onderbroken verplaatsing')
-  await db(supabase.from('planning_verplaatsingen').update({ status: 'concept', taak_id: null, melding: fout.message.slice(0, 200) })
+  // De app toont geen concepten uit de database meer: als overgeslagen laten zien, met de reden.
+  await db(supabase.from('planning_verplaatsingen').update({ status: 'overgeslagen', melding: `${foutVoorPlanner(fout.message)} Deze wijziging is niet uitgevoerd.` })
     .eq('taak_id', taakId).eq('status', 'wacht'), 'terug naar concept')
 }
 

@@ -208,3 +208,12 @@ export function gebruikerBijNaam(gebruikers, naam) {
   const treffers = gebruikers.filter(u => schoon(u.postnl_naam) === schoon(naam))
   return treffers.length === 1 ? treffers[0].id : null
 }
+
+// Wat de planner te zien krijgt. De technische tekst blijft in worker_run_log.
+export function foutVoorPlanner(bericht) {
+  const t = String(bericht ?? '')
+  if (/staat niet in de PostNL-planning|geen ritten in PostNL|PostNL is bezet|Geen PostNL-inlog|Inloggen bij PostNL is mislukt/.test(t)) return t
+  if (/Timeout|exceeded|reageerde niet|Target closed|net::|ERR_/i.test(t)) return 'PostNL reageerde niet op tijd. Probeer het over een minuut opnieuw.'
+  if (/geblokkeerd|403/i.test(t)) return 'PostNL weigerde de verbinding. Probeer het over een paar minuten opnieuw.'
+  return 'Er ging iets mis bij PostNL. Probeer het opnieuw; blijft het misgaan, meld het dan.'
+}

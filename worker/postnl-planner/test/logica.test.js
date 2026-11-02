@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adresSleutel, deadlineUitTekst, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, rittenUit,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, rittenUit,
   selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen,
 } from '../src/logica.js'
 
@@ -148,4 +148,11 @@ test('getal: leeg is 0, komma mag', () => {
   assert.equal(getal(null), 0)
   assert.equal(getal('4,69'), 4.69)
   assert.equal(getal('abc'), 0)
+})
+
+test('fout in gewone taal voor de planner', () => {
+  assert.match(foutVoorPlanner("locator.evaluate: Timeout 30000ms exceeded.\nCall log: waiting for locator('.mx-name-dataGrid21')"), /niet op tijd/)
+  assert.match(foutVoorPlanner('PostNL reageerde niet binnen de wachttijd'), /niet op tijd/)
+  assert.equal(foutVoorPlanner('Dag 31-10-2026 staat niet in de PostNL-planning.'), 'Dag 31-10-2026 staat niet in de PostNL-planning.')
+  assert.match(foutVoorPlanner('iets raars'), /Er ging iets mis/)
 })

@@ -136,8 +136,11 @@ export async function openRit(page, mendix, ritnaam) {
 }
 
 // De tabel zoals hij op het scherm staat. Kolommen op koptitel: de volgorde is niet vast.
+// Een rit met alleen postcodeblokken heeft geen stoptabel: dan een lege lijst, niet wachten.
 export async function leesStopTabel(page) {
-  return page.locator(SCHERM.stops).first().evaluate((grid) => {
+  const tabel = page.locator(SCHERM.stops).first()
+  if (!(await tabel.count())) return []
+  return tabel.evaluate((grid) => {
     const koppen = [...grid.querySelectorAll('[role="columnheader"]')].map(k => (k.innerText || '').trim().toLowerCase())
     const kolom = (begin) => koppen.findIndex(k => k.startsWith(begin))
     const k = { tijd: kolom('tvi'), straat: kolom('straat'), nummer: kolom('huisnum'), toevoeging: kolom('toev') }
