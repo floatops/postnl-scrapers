@@ -10,8 +10,9 @@ export const SCHERM = {
   rittenRechts: '.mx-name-Rit_Grid1',
   postcodesNee: 'div.mx-name-radioButtons1 input[type="radio"][value="false"]',
   stops: '.mx-name-dataGrid21',
-  dialoog: 'div.mx-dialog',
-  sluitDialoog: 'div.mx-dialog button.close',
+  // Mendix heeft meldingen (.mx-dialog) en pop-up-pagina's (.mx-window/.modal-dialog).
+  dialoog: '.mx-dialog:visible, .mx-window:visible, .modal-dialog:visible',
+  sluitDialoog: '.mx-dialog button.close, .mx-window button.close, .modal-dialog button.close',
   chauffeur: '.mx-name-referenceSelector1 select',
   afmelden: '[data-button-id="l.General.PostNL_MainTopBar.signoutButton1"]',
 }
@@ -183,13 +184,15 @@ export const ALLEEN_VANDAAG = /alleen voor de rit van vandaag/i
 
 export async function kiesChauffeur(page, mendix, naam) {
   const antwoorden = await mendix.actie(() => page.locator(SCHERM.chauffeur).first().selectOption({ label: naam }), 60_000)
-  const dialoog = page.locator(SCHERM.dialoog).filter({ hasText: CHAUFFEUR_VRAAG }).first()
-  const gevraagd = await dialoog.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
+  // Op de knop zelf zoeken: welk soort venster PostNL gebruikt, maakt dan niet uit (02-11: het
+  // was geen .mx-dialog, en de vraag bleef open staan).
+  const nee = page.getByRole('button', { name: ALLEEN_VANDAAG }).first()
+  const gevraagd = await nee.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
   if (gevraagd) {
-    const nee = dialoog.getByRole('button', { name: ALLEEN_VANDAAG }).first()
-    if (!(await nee.count())) throw new Error('PostNL stelde een onbekende vraag bij de chauffeurwissel')
     antwoorden.push(...await mendix.actie(() => nee.click(), 60_000))
-    await dialoog.waitFor({ state: 'hidden', timeout: 15_000 })
+    await nee.waitFor({ state: 'hidden', timeout: 15_000 })
+  } else if (await page.getByText(CHAUFFEUR_VRAAG).first().isVisible().catch(() => false)) {
+    throw new Error('PostNL stelde een onbekende vraag bij de chauffeurwissel')
   }
   return uniekeMeldingen(antwoorden)
 }
