@@ -19,6 +19,7 @@ Ligt de volgende taak verder dan `sluitNaLeegMin` (10 min) weg, dan gaat de sess
 
 - **Dagplanning uit de Mendix-antwoorden** (`credentials-shared/src/postnl/ritten.js`): PostNL stuurt per rit `RideNumber` (Stops, Pieces, Volume, Weight, MailboxOnlyStops, TotalRideTime, RideID), `Ride` (RideName, RideID, Authorized/Enum_Authorized, Driver, Shift) en het kanaal van het scherm (`DisplayPlanning` → `DistributionChannel`). Op 02-11 vergeleken met wat het scherm-lezen in `ritten` had gezet: gelijk. Welke waarde in welke kolom komt staat op één plek: `postnl/velden.js`.
 - **Eén schrijver** (`postnl/schrijver.js`), ook voor het losse dagplanning-script: sleutel ritnummer + kanaal (#560), altijd `klant_id`, geen dubbelen verwijderen, alleen wijzigingen, een databasefout gooit. Een rit zonder bekend kanaal wordt niet geschreven (een gok tussen HD en AD gaf #560) en komt als fout in de run-log.
+- **Alleen de gekozen dag** (`dagVenster` in `credentials-shared/src/postnl/dagplanningScherm.js`): de Dagplanning opent op vandaag. Kies je een andere dag, dan komen ritten van vandaag soms nog ná het wisselen binnen (03-11: rit 114 Den Hoorn). `kiesDag` laat de standaarddag eerst uitladen, `dagVenster` negeert ritten die al vóór het wisselen gemeld waren, en twee verschillende versies van één rit worden niet geschreven (`tegenstrijdig`, fout in de run-log).
 - **Chauffeur koppelen** doet de database (trigger `trg_rit_chauffeur_koppeling`, matransport-migratie `20261102140635`).
 
 ## Meting stap 0 (02-11, beide depots)
