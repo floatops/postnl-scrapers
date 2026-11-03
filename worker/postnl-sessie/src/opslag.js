@@ -62,10 +62,11 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) log.error(`Gebeurtenis loggen mislukt (${g.soort}): ${error.message}`)
     },
 
-    // Openstaande planner-opdrachten van dit depot (Plannen, #557).
+    // Planner-opdrachten van dit depot die nog wachten (Plannen, #557). Niet 'bezig': die heeft
+    // al iemand (of hing na een crash) en mag nooit een tweede keer worden uitgevoerd.
     async plannerOpdrachten(depot) {
       const { data, error } = await supabase.from('planning_taken').select('id, depot, status, soort')
-        .eq('klant_id', klantId).eq('depot', depot).in('status', ['wacht', 'bezig'])
+        .eq('klant_id', klantId).eq('depot', depot).eq('status', 'wacht').order('aangemaakt_at')
       if (error) { log.warn(`[${depot}] Planner-opdrachten niet gelezen: ${error.message}`); return null }
       return data ?? []
     },
@@ -83,5 +84,10 @@ export function maakOpslag({ supabase, klantId, log = console }) {
 
     runStart: (worker) => startRunLog(supabase, { worker, klantId }),
     runEinde: (id, velden) => eindeRunLog(supabase, id, velden),
+    // Opnames (VPS-paden) bij een run die een ander (de planner) al afsloot. Mag nooit gooien.
+    async runOpnames(id, opnames) {
+      const { error } = await supabase.from('worker_run_log').update({ video_paths: opnames }).eq('id', id)
+      if (error) log.warn(`Opnames bij run ${id} niet opgeslagen: ${error.message}`)
+    },
   }
 }

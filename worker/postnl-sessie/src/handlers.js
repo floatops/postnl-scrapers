@@ -5,9 +5,9 @@ import { openDagplanning } from '../../credentials-shared/src/postnl/login.js'
 import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
 import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
-import { leesDeadlineTekst } from '../../postnl-planner/src/mendix.js'
+import { leesDeadlineTekst, volgMendix } from '../../postnl-planner/src/mendix.js'
 import { kiesDag, dagVenster, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
-import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor } from './dagstatus.js'
+import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, aanvraagKlaar } from './dagstatus.js'
 
 const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
 
@@ -47,7 +47,37 @@ async function schrijf(ctx, gelezen, datum) {
   return uit
 }
 
+// De planner (postnl-planner/src/index.js) pas laden als er een opdracht is: hij leest bij het
+// laden zijn omgeving, en de tests van de sessiehouder hebben die niet. Tests vervangen hem.
+export const planner = { laad: () => import('../../postnl-planner/src/index.js') }
+
 export const HANDLERS = {
+  // Opdracht uit de Plannen-tab (#557) in deze open sessie: geen tweede login, geen uitloggen,
+  // geen eigen slot (de sessiehouder heeft het). De planner-logica zelf is die van postnl-planner:
+  // die zet de opdracht op klaar/mislukt, schrijft zijn run-log en herhaalt een doorvoer nooit.
+  async planner(ctx, dag, { id }) {
+    const { sessie, supabase } = ctx
+    const { data: taak, error } = await supabase.from('planning_taken').select('*').eq('id', id).maybeSingle()
+    if (error) throw Object.assign(new Error(`Planner-opdracht niet gelezen: ${error.message}`), { database: true })
+    // Al opgepakt (vangnet-script) of afgeblazen: niets doen.
+    if (!taak || taak.status !== 'wacht') return { dag: aanvraagKlaar(dag, id), run: null }
+    const inDezeSessie = async (depot, doorvoeren, werk) => {
+      await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+      // Per opdracht een nieuwe teller van openstaande PostNL-vragen: in een sessie die uren loopt
+      // kan er een blijven openstaan (Den Hoorn 02-11), en die mag de planner niet laten wachten.
+      await werk(sessie.page, volgMendix(sessie.page))
+    }
+    const { verwerk } = await planner.laad()
+    const uit = await verwerk(taak, { metSessie: inDezeSessie, stapStart: 'PostNL-sessie open' })
+    sessie.lezingen++
+    const doorvoer = taak.soort === 'doorvoeren'
+    const gebeurtenis = { soort: 'planner', taak_id: id, opdracht: taak.soort, uitkomst: uit.fout ? 'mislukt' : 'klaar', telling: uit.telling }
+    // Mislukt: gooien, zodat de lus de sessie beoordeelt (verlopen, gegooid, ...). De planner heeft
+    // de opdracht en zijn run-log al afgesloten (alGelogd).
+    if (uit.fout) throw Object.assign(uit.fout, { alGelogd: true, gebeurtenis, plannerRun: uit.runId, bewaren: doorvoer })
+    return { dag: { ...aanvraagKlaar(dag, id), plannerOm: ctx.nu.toISOString() }, run: null, gebeurtenis, plannerRun: uit.runId, bewaren: doorvoer, melding: doorvoer ? `doorvoer ${JSON.stringify(uit.telling)}` : 'ophalen' }
+  },
+
   // Volle lezing: alle shifts, ritten aanmaken, deadline per shift één keer vastleggen.
   async ochtend(ctx, dag) {
     const { sessie, nu } = ctx

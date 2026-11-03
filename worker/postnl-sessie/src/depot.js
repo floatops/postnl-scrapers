@@ -9,7 +9,7 @@ import { vandaagNl } from '../../credentials-shared/src/postnl/tekst.js'
 import { SEL_PLANNING, opStartpagina } from '../../credentials-shared/src/postnl/login.js'
 
 const MIN = 60_000
-const POLL_MS = 15_000   // zo vaak kijken of er een planner-opdracht is, ook als er niets te doen is
+const POLL_MS = 15_000   // vangnet: zo vaak kijken of er een planner-opdracht is (de wekker is meteen)
 
 export function slotSleutel(klantId, depotNaam) { return `${klantId}:${depotNaam}` }
 
@@ -99,26 +99,8 @@ export async function draaiDepot(deps) {
       if (!k.taak) {
         if (sessie && !k.sessieNodig) await sluit('leeg')
         const wacht = k.wachtTot ? Math.min(k.wachtTot - nu, POLL_MS) : POLL_MS
-        await klok.slaap(Math.max(1_000, wacht))
-        continue
-      }
-
-      // Planner: in stap 1 voert het planner-script de opdracht zelf uit. De sessiehouder sluit
-      // zijn sessie, geeft het slot vrij en wacht tot de opdracht klaar is (nooit tegelijk ingelogd).
-      if (k.taak.naam === 'planner') {
-        await sluit('voor_planner')
-        await opslag.slotLos(sleutel, houder)
-        log.log(`${label} Planner-opdracht: sessie dicht, slot vrij voor het planner-script`)
-        const begin = klok.nu()
-        for (;;) {
-          await klok.slaap(10_000)
-          const open = await opslag.plannerOpdrachten(depot.naam)
-          if (open && open.length === 0) break
-          if (klok.nu() - begin > cfg.taakLimietSec.planner * 1000) { await melden({ soort: 'planner_lang', depot: depot.naam }); break }
-          if (stop()) break
-        }
-        dag = aanvraagKlaar(dag, k.args.id)
-        if (!(await slotHouden())) break
+        // Wekbaar: een planner-opdracht (wekker van de VPS) breekt dit wachten meteen af.
+        await (klok.wekbaar ?? klok.slaap)(Math.max(1_000, wacht))
         continue
       }
 
@@ -156,7 +138,8 @@ export async function draaiDepot(deps) {
         const l = uitkomst?.run?.lezingen?.[depot.naam]
         log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
       }
-      const tracePad = sessie ? await sessie.taakEinde(taak, { incident }) : null
+      // Een doorvoer (planner) wijzigt PostNL: trace en video altijd 30 dagen bewaren (fout/).
+      const tracePad = sessie ? await sessie.taakEinde(taak, { incident: incident || Boolean(uitkomst?.bewaren || fout?.bewaren) }) : null
       if (incident) {
         log.warn(`${label} ${taak}: ${soort}${fout ? ` (${String(fout.message).split('\n')[0]})` : ''} → ${actie}`)
         await opslag.gebeurtenis(sessie?.id, { soort, taak, actie, fout: fout ? String(fout.message).slice(0, 300) : null, trace: tracePad })
@@ -166,7 +149,11 @@ export async function draaiDepot(deps) {
         sessie.laatsteOkGemeld = klok.nu()
         await opslag.sessieBij(sessie.id, { laatste_ok_at: klok.nu().toISOString(), lezingen: sessie.lezingen })
       }
-      if (uitkomst?.gebeurtenis) await opslag.gebeurtenis(sessie?.id, uitkomst.gebeurtenis)
+      const g = uitkomst?.gebeurtenis ?? fout?.gebeurtenis
+      if (g) await opslag.gebeurtenis(sessie?.id, { ...g, trace: tracePad })
+      // De planner schrijft zijn eigen run-log; daar komt het pad van de trace (VPS) bij.
+      const plannerRun = uitkomst?.plannerRun ?? fout?.plannerRun
+      if (plannerRun && tracePad) await opslag.runOpnames(plannerRun, [{ soort: 'trace', storage_path: tracePad }])
 
       if (uitkomst) {
         dag = uitkomst.dag
@@ -176,7 +163,7 @@ export async function draaiDepot(deps) {
         if (uitkomst.melding === 'autorisatie_niet_gezien') await melden({ soort: 'autorisatie_niet_gezien', depot: depot.naam, detail: uitkomst.gebeurtenis?.shift })
       } else if (fout) {
         if (taak === 'ritmonitor') telRitmonitor(depot.naam, { ok: false, fout: fout.message })
-        else await naRun({ worker: k.taak.worker, status: 'mislukt', depots_mislukt: [{ depot: depot.naam, fout: String(fout.message).slice(0, 300) }], foutmelding: String(fout.message).slice(0, 500), trace: tracePad })
+        else if (!fout.alGelogd) await naRun({ worker: k.taak.worker, status: 'mislukt', depots_mislukt: [{ depot: depot.naam, fout: String(fout.message).slice(0, 300) }], foutmelding: String(fout.message).slice(0, 500), trace: tracePad })
       }
 
       // Na elk incident even ademen: geen strakke lus van mislukte pogingen tegen PostNL.

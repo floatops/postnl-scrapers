@@ -3,12 +3,17 @@
 // De app zet een opdracht in planning_taken en start deze worker via de VPS. De worker pakt de
 // oudste opdracht van deze klant op en werkt alles af wat er staat. Uitleg: ../POSTNL_PLANNER.md.
 //
+// Draait de sessiehouder (postnl-sessie, matransport#562), dan voert die de opdracht uit in zijn
+// open sessie: hij importeert `verwerk` en geeft zijn eigen pagina mee (optie `metSessie`). Dit
+// script is dan alleen het vangnet (sessiehouder niet actief, vóór 05:25, na 23:00, zondag).
+//
 // Veiligheid: echt verplaatsen gebeurt alleen met PLANNER_ECHT=ja. Zonder die instelling
 // selecteert de worker de stops, controleert hij alles en stopt hij vóór de dubbelklik. Alleen
 // naar een geautoriseerde doelrit dubbelklikt hij wel: die weigert PostNL zelf.
 import 'dotenv/config'
 import os from 'node:os'
 import path from 'node:path'
+import { pathToFileURL } from 'node:url'
 import fs from 'node:fs/promises'
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
@@ -408,24 +413,29 @@ async function bewaarTrace(lokaal, depotNaam, soort) {
 }
 let tellingDoorvoer = {}
 
-async function verwerk(taak) {
+// `metSessie(depot, doorvoeren, werk)` levert de PostNL-pagina: standaard een eigen browser met
+// login, slot en uitloggen; de sessiehouder geeft zijn open sessie. Geeft { fout, telling } terug
+// (de opdracht zelf staat dan al op klaar of mislukt in planning_taken).
+export async function verwerk(taak, { metSessie: sessie = metSessie, stapStart = 'Inloggen bij PostNL' } = {}) {
   const doorvoeren = taak.soort === 'doorvoeren'
   // Alleen oppakken wat nog wacht: de edge function kan hem net hebben afgeblazen.
   const opgepakt = await db(supabase.from('planning_taken').update({ status: 'bezig', gestart_at: new Date().toISOString() })
     .eq('id', taak.id).eq('status', 'wacht').select('id'), 'taak oppakken')
-  if (!opgepakt.length) return
+  if (!opgepakt.length) return { fout: null, telling: {}, overgeslagen: true }
   const { data: run } = await supabase.from('worker_run_log').insert({ worker_naam: WORKER, klant_id: KLANT_ID }).select('id').single()
   let fout = null
   tellingDoorvoer = {}
+  laatsteVideo = null
+  laatsteTrace = null
   try {
-    await zetStap(taak.id, 'Inloggen bij PostNL', 3)
+    await zetStap(taak.id, stapStart, 3)
     const depots = await getDepots(supabase, KLANT_ID, 'postnl')
     installeerNeutraleConsole({ klantId: KLANT_ID, depots })
     const depot = depots.find(d => d.naam === taak.depot)
     if (!depot) throw Object.assign(new Error(`Geen PostNL-inlog gevonden voor depot ${taak.depot}.`), { nietGestart: true })
     for (let poging = 1; ; poging++) {
       try {
-        await metSessie(depot, doorvoeren, (page, mendix) => (doorvoeren ? voerDoorvoerenUit : voerOphalenUit)(page, mendix, taak))
+        await sessie(depot, doorvoeren, (page, mendix) => (doorvoeren ? voerDoorvoerenUit : voerOphalenUit)(page, mendix, taak))
         break
       } catch (err) {
         if (!(err instanceof ProxyBlokkadeError) || poging >= MAX_BLOKKADES) throw err
@@ -453,6 +463,7 @@ async function verwerk(taak) {
       video_paths: [laatsteVideo, laatsteTrace].filter(Boolean).length ? [laatsteVideo, laatsteTrace].filter(Boolean) : null,
     }).eq('id', run.id)
   }
+  return { fout, telling: tellingDoorvoer, runId: run?.id ?? null }
 }
 
 async function zetVerplaatsingenNaFout(taakId, fout) {
@@ -470,4 +481,7 @@ async function main() {
   for (const taak of lijst) await verwerk(taak)
 }
 
-main().then(() => process.exit(0)).catch((err) => { console.error(err); process.exit(1) })
+// Alleen als script gestart (node src/index.js), niet bij import door de sessiehouder.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  main().then(() => process.exit(0)).catch((err) => { console.error(err); process.exit(1) })
+}

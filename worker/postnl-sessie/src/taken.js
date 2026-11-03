@@ -36,7 +36,9 @@ export function ritmonitorActief(dag, nu, cfg) {
 
 export const TAKEN = [
   {
-    naam: 'planner', prioriteit: 100, opAanvraag: true, worker: 'postnl-planner',
+    // Uitgevoerd in de open sessie (handlers.planner). schrijft: vóór de opdracht een verse sessie
+    // als de oude dicht bij haar gemeten einde zit.
+    naam: 'planner', prioriteit: 100, opAanvraag: true, schrijft: true, worker: 'postnl-planner',
     volgende: (dag) => (dag.aanvragen ?? []).some(a => a.soort === 'planner') ? { nu: true, args: dag.aanvragen.find(a => a.soort === 'planner') } : null,
   },
   {

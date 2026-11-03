@@ -4,7 +4,11 @@ Leest de Dagplanning van OOM PD Process en verplaatst stops tussen ritten, voor 
 
 ## Hoe hij start
 
-De app maakt een rij in `planning_taken`; `planning-taak` roept `POST /run/postnl-planner` op de VPS aan met `{klant_id}`. De worker pakt alle opdrachten met status `wacht` van die klant en werkt ze af. Per klant loopt er één opdracht (unieke index).
+De app maakt een rij in `planning_taken`; `planning-taak` roept `POST /run/postnl-planner` op de VPS aan met `{klant_id}`. Per klant loopt er één opdracht (unieke index).
+
+- **Draait de sessiehouder** (`postnl-sessie`, floatops/matransport#562): de VPS wekt hem en hij voert de opdracht binnen een seconde uit **in zijn open PostNL-sessie**. Hij importeert `verwerk(taak, { metSessie })` uit `src/index.js` en geeft zijn eigen pagina mee: geen tweede login, geen uitloggen, geen eigen slot. De logica hieronder is dezelfde.
+- **Anders** (vóór 05:25, na 23:00, zondag, uitval, of na 2 min niet opgepakt) start de VPS dit script: eigen browser, sessie-slot, inloggen, uitloggen. Het pakt alle opdrachten met status `wacht` van die klant en werkt ze af.
+- Dubbel uitvoeren kan niet: `verwerk` pakt een opdracht alleen op zolang hij op `wacht` staat (compare-and-set).
 
 ## Proefstand: `PLANNER_ECHT`
 

@@ -131,15 +131,65 @@ test('te veel logins in een uur: pauze en een melding, niet blijven hameren', as
   assert.ok(o.log.filter(x => x.startsWith('open')).length <= 8, `${o.log.filter(x => x.startsWith('open')).length} logins`)
 })
 
-test('planner-opdracht: sessie dicht, slot vrij, wachten tot klaar, daarna weer verder', async () => {
-  let open = [{ id: 'p1', depot: 'Depot A', status: 'wacht' }]
-  let klaarOm = null
-  const o = opzet({ duurMin: 5, opdrachten: (nu) => { if (!klaarOm) klaarOm = nu.getTime() + 60_000; if (nu.getTime() >= klaarOm) open = []; return open },
-    handlers: { ritmonitor: async (ctx, dag) => ({ ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } }) } })
+// Planner-opdracht die wacht tot de handler hem afrondt (zoals planning_taken: wacht → klaar).
+function plannerOpdracht(id, { vanafMin = 0, start = '2026-11-02T10:00:00+01:00' } = {}) {
+  const st = { klaar: false }
+  st.opdrachten = (nu) => (!st.klaar && nu.getTime() >= new Date(start).getTime() + vanafMin * 60_000 ? [{ id, depot: 'Depot A', status: 'wacht' }] : [])
+  return st
+}
+
+test('planner-opdracht midden in de ritmonitor: in dezelfde sessie, geen tweede login, slot blijft, ritmonitor gaat door', async () => {
+  const p = plannerOpdracht('p1', { vanafMin: 1.5 })
+  const volgorde = []
+  const o = opzet({ duurMin: 5, opdrachten: p.opdrachten, handlers: {
+    ritmonitor: async (ctx, dag) => { volgorde.push('ritmonitor'); return { ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } } },
+    planner: async (ctx, dag, { id }) => {
+      volgorde.push(`planner:${id}:${ctx.sessie.nr}`)
+      p.klaar = true
+      return { dag: { ...dag, aanvragen: (dag.aanvragen ?? []).filter(a => a.id !== id) }, run: null, gebeurtenis: { soort: 'planner', taak_id: id }, plannerRun: 'run-1' }
+    },
+  } })
+  o.deps.opslag.runOpnames = async (id, opn) => { o.log.push(`opnames:${id}:${opn.length}`) }
   await draaiDepot(o.deps)
-  const i = o.log.indexOf('slot-los')
-  assert.ok(i >= 0, 'slot vrijgegeven voor het planner-script')
-  assert.ok(o.log.slice(i + 1).some(x => x.startsWith('open')), 'daarna weer ingelogd voor de ritmonitor')
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 1, 'één login voor alles')
+  assert.ok(!o.log.slice(0, -1).includes('slot-los'), 'slot pas los bij het stoppen')
+  assert.deepEqual(volgorde.filter(x => x.startsWith('planner')), ['planner:p1:1'], 'precies één keer, in sessie 1')
+  const i = volgorde.indexOf('planner:p1:1')
+  assert.ok(volgorde.slice(0, i).includes('ritmonitor') && volgorde.slice(i + 1).includes('ritmonitor'), 'ritmonitor ervoor en erna')
+  assert.ok(o.gebeurtenissen.some(g => g.soort === 'planner' && g.taak_id === 'p1'), 'gebeurtenis in postnl_sessies')
+  assert.equal(o.runs.length, 0, 'de planner schrijft zijn eigen run-log, geen dubbele')
+})
+
+test('planner-opdracht zonder open sessie (vóór de eerste deadline): één login, daarna dicht als er niets meer is', async () => {
+  const p = plannerOpdracht('p2', { start: '2026-11-02T06:00:00+01:00' })
+  const dag = { ...nieuweDag('2026-11-02'), ochtend: { gelezenOm: '2026-11-02T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-02T13:15:00Z' } } }
+  const o = opzet({ start: '2026-11-02T06:00:00+01:00', duurMin: 30, dag, opdrachten: p.opdrachten, cfg: { ritmonitorUiterlijk: '23:00' }, handlers: {
+    planner: async (ctx, d, { id }) => { p.klaar = true; return { dag: { ...d, aanvragen: [] }, run: null } },
+  } })
+  await draaiDepot(o.deps)
+  assert.deepEqual(o.log.filter(x => x.startsWith('open') || x.startsWith('dicht')).slice(0, 2), ['open:1', 'dicht:1:leeg'])
+})
+
+test('planner-doorvoer mislukt: opnames bewaard, gebeurtenis gelogd, geen dubbele run, geen herhaling', async () => {
+  const p = plannerOpdracht('p3')
+  let keer = 0
+  const bewaard = []
+  const o = opzet({ duurMin: 3, opdrachten: p.opdrachten, handlers: {
+    ritmonitor: async (ctx, dag) => ({ ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } }),
+    planner: async () => {
+      keer++
+      p.klaar = true   // de planner zet de opdracht zelf op mislukt
+      throw Object.assign(new Error('Technische fout tijdens deze verplaatsing'), { alGelogd: true, bewaren: true, gebeurtenis: { soort: 'planner', taak_id: 'p3', uitkomst: 'mislukt' }, plannerRun: 'run-3' })
+    },
+  } })
+  const maak = o.deps.maakSessie
+  o.deps.maakSessie = (d) => { const s = maak(d); const eind = s.taakEinde; s.taakEinde = async (naam, opt) => { if (naam === 'planner') bewaard.push(opt.incident); return eind(naam, opt) }; return s }
+  o.deps.opslag.runOpnames = async () => {}
+  await draaiDepot(o.deps)
+  assert.equal(keer, 1, 'een doorvoer wordt nooit herhaald')
+  assert.deepEqual(bewaard, [true], 'trace en video van een doorvoer naar fout/')
+  assert.equal(o.runs.filter(r => r.worker === 'postnl-planner').length, 0, 'geen tweede run-log naast die van de planner')
+  assert.ok(o.gebeurtenissen.some(g => g.soort === 'planner' && g.uitkomst === 'mislukt'))
 })
 
 test('slot bezet door het vangnet-script: wachten, nooit ertussen inloggen', async () => {

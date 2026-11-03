@@ -92,7 +92,17 @@ async function main() {
     }
   }, 30_000)
 
-  const klok = { nu: () => { voortgang = Date.now(); return new Date() }, slaap: (ms) => new Promise(r => setTimeout(r, ms)) }
+  // `wekbaar`: wachten dat de planner-wekker meteen afbreekt (alleen het wachten tussen taken).
+  const wekkers = new Set()
+  const klok = {
+    nu: () => { voortgang = Date.now(); return new Date() },
+    slaap: (ms) => new Promise(r => setTimeout(r, ms)),
+    wekbaar: (ms) => new Promise((r) => {
+      const klaar = () => { clearTimeout(t); wekkers.delete(klaar); r() }
+      const t = setTimeout(klaar, ms)
+      wekkers.add(klaar)
+    }),
+  }
 
   const naRun = async (r) => {
     const id = await opslag.runStart(r.worker)
@@ -134,18 +144,28 @@ async function main() {
 
   beheer.verwerk(depots, 'start')
 
-  const WEKKER = process.env.POSTNL_SESSIE_WEKKER
-  const wekkerTijd = async () => (WEKKER ? (await fs.stat(WEKKER).catch(() => null))?.mtimeMs ?? null : null)
-  let laatsteWekker = await wekkerTijd()
-  const wekkerCheck = setInterval(async () => {
-    const t = await wekkerTijd()
-    if (t && t !== laatsteWekker) { laatsteWekker = t; await herlees('inloggegevens gewijzigd') }
-  }, 15_000)
+  // Wekkerbestanden van de VPS: alleen de wijzigtijd telt (een stat, goedkoop).
+  const volgWekker = async (pad, ms, bij) => {
+    if (!pad) return null
+    const tijd = async () => (await fs.stat(pad).catch(() => null))?.mtimeMs ?? null
+    let laatste = await tijd()
+    return setInterval(async () => {
+      const t = await tijd()
+      if (t && t !== laatste) { laatste = t; await bij() }
+    }, ms)
+  }
+  const wekkerCheck = await volgWekker(process.env.POSTNL_SESSIE_WEKKER, 15_000, () => herlees('inloggegevens gewijzigd'))
+  // Planner-opdracht (VPS /run/postnl-planner terwijl dit proces draait): elke seconde kijken en de
+  // wachtende depot-lussen meteen wekken. Die lezen dan planning_taken (elke 15 s als vangnet).
+  const plannerCheck = await volgWekker(process.env.POSTNL_PLANNER_WEKKER, 1_000, () => {
+    log.log('Planner-opdracht: meteen oppakken')
+    for (const w of [...wekkers]) w()
+  })
   const uurCheck = setInterval(() => herlees('controle per uur'), 3600_000)
 
   // Wachten tot alle lussen klaar zijn, ook die er onderweg bij kwamen of opnieuw startten.
   await beheer.wacht()
-  clearInterval(wekkerCheck); clearInterval(uurCheck)
+  clearInterval(wekkerCheck); clearInterval(plannerCheck); clearInterval(uurCheck)
   await teller.flush()
   clearInterval(codeCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
 }

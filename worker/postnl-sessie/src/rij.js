@@ -19,6 +19,9 @@ export function kies(dag, nu, cfg, taken = TAKEN) {
   if (!eerst) return { wachtTot: null, sessieNodig: false }
   // De browser open houden als de volgende taak binnen `sluitNaLeegMin` komt (de ritmonitor elke
   // minuut); anders dicht en op tijd weer open, zodat er geen sessie onnodig open staat.
+  // Na een planner-opdracht ook `sluitNaLeegMin` open: op "ophalen" volgt vaak binnen een paar
+  // minuten "doorvoeren", en dan hoeft er niet opnieuw ingelogd te worden.
   const wachtMs = eerst.om.getTime() - nu.getTime()
-  return { wachtTot: eerst.om, volgendeTaak: eerst.taak.naam, sessieNodig: wachtMs <= cfg.sluitNaLeegMin * 60_000 }
+  const naPlanner = Boolean(dag.plannerOm) && nu.getTime() - new Date(dag.plannerOm).getTime() < cfg.sluitNaLeegMin * 60_000
+  return { wachtTot: eerst.om, volgendeTaak: eerst.taak.naam, sessieNodig: naPlanner || wachtMs <= cfg.sluitNaLeegMin * 60_000 }
 }

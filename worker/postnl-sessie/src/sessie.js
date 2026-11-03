@@ -170,7 +170,7 @@ export class Sessie {
   async sluiten(reden, { fout = null, uitkomst = null } = {}) {
     const page = this.page
     const dir = this.videoDir
-    const incident = this.incidentInSegment || !['nacht', 'leeg', 'herstart', 'voor_planner', 'vernieuwd', 'vernieuwd_voor_schrijven'].includes(reden)
+    const incident = this.incidentInSegment || !['nacht', 'leeg', 'herstart', 'vernieuwd', 'vernieuwd_voor_schrijven'].includes(reden)
     this.page = null
     if (this.context) {
       await this.context.tracing.stop().catch(() => {})
