@@ -90,6 +90,15 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) log.warn(`Sessie-slot vrijgeven mislukt (verloopt vanzelf): ${error.message}`)
     },
 
+    // RVA-opdrachten van dit depot die nog wachten (matransport#569), oudste eerst. Niet 'bezig':
+    // die is al begonnen (of hing na een crash) en mag nooit een tweede keer worden uitgevoerd.
+    async rvaOpdrachten(depot) {
+      const { data, error } = await supabase.from('rva_opdrachten').select('id, depot, status')
+        .eq('klant_id', klantId).eq('depot', depot).eq('status', 'wacht').order('aangemaakt_at')
+      if (error) { log.warn(`[${depot}] RVA-opdrachten niet gelezen: ${error.message}`); return null }
+      return data ?? []
+    },
+
     runStart: (worker) => startRunLog(supabase, { worker, klantId }),
     runEinde: (id, velden) => eindeRunLog(supabase, id, velden),
     // Opnames (VPS-paden) bij een run die een ander (de planner) al afsloot. Mag nooit gooien.

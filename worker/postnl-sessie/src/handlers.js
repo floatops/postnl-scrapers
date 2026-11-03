@@ -1,7 +1,7 @@
 // Wat elke taak in de browser doet (floatops/matransport#562). Elke handler krijgt de open sessie
 // en de dagstatus, en geeft { dag, run } terug: de nieuwe dagstatus en wat er in worker_run_log
 // moet. Lukt iets niet, dan gooit hij: de depot-lus classificeert de fout en herstelt.
-import { openDagplanning } from '../../credentials-shared/src/postnl/login.js'
+import { openDagplanning, login } from '../../credentials-shared/src/postnl/login.js'
 import { dagplanningRitten, hoortBijShift } from '../../credentials-shared/src/postnl/ritten.js'
 import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
@@ -50,8 +50,85 @@ async function schrijf(ctx, gelezen, datum) {
 // De planner (postnl-planner/src/index.js) pas laden als er een opdracht is: hij leest bij het
 // laden zijn omgeving, en de tests van de sessiehouder hebben die niet. Tests vervangen hem.
 export const planner = { laad: () => import('../../postnl-planner/src/index.js') }
+// De RVA-logica (postnl-rva, matransport#569). Ook pas laden bij de eerste RVA-taak; tests vervangen hem.
+export const rva = { laad: () => import('../../postnl-rva/src/index.js') }
+
+// Het RVA-tabblad openen; is de sessie daar verlopen, dan in dat tabblad opnieuw inloggen.
+async function rvaKlaar(sessie, r) {
+  const page = await sessie.rvaTab()
+  const { ingelogd } = await r.openRva(page, { login: (p) => login(p, sessie.depot, { log: sessie.log }) })
+  if (ingelogd) sessie.herlogins++
+  return { page, ingelogd }
+}
+
+// Een RVA-opdracht bijwerken. Een databasefout gooit (nooit stil).
+async function zetRva(ctx, id, velden, filter = null) {
+  let q = ctx.supabase.from('rva_opdrachten').update(velden).eq('id', id).eq('klant_id', ctx.klantId)
+  if (filter) q = q.eq('status', filter)
+  const { data, error } = await q.select('id')
+  if (error) throw Object.assign(new Error(`RVA-opdracht bijwerken: ${error.message}`), { database: true })
+  return data ?? []
+}
 
 export const HANDLERS = {
+  // RVA-opdracht (matransport#569): alle wijzigingen van één Opslaan in de app, op één rit-dag, in
+  // het RVA-tabblad van deze sessie. Geen tweede login en geen eigen slot. wacht → bezig alleen als
+  // hij nog wacht (een opdracht wordt nooit twee keer uitgevoerd), en na een fout geen herhaling:
+  // voerUit heeft dan al geannuleerd, de opdracht wordt 'mislukt' met de reden.
+  async rva(ctx, dag, { id }) {
+    const { sessie, supabase, klantId, nu } = ctx
+    const klaar = { ...aanvraagKlaar(dag, id), rva: { ...(dag.rva ?? {}), wakkerOm: nu.toISOString() } }
+    const { data: o, error } = await supabase.from('rva_opdrachten').select('*').eq('id', id).eq('klant_id', klantId).maybeSingle()
+    if (error) throw Object.assign(new Error(`RVA-opdracht niet gelezen: ${error.message}`), { database: true })
+    if (!o || o.status !== 'wacht') return { dag: aanvraagKlaar(dag, id), run: null }
+    if (!(await zetRva(ctx, id, { status: 'bezig', gestart_at: new Date().toISOString(), stap: 'RVA openen', voortgang: 5 }, 'wacht')).length) {
+      return { dag: aanvraagKlaar(dag, id), run: null }
+    }
+    const echt = process.env.RVA_ECHT === 'ja'
+    const label = `[${sessie.depot.naam}] RVA`
+    const log = { log: (...a) => sessie.log.log(label, ...a), warn: (...a) => sessie.log.warn(label, ...a) }
+    // Voortgangsbalk in de app: elke stap live naar rva_opdrachten. Mislukt dat bijwerken, dan
+    // gaat de opdracht gewoon door (alleen de balk loopt dan achter).
+    const opStap = ({ stap, voortgang }) => zetRva(ctx, id, { stap, voortgang }).catch(e => sessie.log.warn(`${label}: voortgang niet bijgewerkt: ${e.message}`))
+    try {
+      const r = await rva.laad()
+      const { page } = await rvaKlaar(sessie, r)
+      // Een regel kan als sleutel of als object (postcode, straat, van, tm, evenOneven) komen.
+      const handelingen = (o.handelingen ?? []).map(h => ({ ...h, regel: typeof h.regel === 'string' ? h.regel : r.regelSleutel(h.regel ?? {}) }))
+      const uit = await r.voerUit(page, volgMendix(page), { rit: o.rit, dag: o.weekdag, handelingen }, { echt, log, opStap })
+      sessie.lezingen++
+      const melding = echt ? 'Opgeslagen in RVA' : 'Proefstand: alles gecontroleerd, niets opgeslagen (RVA_ECHT staat niet aan)'
+      await zetRva(ctx, id, { status: 'klaar', klaar_at: new Date().toISOString(), stap: null, voortgang: 100, melding, resultaat: { opgeslagen: uit.opgeslagen, stappen: uit.stappen, regels: uit.na.length } })
+      // bewaren: trace en video van elke RVA-opdracht 30 dagen op de VPS (fout/), ook als hij
+      // slaagt en ook in de proefstand: de eerste maand willen we alles kunnen terugkijken.
+      return {
+        dag: klaar, bewaren: true, melding: `${o.rit} ${o.weekdag}: ${uit.stappen.length} handeling(en), ${echt ? 'opgeslagen' : 'proefstand'}`,
+        run: { worker: 'postnl-rva', status: 'ok', depots_ok: 1, rijen_gelezen: uit.na.length, lezingen: { [sessie.depot.naam]: { opdracht: id, handelingen: uit.stappen.length, opgeslagen: uit.opgeslagen } } },
+      }
+    } catch (err) {
+      const reden = `${err.soort ? `[${err.soort}] ` : ''}${String(err.message).split('\n')[0]}`.slice(0, 500)
+      await zetRva(ctx, id, { status: 'mislukt', klaar_at: new Date().toISOString(), stap: null, melding: reden, resultaat: { stappen: err.stappen ?? [] } })
+        .catch(e => sessie.log.error(`${label}: opdracht ${id} niet op mislukt gezet: ${e.message}`))
+      throw Object.assign(err, { dag: klaar, bewaren: true })
+    }
+  },
+
+  // Het RVA-tabblad levend houden (matransport#569): het Rittenoverzicht verversen. Was de sessie
+  // verlopen, dan is er in dat tabblad opnieuw ingelogd: een meting van de levensduur (gebeurtenis).
+  async rvaWakker(ctx, dag) {
+    const { sessie, nu } = ctx
+    const verder = { ...dag, rva: { ...(dag.rva ?? {}), wakkerOm: nu.toISOString() } }
+    try {
+      const r = await rva.laad()
+      const { page, ingelogd } = await rvaKlaar(sessie, r)
+      await r.naarRittenoverzicht(page, volgMendix(page))
+      if (!ingelogd) return { dag: verder, run: null }
+      return { dag: verder, run: null, gebeurtenis: { soort: 'rva_verlopen_stil', leeftijdMin: Math.round(sessie.leeftijdMin) }, melding: 'RVA-sessie was verlopen; opnieuw ingelogd in het RVA-tabblad' }
+    } catch (err) {
+      throw Object.assign(err, { dag: verder })
+    }
+  },
+
   // Plannen-tab bijwerken in de open sessie (#562): alleen verschillen, alleen ritten vóór hun
   // deadline (postnl-planner verversPlanning). Loopt er een Plannen-opdracht, dan niet ertussen.
   async plannen(ctx, dag, { soort, shifts }) {

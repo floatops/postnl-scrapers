@@ -165,11 +165,17 @@ async function main() {
     log.log('Planner-opdracht: meteen oppakken')
     for (const w of [...wekkers]) w()
   })
+  // RVA-opdracht uit de app (VPS /run/postnl-rva, matransport#569): idem, meteen oppakken. De lus
+  // leest rva_opdrachten ook elke 15 s als vangnet.
+  const rvaCheck = await volgWekker(process.env.POSTNL_RVA_WEKKER, 1_000, () => {
+    log.log('RVA-opdracht: meteen oppakken')
+    for (const w of [...wekkers]) w()
+  })
   const uurCheck = setInterval(() => herlees('controle per uur'), 3600_000)
 
   // Wachten tot alle lussen klaar zijn, ook die er onderweg bij kwamen of opnieuw startten.
   await beheer.wacht()
-  clearInterval(wekkerCheck); clearInterval(plannerCheck); clearInterval(uurCheck)
+  clearInterval(wekkerCheck); clearInterval(plannerCheck); clearInterval(rvaCheck); clearInterval(uurCheck)
   await teller.flush()
   clearInterval(codeCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
 }

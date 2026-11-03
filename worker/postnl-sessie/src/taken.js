@@ -46,6 +46,13 @@ export const TAKEN = [
     volgende: (dag) => (dag.aanvragen ?? []).some(a => a.soort === 'planner') ? { nu: true, args: dag.aanvragen.find(a => a.soort === 'planner') } : null,
   },
   {
+    // RVA-opdracht uit de app (matransport#569): alle wijzigingen van één Opslaan, op één rit-dag,
+    // in het RVA-tabblad van deze sessie. De oudste eerst; de lus doet één taak tegelijk, dus een
+    // lopende opdracht wordt nooit onderbroken. Ook 's nachts en op zondag (alleen cfg.rva telt).
+    naam: 'rva', prioriteit: 95, opAanvraag: true, schrijft: true, tab: 'rva', worker: 'postnl-rva',
+    volgende: (dag, nu, cfg) => (cfg.rva && (dag.aanvragen ?? []).some(a => a.soort === 'rva')) ? { nu: true, args: dag.aanvragen.find(a => a.soort === 'rva') } : null,
+  },
+  {
     naam: 'depotUrl', prioriteit: 90, opAanvraag: true, worker: 'postnl-depot-url',
     volgende: (dag) => (dag.aanvragen ?? []).some(a => a.soort === 'depotUrl') ? { nu: true, args: dag.aanvragen.find(a => a.soort === 'depotUrl') } : null,
   },
@@ -88,6 +95,18 @@ export const TAKEN = [
       }
       const laatst = dag.ritmonitor?.laatsteOm ? new Date(dag.ritmonitor.laatsteOm) : null
       const om = laatst ? new Date(laatst.getTime() + cfg.ritmonitorIntervalSec * 1000) : nu
+      return om <= nu ? { nu: true, args: {} } : { om }
+    },
+  },
+  {
+    // Het RVA-tabblad levend houden (matransport#569): elke rvaWakkerMin het Rittenoverzicht
+    // verversen. Verlopen? Dan logt de handler in datzelfde tabblad opnieuw in, vóór een opdracht
+    // erop moet wachten. Met rvaAltijd ook 's nachts en op zondag: dan stopt de lus nooit vanzelf.
+    naam: 'rvaWakker', prioriteit: 4, tab: 'rva', worker: null,
+    volgende: (dag, nu, cfg) => {
+      if (!cfg.rva || !cfg.rvaWakkerMin) return null
+      if (!cfg.rvaAltijd && (rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd))) return null
+      const om = dag.rva?.wakkerOm ? new Date(new Date(dag.rva.wakkerOm).getTime() + cfg.rvaWakkerMin * MIN) : nu
       return om <= nu ? { nu: true, args: {} } : { om }
     },
   },

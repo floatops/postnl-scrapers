@@ -17,6 +17,23 @@ De **autorisatie** van een rit is het omslagpunt, niet de klok (`src/taken.js`, 
 
 **De sessie blijft de hele werkdag open** (`sessieOpenHouden`, standaard aan): van de eerste taak tot 23:00 is er per depot één sessie in één tabblad, ook in de stille tijd tussen de ochtendlezing en de eerste deadline. Een planner-opdracht hoeft dan nooit in te loggen. Verloopt de sessie toch, dan logt de volgende taak in hetzelfde tabblad opnieuw in (`naarDepot`), en dat telt als meting van de levensduur. Met `sessieOpenHouden: false` geldt de oude regel: ligt de volgende taak verder dan `sluitNaLeegMin` (10 min) weg, dan gaat de sessie dicht. Na 23:00 en op zondag stopt het proces; de cronjob `postnl-sessie-bewaker` start hem vanaf 05:25 weer. Alle tijden en intervallen staan in `src/instellingen.js` en zijn per klant te overschrijven in `postnl_instellingen.instellingen` (jsonb), zonder deploy.
 
+## RVA: tweede tabblad, 24/7 (matransport#569)
+
+Met `rva: true` in `postnl_instellingen.instellingen` heeft elk depot **één browser met twee tabbladen**: OOM PD (`sessie.page`) en RVA (`sessie.rvaPage`, `https://pnl-rva.p15.cldsvc.net/`). Beide gebruiken dezelfde login en cookies (zelfde context). Er komt geen tweede login of sessie bij. Code en hoe RVA werkt: `../postnl-rva/POSTNL_RVA.md`.
+
+- **Altijd open:** het RVA-tabblad gaat open direct na het inloggen en na elk nieuw videosegment (`sessie.rvaOpenen()`). De taak `rvaWakker` (prioriteit 4) ververst elke `rvaWakkerMin` (10) het Rittenoverzicht. Is de RVA-sessie verlopen, dan logt hij in dat tabblad opnieuw in (gebeurtenis `rva_verlopen_stil`).
+- **24/7** (`rvaAltijd`, standaard aan): `rva` en `rvaWakker` negeren `rustdagen` en `eindtijd`. De lus stopt dus 's nachts en op zondag niet. De bewaker start de sessiehouder buiten de OOM PD-werktijd met `trigger_postnl_sessie(true)`, alleen voor klanten met RVA aan. Het OOM PD-tabblad blijft 's nachts stil open.
+- **Opdrachten** (`rva_opdrachten` in matransport, één Opslaan in de app = één rij):
+  - Taak `rva` (prioriteit 95: na een planner-opdracht, vóór alle OOM PD-taken) pakt steeds de **oudste** wachtende opdracht van het depot.
+  - De lus doet één taak tegelijk. Een lopende opdracht wordt dus nooit onderbroken, en meerdere opdrachten gaan na elkaar. Een OOM PD-taak die al loopt, maakt eerst zijn werk af.
+  - Gewekt via `POSTNL_RVA_WEKKER` (VPS `/run/postnl-rva`, binnen een seconde), met elke 15 s lezen als vangnet.
+  - Status `wacht → bezig` alleen als hij nog op `wacht` staat, en daarna `klaar` of `mislukt` met de reden. Na een fout geen herhaling: `voerUit` doet dan Annuleer.
+  - `stap` en `voortgang` (0–100) worden live bijgewerkt, voor de voortgangsbalk in de app.
+  - Echt opslaan in RVA alleen met `RVA_ECHT=ja` in de omgeving (de `.env` op de VPS, zonder herstart gelezen); anders proefstand.
+- **Beoordelen na een RVA-taak:** het RVA-tabblad (loginpagina, crash, fout), **niet** de OOM PD-startpagina. Een verse login staat daar, en een RVA-taak laat dat tabblad ongemoeid; anders gaf elke RVA-taak een valse "gegooid".
+- **Opnames:** elke RVA-opdracht bewaart trace en video 30 dagen in `fout/` (`bewaren: true`, ook als hij slaagt en in de proefstand). De video van het RVA-tabblad heet `video-rva-*.webm`.
+- **Code:** de sessiehouder laadt nu ook `worker/postnl-rva` (`codeversie.js`). Een RVA-commit geeft dus weer een herstart.
+
 ## Lezen en schrijven
 
 - **Dagplanning uit de Mendix-antwoorden** (`credentials-shared/src/postnl/ritten.js`): PostNL stuurt per rit `RideNumber` (Stops, Pieces, Volume, Weight, MailboxOnlyStops, TotalRideTime, RideID), `Ride` (RideName, RideID, Authorized/Enum_Authorized, Driver, Shift) en het kanaal van het scherm (`DisplayPlanning` → `DistributionChannel`). Op 02-11 vergeleken met wat het scherm-lezen in `ritten` had gezet: gelijk. Welke waarde in welke kolom komt staat op één plek: `postnl/velden.js`.

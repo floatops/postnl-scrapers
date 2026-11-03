@@ -29,6 +29,14 @@ export const STANDAARD = Object.freeze({
   plannenStopsMin: 0,
   plannenKijkerStopsMin: 0,
   plannenKijkerVoorsprongSec: 120,  // zoveel eerder aan de beurt dan de rest
+  // RVA (Route Volgorde Applicatie, matransport#569): opdrachten uit de app in een tweede tabblad
+  // van deze sessie, zelfde login. Standaard uit; per klant aanzetten in postnl_instellingen.
+  // rvaAltijd: ook 's nachts en op zondag (de lus stopt dan niet). rvaWakkerMin: zo vaak het
+  // Rittenoverzicht in het RVA-tabblad verversen, zodat de sessie leeft. Echt opslaan in RVA alleen
+  // met RVA_ECHT=ja in de omgeving van de worker.
+  rva: false,
+  rvaAltijd: true,
+  rvaWakkerMin: 10,
   sluitNaLeegMin: 10,             // zonder sessieOpenHouden: dicht als de volgende taak verder weg ligt
   // Herstel
   gegooidVensterMin: 2,           // twee keer eruit gegooid binnen dit venster = nieuwe login
@@ -43,7 +51,7 @@ export const STANDAARD = Object.freeze({
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
-  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300 },
+  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120 },
 })
 
 function isObject(v) { return v && typeof v === 'object' && !Array.isArray(v) }

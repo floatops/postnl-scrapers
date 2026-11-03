@@ -1,4 +1,5 @@
-// Eén browsersessie bij PostNL voor één depot, in één tabblad (floatops/matransport#562).
+// Eén browsersessie bij PostNL voor één depot (floatops/matransport#562): één browser, één login,
+// één tabblad voor OOM PD en, als RVA aanstaat (matransport#569), een tweede tabblad voor RVA.
 //
 // - Elke nieuwe login krijgt een nieuw IP uit de proxy-pool (kiesProxy) en een rij in postnl_sessies.
 // - Video: per context (recordVideo). Een segment eindigt bij een contextwissel (zelfde cookies,
@@ -12,8 +13,9 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
-import { naarDepot } from '../../credentials-shared/src/postnl/login.js'
+import { naarDepot, login } from '../../credentials-shared/src/postnl/login.js'
 import { volgMendix } from '../../postnl-planner/src/mendix.js'
+import { openRva } from '../../postnl-rva/src/scherm.js'
 import { depotSlug, nlTijdstempel, BEWAAR_DAGEN } from '../../credentials-shared/src/sessieVideo.js'
 
 export const WORKER = 'postnl-sessie'
@@ -44,6 +46,7 @@ export class Sessie {
     this.browser = null
     this.context = null
     this.page = null
+    this.rvaPage = null      // tweede tabblad voor RVA (matransport#569), pas geopend als nodig
     this.proxy = null
     this.id = null
     this.ingelogdOm = null
@@ -69,6 +72,7 @@ export class Sessie {
       this.browser = await this.chromium.launch(opties)
       await this.#nieuweContext()
       await naarDepot(this.page, this.depot, { log: this.log })
+      await this.rvaOpenen()
       await this.#traceAan()
       this.ingelogdOm = Date.now()
       this.segmentOm = Date.now()
@@ -94,6 +98,27 @@ export class Sessie {
       if (!res.url().includes('/xas/')) return
       res.json().then(j => this.antwoorden.push(j)).catch(() => {})
     })
+  }
+
+  // Het RVA-tabblad (matransport#569): een tweede tabblad in dezelfde browser en context, dus
+  // dezelfde login en cookies. Eén browser per depot, twee tabbladen die altijd open staan: OOM PD
+  // (this.page) en RVA. Met cfg.rva meteen na het inloggen en na elk nieuw videosegment geopend;
+  // de taak rvaWakker houdt het levend. rvaTab() opent het ook als het onverwacht dicht is.
+  async rvaTab() {
+    if (!this.context) throw new Error('Geen open sessie voor het RVA-tabblad')
+    if (!this.rvaPage || this.rvaPage.isClosed()) this.rvaPage = await this.context.newPage()
+    return this.rvaPage
+  }
+
+  // RVA openen als het aanstaat. Lukt het niet, dan gaat de sessie gewoon door (OOM PD werkt);
+  // de volgende RVA-taak probeert het opnieuw.
+  async rvaOpenen() {
+    if (!this.cfg?.rva) return
+    try {
+      await openRva(await this.rvaTab(), { login: (p) => login(p, this.depot, { log: this.log }) })
+    } catch (err) {
+      this.log.warn(`[${this.depot.naam}] RVA-tabblad openen mislukt (volgende RVA-taak probeert opnieuw): ${err.message}`)
+    }
   }
 
   // tracing.start() begint zelf al een chunk; die meteen weggooien, zodat elke taak een eigen
@@ -134,16 +159,19 @@ export class Sessie {
   // Geeft false als de sessie daarna niet meer ingelogd is (dan is dat zelf een meting).
   async nieuwSegment() {
     const state = await this.context.storageState()
-    const oud = { context: this.context, page: this.page, dir: this.videoDir }
-    // Altijd één tabblad: eerst het oude sluiten, dan pas het nieuwe openen (zelfde cookies).
+    const oud = { context: this.context, page: this.page, rvaPage: this.rvaPage, dir: this.videoDir }
+    // Altijd één tabblad per app: eerst het oude sluiten, dan pas het nieuwe openen (zelfde cookies).
+    // Het RVA-tabblad gaat mee dicht; de volgende RVA-taak opent het opnieuw.
     await oud.context.tracing.stop().catch(() => {})
     await oud.context.close().catch(() => {})
+    this.rvaPage = null
     await this.#nieuweContext(state)
-    await this.#bewaarVideo(oud.page, oud.dir, this.incidentInSegment)
+    await this.#bewaarVideo(oud.page, oud.dir, this.incidentInSegment, oud.rvaPage)
     this.incidentInSegment = false
     this.segmentOm = Date.now()
     try {
       const { ingelogd } = await naarDepot(this.page, this.depot, { log: this.log })
+      await this.rvaOpenen()
       await this.#traceAan()
       if (ingelogd) { this.herlogins++; return false }
       return true
@@ -152,15 +180,23 @@ export class Sessie {
     }
   }
 
-  async #bewaarVideo(page, dir, incident) {
-    const video = page?.video()
-    if (!video) return null
+  // Bewaart de video van het OOM PD-tabblad (en die van het RVA-tabblad als 'video-rva'), dan pas
+  // de tijdelijke map weg: beide video's staan daarin. Geeft het pad van de OOM PD-video.
+  async #bewaarVideo(page, dir, incident, rvaPage = null) {
+    const bewaar = async (p, naam) => {
+      const video = p?.video()
+      if (!video) return null
+      try {
+        return await bewaarOpname(this.opnameMap, await video.path(), naam, 'webm', incident)
+      } catch (err) {
+        this.log.warn(`[${this.depot.naam}] Video ${naam} opslaan mislukt (gaat door): ${err.message}`)
+        return null
+      }
+    }
     try {
-      const bron = await video.path()
-      return await bewaarOpname(this.opnameMap, bron, 'video', 'webm', incident)
-    } catch (err) {
-      this.log.warn(`[${this.depot.naam}] Video opslaan mislukt (gaat door): ${err.message}`)
-      return null
+      const pad = await bewaar(page, 'video')
+      await bewaar(rvaPage, 'video-rva')
+      return pad
     } finally {
       await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
     }
@@ -169,9 +205,11 @@ export class Sessie {
   // Sluiten met een reden (verlopen, gegooid, blokkade, nacht, leeg, herstart, …). Idempotent.
   async sluiten(reden, { fout = null, uitkomst = null } = {}) {
     const page = this.page
+    const rvaPage = this.rvaPage
     const dir = this.videoDir
     const incident = this.incidentInSegment || !['nacht', 'leeg', 'herstart', 'vernieuwd', 'vernieuwd_voor_schrijven'].includes(reden)
     this.page = null
+    this.rvaPage = null
     if (this.context) {
       await this.context.tracing.stop().catch(() => {})
       await this.context.close().catch(() => {})
@@ -179,7 +217,7 @@ export class Sessie {
     await this.browser?.close().catch(() => {})
     this.context = null
     this.browser = null
-    const video = await this.#bewaarVideo(page, dir, incident)
+    const video = await this.#bewaarVideo(page, dir, incident, rvaPage)
     if (this.proxy) {
       await sluitProxyAf(this.supabase, this.proxy, uitkomst ?? (reden === 'blokkade' ? 'blokkade' : fout ? 'fout' : 'ok'),
         `${reden}${fout ? `: ${String(fout.message).split('\n')[0]}` : ''} (${this.lezingen} lezingen)`)

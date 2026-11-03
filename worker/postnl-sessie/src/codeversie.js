@@ -4,7 +4,8 @@
 import { execFileSync } from 'node:child_process'
 
 // De mappen waar de sessiehouder code uit laadt (direct of via import).
-export const MAPPEN = ['worker/postnl-sessie/', 'worker/credentials-shared/', 'worker/postnl-planner/', 'worker/postnl-ritmonitor/']
+// postnl-rva sinds de RVA-taak (matransport#569): een RVA-commit geeft dus weer een herstart.
+export const MAPPEN = ['worker/postnl-sessie/', 'worker/credentials-shared/', 'worker/postnl-planner/', 'worker/postnl-ritmonitor/', 'worker/postnl-rva/']
 
 export function raaktSessiehouder(paden) {
   return paden.some(p => MAPPEN.some(m => p.startsWith(m)))

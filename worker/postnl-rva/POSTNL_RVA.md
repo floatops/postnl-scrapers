@@ -3,9 +3,9 @@
 Past de **vaste rijvolgorde per rit per weekdag** aan in RVA, de Route Volgorde Applicatie van PostNL (`https://pnl-rva.p15.cldsvc.net/`, één adres voor alle depots; welk depot je ziet hangt af van de login). Issue: floatops/matransport#569.
 
 Afgesproken volgorde:
-1. **Nu:** alle handelingen uit de opnames van 03-11 kunnen uitvoeren en controleren (`src/`, `scripts/proef.mjs`).
-2. **Daarna:** OOM PD en RVA tegelijk, met dezelfde login en dezelfde sessie, in twee tabbladen in de sessiehouder (`postnl-sessie`).
-3. **Later:** een wachtrij vanuit de app (chauffeurs) en een edge function in matransport.
+1. **Klaar (03-11):** alle handelingen uit de opnames kunnen uitvoeren en controleren (`src/`, `scripts/proef.mjs`, live getest).
+2. **Gebouwd (03-11):** in de sessiehouder, met één browser per depot en twee tabbladen (OOM PD + RVA, dezelfde login), RVA 24/7, met een wachtrij (`rva_opdrachten` + edge function `rva-opdracht` in matransport). Zie `../postnl-sessie/POSTNL_SESSIE.md` § RVA. Nog te doen: de meting met `scripts/twee-tabs.mjs` na 23:00, dan aanzetten in de proefstand.
+3. **Daarna:** het scherm voor chauffeurs in de app, met een **voortgangsbalk** tijdens het doorvoeren (afspraak eigenaar 03-11; `rva_opdrachten.stap` en `.voortgang` worden al live bijgewerkt).
 
 ## Hoe RVA werkt (vastgesteld op de opnames van 03-11)
 
@@ -57,6 +57,8 @@ node scripts/proef.mjs --klein "<ritnaam>" --groot "<ritnaam>" --dag Za --echt  
 - De uitkomst staat in `opnames/<tijd>/uitslag.json`, met video en `trace.zip` (`npx playwright show-trace`). Die map staat in `.gitignore`: hij bevat adressen.
 
 Eén losse handeling (bv. om iets te herstellen): `node scripts/handeling.mjs --rit "<ritnaam>" --dag Za --soort onderbreking_weg --regel 2 --echt`.
+
+Meting **één login, twee tabbladen** (zoals in de sessiehouder): `node scripts/twee-tabs.mjs --oompd "<portaal-URL>" --rit "<ritnaam>" --dag Za --minuten 30`. Elke minuut leest hij in beide tabbladen, en kijkt dan of OOM PD op de startpagina of loginpagina staat, of RVA op de loginpagina. ⚠️ Alleen als de sessiehouder van dat depot niet draait (na 23:00): anders is het een tweede OOM PD-sessie, en die gooit de sessiehouder er wél uit.
 
 ## Stand
 

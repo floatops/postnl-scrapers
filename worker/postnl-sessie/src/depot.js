@@ -82,6 +82,14 @@ export async function draaiDepot(deps) {
         for (const o of opdrachten) dag = voegAanvraagToe(dag, { id: o.id, soort: 'planner', depot: depot.naam })
         for (const a of dag.aanvragen.filter(a => a.soort === 'planner')) if (!opdrachten.some(o => o.id === a.id)) dag = aanvraagKlaar(dag, a.id)
       }
+      // RVA-opdrachten (matransport#569), oudste eerst: de taak 'rva' pakt steeds de eerste.
+      if (cfg.rva && opslag.rvaOpdrachten) {
+        const rva = await opslag.rvaOpdrachten(depot.naam)
+        if (rva) {
+          for (const o of rva) dag = voegAanvraagToe(dag, { id: o.id, soort: 'rva', depot: depot.naam })
+          for (const a of dag.aanvragen.filter(a => a.soort === 'rva')) if (!rva.some(o => o.id === a.id)) dag = aanvraagKlaar(dag, a.id)
+        }
+      }
 
       // Wie heeft Plannen open voor dit depot? Die shift krijgt de stops vaker (taak 'plannen').
       if (cfg.plannenVerversen && opslag.plannenKijkers) dag = { ...dag, plannenKijkers: await opslag.plannenKijkers(depot.naam, dag.datum) }
@@ -124,21 +132,24 @@ export async function draaiDepot(deps) {
         fout = err
       }
 
-      // Hoe staat de sessie ervoor, ook na een geslaagde taak?
-      const page = sessie?.page
-      const planningZichtbaar = page ? await page.locator(SEL_PLANNING).first().isVisible().catch(() => false) : null
+      // Hoe staat de sessie ervoor, ook na een geslaagde taak? Een RVA-taak laat het OOM PD-tabblad
+      // ongemoeid (dat kan na een verse login nog op de startpagina staan): dan het RVA-tabblad
+      // beoordelen, alleen op loginpagina/crash/fout, niet op de OOM PD-startpagina.
+      const rvaTaak = k.taak.tab === 'rva'
+      const page = rvaTaak ? sessie?.rvaPage : sessie?.page
+      const planningZichtbaar = page && !rvaTaak ? await page.locator(SEL_PLANNING).first().isVisible().catch(() => false) : null
       // Elke taak eindigt op zijn eigen scherm. Staat de pagina dan op de startpagina, dan heeft
       // PostNL de sessie teruggezet (een andere sessie werkt met dezelfde login).
-      const startpagina = page ? await (deps.opStartpagina ?? opStartpagina)(page) : false
+      const startpagina = page && !rvaTaak ? await (deps.opStartpagina ?? opStartpagina)(page) : false
       const soort = !sessie ? (fout ? classificeer({ fout }) : 'gezond')
-        : classificeer({ url: page?.url?.() ?? '', depotHost: sessie.depotHost, fout, planningZichtbaar: fout ? planningZichtbaar : null, opStartpagina: startpagina })
+        : classificeer({ url: page?.url?.() ?? '', depotHost: rvaTaak ? null : sessie.depotHost, fout, planningZichtbaar: fout ? planningZichtbaar : null, opStartpagina: startpagina })
       const actie = herstel(soort, { recent, logins, nu: klok.nu(), cfg })
       recent.push({ soort, at: klok.nu() })
       if (recent.length > 20) recent.shift()
 
       const incident = soort !== 'gezond'
       // Elke taak behalve de ritmonitor (elke minuut, die staat samengevat in de run-log) in het log.
-      if (!incident && !fout && taak !== 'ritmonitor' && (!['wakker', 'plannen'].includes(taak) || uitkomst?.melding)) {
+      if (!incident && !fout && taak !== 'ritmonitor' && (!['wakker', 'plannen', 'rvaWakker'].includes(taak) || uitkomst?.melding)) {
         const l = uitkomst?.run?.lezingen?.[depot.naam]
         log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
       }

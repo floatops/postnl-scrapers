@@ -59,17 +59,24 @@ export async function zorgVoorBasisRevisie(page, mendix, { echt = false, log = c
 
 // Voert de opdracht uit in de open RVA-pagina. Geeft per handeling wat er gebeurde. Een fout
 // midden in een handeling: geen herhaling, wel Annuleer (terug naar de basisrevisie), en dan gooien.
-export async function voerUit(page, mendix, opdracht, { echt = false, log = console } = {}) {
+// opStap({ stap, voortgang }) meldt elke stap (voor de voortgangsbalk in de app); mag niet gooien.
+export async function voerUit(page, mendix, opdracht, { echt = false, log = console, opStap = async () => {} } = {}) {
+  const totaal = opdracht.handelingen.length
+  const meld = (stap, voortgang) => Promise.resolve().then(() => opStap({ stap, voortgang })).catch(() => {})
+  await meld('Rit-dag openen', 10)
   await rva.openRitDag(page, mendix, opdracht.rit, opdracht.dag)
   // Een achtergebleven bewerkstand van dit account (vorige poging) eerst weg: Revisies werkt
   // alleen buiten de bewerkstand. Die Annuleer zet de basisrevisie van die poging terug.
   if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
+  await meld('Controleren wat er nu in RVA staat', 15)
   await zorgVoorBasisRevisie(page, mendix, { echt, log })
   const voor = await rva.leesRegels(page)
+  await meld('Bewerken starten', 20)
   await rva.startWijzig(page, mendix)
   const stappen = []
   try {
     for (const [i, h] of opdracht.handelingen.entries()) {
+      await meld(`Wijziging ${i + 1} van ${totaal}`, 20 + Math.round((i / totaal) * 65))
       const fn = UITVOEREN[h.soort]
       if (!fn) throw new rva.RvaFout('opdracht', `Onbekende handeling: ${h.soort}`)
       const nu = await rva.leesRegels(page)
@@ -88,6 +95,7 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
     throw err
   }
   const kladversie = await rva.leesRegels(page)
+  await meld(echt ? 'Opslaan in RVA' : 'Proefstand: terugdraaien', 90)
   if (echt) await rva.opslaan(page, mendix)
   else await rva.annuleer(page, mendix)
   const na = await rva.leesRegels(page)

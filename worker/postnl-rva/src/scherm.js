@@ -95,8 +95,8 @@ export async function sluitVenster(page, mendix) {
 
 export const isLoginPagina = (url) => /loginpostnl|\/login|\/authorize/.test(String(url ?? ''))
 
-// Naar RVA tot het Rittenoverzicht in beeld is. Inloggen doet de aanroeper (`login`), of in de
-// proef de eigenaar zelf: dan wachten we tot `maxMs`.
+// Naar RVA tot het menu in beeld is. Inloggen doet de aanroeper (`login`), of in de proef de
+// eigenaar zelf: dan wachten we tot `maxMs`. Geeft { ingelogd }: of er (opnieuw) ingelogd is.
 export async function openRva(page, { login = null, maxMs = 90_000 } = {}) {
   if (!page.url().includes('pnl-rva')) await page.goto(RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
   const tot = Date.now() + maxMs
@@ -107,7 +107,7 @@ export async function openRva(page, { login = null, maxMs = 90_000 } = {}) {
       await login(page)
       continue
     }
-    if (await zichtbaar(page.locator(SCHERM.menuRittenoverzicht).first())) return
+    if (await zichtbaar(page.locator(SCHERM.menuRittenoverzicht).first())) return { ingelogd: logins > 0 }
     await page.waitForTimeout(1_000)
   }
   throw new RvaFout('login', `RVA niet in beeld na ${Math.round(maxMs / 1000)} s (url: ${page.url().split('?')[0]})`)
