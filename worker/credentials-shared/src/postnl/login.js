@@ -17,7 +17,13 @@ export async function opStartpagina(page) {
 
 export const isLoginPagina = (url) => /loginpostnl|\/login|\/authorize/.test(String(url ?? ''))
 
+// Wie wil weten dat er op deze pagina ingelogd wordt (de sessiehouder meet zo hoe lang een sessie
+// geldig blijft, matransport#562). Eén luisteraar per pagina; vervalt met de pagina.
+const bijLogin = new WeakMap()
+export function volgLogins(page, fn) { bijLogin.set(page, fn) }
+
 export async function login(page, depot, { log = console } = {}) {
+  try { bijLogin.get(page)?.() } catch { /* meten mag inloggen nooit tegenhouden */ }
   // Het invoerveld staat soms al in de DOM terwijl het nog verborgen is (de PCI-loginpagina
   // hydrateert traag). Langer wachten en anders één keer herladen.
   try {

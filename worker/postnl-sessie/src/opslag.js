@@ -33,12 +33,14 @@ export function maakOpslag({ supabase, klantId, log = console }) {
     },
 
     // Gemeten levensduren (minuten) van sessies die door PostNL beëindigd werden.
+    // Gemeten levensduren (min) van de laatste `dagen`: sessies die eindigden omdat ze verliepen, plus
+    // elk verloop binnen een sessie (gebeurtenis sessie_verlopen, OOM PD-tabblad; levensmeter.js).
     async levensduren(depot, dagen = 30) {
-      const { data, error } = await supabase.from('postnl_sessies').select('ingelogd_at, einde_at')
-        .eq('klant_id', klantId).eq('depot', depot).eq('einde_reden', 'verlopen')
+      const { data, error } = await supabase.from('postnl_sessies').select('ingelogd_at, einde_at, einde_reden, gebeurtenissen')
+        .eq('klant_id', klantId).eq('depot', depot)
         .gte('ingelogd_at', new Date(Date.now() - dagen * 86400_000).toISOString())
       if (error) { log.warn(`[${depot}] Levensduren niet gelezen: ${error.message}`); return [] }
-      return (data ?? []).map(r => (new Date(r.einde_at) - new Date(r.ingelogd_at)) / 60_000)
+      return levensdurenUit(data ?? [])
     },
 
     async sessieStart({ depot, proxyGebruikId, externIp }) {
@@ -107,4 +109,16 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) log.warn(`Opnames bij run ${id} niet opgeslagen: ${error.message}`)
     },
   }
+}
+
+// Puur (getest): de levensduren uit rijen van postnl_sessies.
+export function levensdurenUit(rijen) {
+  const uit = []
+  for (const r of rijen) {
+    if (r.einde_reden === 'verlopen' && r.einde_at) uit.push((new Date(r.einde_at) - new Date(r.ingelogd_at)) / 60_000)
+    for (const g of r.gebeurtenissen ?? []) {
+      if (g?.soort === 'sessie_verlopen' && (g.tab ?? 'oompd') === 'oompd' && Number.isFinite(g.duurMin)) uit.push(g.duurMin)
+    }
+  }
+  return uit
 }

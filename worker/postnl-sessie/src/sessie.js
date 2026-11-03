@@ -13,7 +13,8 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
-import { naarDepot, login } from '../../credentials-shared/src/postnl/login.js'
+import { naarDepot, login, volgLogins } from '../../credentials-shared/src/postnl/login.js'
+import { maakLevensmeter, duurTekst } from './levensmeter.js'
 import { volgMendix } from '../../postnl-planner/src/mendix.js'
 import { openRva } from '../../postnl-rva/src/scherm.js'
 import { depotSlug, nlTijdstempel, BEWAAR_DAGEN } from '../../credentials-shared/src/sessieVideo.js'
@@ -54,6 +55,9 @@ export class Sessie {
     this.antwoorden = []
     this.lezingen = 0
     this.herlogins = 0
+    this.huidigeTaak = null
+    // Hoe lang blijft de sessie geldig, per tabblad (levensmeter.js)
+    this.meters = { oompd: maakLevensmeter({ tab: 'oompd' }), rva: maakLevensmeter({ tab: 'rva' }) }
     this.incidentInSegment = false
     this.depotHost = new URL(depot.url).hostname
     this.opnameMap = path.join(OPNAME_ROOT, klantId, depotSlug(depot.naam))
@@ -76,6 +80,8 @@ export class Sessie {
       await this.#traceAan()
       this.ingelogdOm = Date.now()
       this.segmentOm = Date.now()
+      this.meters.oompd.start()
+      if (this.rvaPage && !this.rvaPage.isClosed()) this.meters.rva.start()
       this.id = await this.opslag.sessieStart({ depot: this.depot.naam, proxyGebruikId: this.proxy?.gebruikId, externIp: this.proxy?.label?.match(/\(([^)]+)\)/)?.[1] ?? null })
       this.log.log(`[${this.depot.naam}] Ingelogd (${this.proxy?.label ?? 'geen proxy'})`)
     } catch (err) {
@@ -93,6 +99,7 @@ export class Sessie {
       ...(storageState ? { storageState } : {}),
     })
     this.page = await this.context.newPage()
+    volgLogins(this.page, () => this.#verlopen('oompd'))
     this.mendix = volgMendix(this.page)
     this.page.on('response', (res) => {
       if (!res.url().includes('/xas/')) return
@@ -106,7 +113,10 @@ export class Sessie {
   // de taak rvaWakker houdt het levend. rvaTab() opent het ook als het onverwacht dicht is.
   async rvaTab() {
     if (!this.context) throw new Error('Geen open sessie voor het RVA-tabblad')
-    if (!this.rvaPage || this.rvaPage.isClosed()) this.rvaPage = await this.context.newPage()
+    if (!this.rvaPage || this.rvaPage.isClosed()) {
+      this.rvaPage = await this.context.newPage()
+      volgLogins(this.rvaPage, () => this.#verlopen('rva'))
+    }
     return this.rvaPage
   }
 
@@ -132,15 +142,29 @@ export class Sessie {
     }
   }
 
+  // Er wordt in een tabblad ingelogd. Was dat tabblad al ingelogd, dan liet PostNL de sessie
+  // verlopen: meting vastleggen (postnl_sessies.gebeurtenissen, soort sessie_verlopen).
+  #verlopen(tab) {
+    const meting = this.meters[tab].login({ taak: this.huidigeTaak })
+    if (!meting) return
+    this.herlogins++
+    this.log.log(`[${this.depot.naam}] Sessie verlopen (${tab}) na ${duurTekst(meting.duurMin)} (${duurTekst(meting.stilMin)} stil, tijdens ${meting.taak ?? 'geen taak'}), opnieuw ingelogd in hetzelfde tabblad`)
+    this.opslag.gebeurtenis(this.id, { soort: 'sessie_verlopen', ...meting }).catch?.(() => {})
+  }
+
   // Vóór elke taak: lege lijst Mendix-antwoorden en een nieuwe trace-chunk.
   async taakBegin(naam) {
+    this.huidigeTaak = naam
     this.antwoorden = []
     await this.context?.tracing.startChunk({ title: naam }).catch(() => {})
   }
 
   // Na elke taak: trace-chunk opslaan. Met een incident naar fout/ (30 dagen), anders alleen
   // de laatste per taak. Geeft het opslagpad of null.
-  async taakEinde(naam, { incident = false } = {}) {
+  async taakEinde(naam, { incident = false, tab = 'oompd' } = {}) {
+    this.huidigeTaak = null
+    this.meters[tab]?.taakKlaar()
+    if (tab === 'rva') this.meters.rva.start()   // eerste geslaagde RVA-taak: vanaf nu meten
     if (!this.context) return null
     if (incident) this.incidentInSegment = true
     const lokaal = path.join(this.videoDir ?? os.tmpdir(), `trace-${naam}-${Date.now()}.zip`)
@@ -173,7 +197,7 @@ export class Sessie {
       const { ingelogd } = await naarDepot(this.page, this.depot, { log: this.log })
       await this.rvaOpenen()
       await this.#traceAan()
-      if (ingelogd) { this.herlogins++; return false }
+      if (ingelogd) return false   // telt de levensmeter (login in dit tabblad)
       return true
     } catch (err) {
       return false

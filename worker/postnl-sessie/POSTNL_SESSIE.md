@@ -71,9 +71,9 @@ Na elke taak, geslaagd of niet, wordt de sessie beoordeeld:
 
 `gegooid` wordt hoogstens eens per 30 min per depot gemeld (de gebeurtenis staat er altijd; 03-11 gaf een taak die op de startpagina eindigde 69 meldingen). Een taak moet daarom altijd op zijn eigen scherm eindigen: eindigt hij op de startpagina, dan telt dat als eruit gegooid. Met `contextWissel` aan wordt de browser niet om de 4 uur vernieuwd (dat gaf een onnodige login). Meer dan 4 logins per uur per depot = 10 min pauze + melding `te_veel_logins` (niet blijven hameren op PostNL). Elke taak heeft een tijdslimiet (`taakLimietSec`); een waakhond stopt het proces als geen enkele depot-lus meer voortgang maakt. Elk incident komt als gebeurtenis in `postnl_sessies.gebeurtenissen`, met het pad van de trace.
 
-## Levensduur (`src/levensduur.js`)
+## Levensduur (`src/levensmeter.js`)
 
-Gemeten, niet aangenomen: gewone lezingen laten een sessie gewoon verlopen (`einde_reden = 'verlopen'`). Vanaf 3 metingen is de schatting het 10e percentiel van de laatste 30 dagen; vóór schrijvend werk wordt een sessie dan vernieuwd als hij dichter dan 15 min bij dat einde zit.
+Gemeten, niet aangenomen. Per tabblad (OOM PD en RVA) houdt een levensmeter bij sinds wanneer dat tabblad ingelogd is. Moet de sessiehouder er opnieuw inloggen (`login()` in `credentials-shared/src/postnl/login.js` meldt zich via `volgLogins`), dan liet PostNL de sessie verlopen: gebeurtenis `sessie_verlopen` in `postnl_sessies.gebeurtenissen` met `duurMin`, `stilMin` (sinds de laatste afgeronde taak in dat tabblad), `tab` en `taak`, plus een regel in het log. Het eerste inloggen telt niet, een contextwissel zet de klok niet terug. Overzicht en query: view `postnl_sessie_levensduur` (matransport `docs/POSTNL_INTEGRATIE.md`). De schatting (`schatLevensduur`) is het 10e percentiel van de OOM PD-metingen van de laatste 30 dagen (`levensdurenUit`), vanaf 3 metingen; vóór schrijvend werk wordt een sessie vernieuwd als hij dichter dan 15 min bij dat einde zit.
 
 ## Opnames (op de schijf van de VPS)
 

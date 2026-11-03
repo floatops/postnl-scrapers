@@ -154,7 +154,7 @@ export async function draaiDepot(deps) {
         log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
       }
       // Een doorvoer (planner) wijzigt PostNL: trace en video altijd 30 dagen bewaren (fout/).
-      const tracePad = sessie ? await sessie.taakEinde(taak, { incident: incident || Boolean(uitkomst?.bewaren || fout?.bewaren) }) : null
+      const tracePad = sessie ? await sessie.taakEinde(taak, { incident: incident || Boolean(uitkomst?.bewaren || fout?.bewaren), tab: k.taak.tab ?? 'oompd' }) : null
       if (incident) {
         log.warn(`${label} ${taak}: ${soort}${fout ? ` (${String(fout.message).split('\n')[0]})` : ''} → ${actie}`)
         await opslag.gebeurtenis(sessie?.id, { soort, taak, actie, fout: fout ? String(fout.message).slice(0, 300) : null, trace: tracePad })

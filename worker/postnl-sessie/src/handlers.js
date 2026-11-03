@@ -57,7 +57,6 @@ export const rva = { laad: () => import('../../postnl-rva/src/index.js') }
 async function rvaKlaar(sessie, r) {
   const page = await sessie.rvaTab()
   const { ingelogd } = await r.openRva(page, { login: (p) => login(p, sessie.depot, { log: sessie.log }) })
-  if (ingelogd) sessie.herlogins++
   return { page, ingelogd }
 }
 
@@ -164,7 +163,8 @@ export const HANDLERS = {
       const { page, ingelogd } = await rvaKlaar(sessie, r)
       await r.naarRittenoverzicht(page, volgMendix(page))
       if (!ingelogd) return { dag: verder, run: null }
-      return { dag: verder, run: null, gebeurtenis: { soort: 'rva_verlopen_stil', leeftijdMin: Math.round(sessie.leeftijdMin) }, melding: 'RVA-sessie was verlopen; opnieuw ingelogd in het RVA-tabblad' }
+      // De meting (sessie_verlopen) legt de levensmeter in sessie.js vast.
+      return { dag: verder, run: null, melding: 'RVA-sessie was verlopen; opnieuw ingelogd in het RVA-tabblad' }
     } catch (err) {
       throw Object.assign(err, { dag: verder })
     }
@@ -205,8 +205,8 @@ export const HANDLERS = {
     // (proef 03-11 01:32: elke wakker-ronde 'gegooid').
     const { ingelogd } = await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
     if (!ingelogd) return { dag, run: null }
-    sessie.herlogins++
-    return { dag, run: null, gebeurtenis: { soort: 'verlopen_stil', leeftijdMin: Math.round(sessie.leeftijdMin) }, melding: 'sessie was verlopen in stille tijd; opnieuw ingelogd in hetzelfde tabblad' }
+    // De meting (sessie_verlopen) legt de levensmeter in sessie.js vast.
+    return { dag, run: null, melding: 'sessie was verlopen in stille tijd; opnieuw ingelogd in hetzelfde tabblad' }
   },
 
   // Opdracht uit de Plannen-tab (#557) in deze open sessie: geen tweede login, geen uitloggen,

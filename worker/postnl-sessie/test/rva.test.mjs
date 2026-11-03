@@ -163,14 +163,14 @@ test('rva-handler: fout → mislukt met de reden, geen herhaling (aanvraag weg),
   assert.equal(db.updates.at(-1).melding, '[geen_rechten] Geen Wijzig-knop')
 })
 
-test('rvaWakker: Rittenoverzicht verversen; was de sessie verlopen, dan een gebeurtenis', async () => {
+test('rvaWakker: Rittenoverzicht verversen; was de sessie verlopen, dan een melding (de meting legt de levensmeter in sessie.js vast)', async () => {
   let ververst = 0
   rva.laad = async () => ({ openRva: async () => ({ ingelogd: true }), naarRittenoverzicht: async () => { ververst++ } })
   const s = nepSessie()
   const uit = await HANDLERS.rvaWakker({ sessie: s, nu }, nieuweDag('2026-11-03'))
   assert.equal(ververst, 1)
-  assert.equal(uit.gebeurtenis.soort, 'rva_verlopen_stil')
-  assert.equal(s.herlogins, 1)
+  assert.equal(uit.gebeurtenis, undefined, 'geen eigen gebeurtenis meer: sessie_verlopen komt uit de levensmeter')
+  assert.match(uit.melding, /verlopen/)
   assert.equal(uit.dag.rva.wakkerOm, nu.toISOString())
 })
 
