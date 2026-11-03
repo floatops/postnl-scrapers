@@ -42,8 +42,17 @@ test('mislukt: gooit voor de herstel-beoordeling, gemarkeerd als al gelogd door 
 test('na een planner-opdracht blijft de sessie sluitNaLeegMin open, daarna dicht', async () => {
   const { kies } = await import('../src/rij.js')
   const { mergeInstellingen } = await import('../src/instellingen.js')
-  const cfg = mergeInstellingen({})
+  const cfg = mergeInstellingen({ sessieOpenHouden: false })
   const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T13:00:00Z' } }, plannerOm: '2026-11-03T05:00:00Z' }
   assert.equal(kies(d, new Date('2026-11-03T05:05:00Z'), cfg).sessieNodig, true, '5 min later: open')
   assert.equal(kies(d, new Date('2026-11-03T05:11:00Z'), cfg).sessieNodig, false, '11 min later: dicht (06:11, vóór de ritmonitor)')
+})
+
+test('standaard blijft de sessie de hele werkdag open, ook tussen de ochtendlezing en de eerste deadline', async () => {
+  const { kies } = await import('../src/rij.js')
+  const { mergeInstellingen } = await import('../src/instellingen.js')
+  const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T07:00:00Z' } } }
+  const k = kies(d, new Date('2026-11-03T05:00:00Z'), mergeInstellingen({}))
+  assert.equal(k.taak, undefined, 'niets te doen tot de deadline')
+  assert.equal(k.sessieNodig, true, 'maar de sessie blijft open')
 })

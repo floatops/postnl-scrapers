@@ -160,10 +160,10 @@ test('planner-opdracht midden in de ritmonitor: in dezelfde sessie, geen tweede 
   assert.equal(o.runs.length, 0, 'de planner schrijft zijn eigen run-log, geen dubbele')
 })
 
-test('planner-opdracht zonder open sessie (vóór de eerste deadline): één login, daarna dicht als er niets meer is', async () => {
+test('planner-opdracht zonder open sessie (sessieOpenHouden uit): één login, daarna dicht als er niets meer is', async () => {
   const p = plannerOpdracht('p2', { start: '2026-11-02T06:00:00+01:00' })
   const dag = { ...nieuweDag('2026-11-02'), ochtend: { gelezenOm: '2026-11-02T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-02T13:15:00Z' } } }
-  const o = opzet({ start: '2026-11-02T06:00:00+01:00', duurMin: 30, dag, opdrachten: p.opdrachten, cfg: { ritmonitorUiterlijk: '23:00' }, handlers: {
+  const o = opzet({ start: '2026-11-02T06:00:00+01:00', duurMin: 30, dag, opdrachten: p.opdrachten, cfg: { ritmonitorUiterlijk: '23:00', sessieOpenHouden: false }, handlers: {
     planner: async (ctx, d, { id }) => { p.klaar = true; return { dag: { ...d, aanvragen: [] }, run: null } },
   } })
   await draaiDepot(o.deps)

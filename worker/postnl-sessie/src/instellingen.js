@@ -11,7 +11,11 @@ export const STANDAARD = Object.freeze({
   hercontroleMin: 5,              // na de deadline: zo vaak kijken of de shift geautoriseerd is
   vangnetMin: 30,                 // na de deadline zonder autorisatie: toch definitief lezen
   dagNietBeschikbaarWachtMin: 5,  // dag staat nog niet in PostNL: zo lang wachten
-  sluitNaLeegMin: 10,             // sessie dicht als de volgende taak verder weg ligt
+  // Sessie de hele werkdag open (eerste taak tot de eindtijd), ook als er even niets te doen is:
+  // een planner-opdracht vóór de deadline hoeft dan nooit in te loggen. Verloopt hij toch, dan
+  // logt de volgende taak in hetzelfde tabblad opnieuw in (naarDepot). Uit = sluitNaLeegMin.
+  sessieOpenHouden: true,
+  sluitNaLeegMin: 10,             // zonder sessieOpenHouden: dicht als de volgende taak verder weg ligt
   // Herstel
   gegooidVensterMin: 2,           // twee keer eruit gegooid binnen dit venster = nieuwe login
   maxFoutenAchtereen: 3,          // zoveel gewone fouten achter elkaar = nieuwe login

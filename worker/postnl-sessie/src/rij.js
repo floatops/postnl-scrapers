@@ -23,5 +23,5 @@ export function kies(dag, nu, cfg, taken = TAKEN) {
   // minuten "doorvoeren", en dan hoeft er niet opnieuw ingelogd te worden.
   const wachtMs = eerst.om.getTime() - nu.getTime()
   const naPlanner = Boolean(dag.plannerOm) && nu.getTime() - new Date(dag.plannerOm).getTime() < cfg.sluitNaLeegMin * 60_000
-  return { wachtTot: eerst.om, volgendeTaak: eerst.taak.naam, sessieNodig: naPlanner || wachtMs <= cfg.sluitNaLeegMin * 60_000 }
+  return { wachtTot: eerst.om, volgendeTaak: eerst.taak.naam, sessieNodig: cfg.sessieOpenHouden || naPlanner || wachtMs <= cfg.sluitNaLeegMin * 60_000 }
 }

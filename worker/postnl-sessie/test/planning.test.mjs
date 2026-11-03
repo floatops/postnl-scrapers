@@ -6,14 +6,14 @@ import { kies } from '../src/rij.js'
 import { STANDAARD, mergeInstellingen } from '../src/instellingen.js'
 import { nieuweDag, voorDatum, naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, voegAanvraagToe, aanvraagKlaar } from '../src/dagstatus.js'
 
-const cfg = mergeInstellingen({})
+const CFG = mergeInstellingen({})
 // Maandag 2 november 2026 (wintertijd, UTC+1).
 const om = (hhmm, datum = '2026-11-02') => new Date(`${datum}T${hhmm}:00+01:00`)
 const fmt = (d) => d.toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' })
 
 // Simuleert een dag. `postnl` bepaalt wat PostNL doet: wanneer de dag er is, de deadlines en
 // wanneer een shift geautoriseerd wordt (null = nooit).
-function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, aanvragen = {} }) {
+function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, aanvragen = {}, cfg = CFG }) {
   let dag = nieuweDag(datum)
   const log = []
   let sessieOpen = false
@@ -75,8 +75,13 @@ test('werkdag: één ochtendlezing, per shift één definitieve lezing, ritmonit
   assert.ok(s.dag.shifts['07'].vangnet)
 })
 
-test('tussen de ochtendlezing en de eerste deadline gaat de sessie dicht', () => {
+test('standaard blijft de sessie open tussen de ochtendlezing en de eerste deadline (één login)', () => {
   const s = simuleer({ postnl: gewoneDag, tot: '07:20' })
+  assert.deepEqual(s.log.filter(([, x]) => x === 'sessie-dicht'), [], 'geen sluiting, dus geen nieuwe login om 07:15')
+})
+
+test('met sessieOpenHouden uit: tussen de ochtendlezing en de eerste deadline gaat de sessie dicht', () => {
+  const s = simuleer({ postnl: gewoneDag, tot: '07:20', cfg: mergeInstellingen({ sessieOpenHouden: false }) })
   const dicht = s.log.filter(([, x]) => x === 'sessie-dicht').map(([t]) => t)
   assert.ok(dicht.includes('05:46'), 'na de ochtendlezing dicht (volgende taak om 07:15)')
 })
@@ -111,7 +116,7 @@ test('herstart midden op de dag: verder waar hij was, geen tweede ochtendlezing'
   const s = simuleer({ postnl: gewoneDag, tot: '08:00' })
   const opgeslagen = JSON.parse(JSON.stringify(s.dag))
   const verder = voorDatum(opgeslagen, '2026-11-02')
-  const k = kies(verder, om('08:00'), cfg)
+  const k = kies(verder, om('08:00'), CFG)
   assert.notEqual(k.taak?.naam, 'ochtend')
   assert.equal(verder.shifts['01'].definitiefOm !== undefined, true)
   const nieuweDagStand = voorDatum({ ...opgeslagen, aanvragen: [{ id: 'x', soort: 'planner' }] }, '2026-11-03')
