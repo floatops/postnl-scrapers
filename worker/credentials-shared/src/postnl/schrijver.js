@@ -66,17 +66,15 @@ export function planRitten({ bestaande, gelezen, klantId, datum, depot, nu, stat
     const sleutel = ritSleutel(rit.ritnummer, rit.kanaal)
     if (gezien.has(sleutel) || tegenstrijdig.includes(sleutel.split('|')[0])) continue
     gezien.add(sleutel)
-    const velden = {
-      ...filterKolommen(rit.velden, kolommen),
-      postnl_laatst_opgehaald: nu,
-      postnl_sync_status: 'opgehaald',
-      postnl_sync_error: null,
-    }
+    const inhoud = filterKolommen(rit.velden, kolommen)
+    const status = { postnl_sync_status: 'opgehaald', postnl_sync_error: null }
+    const velden = { ...inhoud, ...status, postnl_laatst_opgehaald: nu }
     const bestaand = perSleutel.get(sleutel)
     if (bestaand) {
-      const v = verschil(bestaand, velden)
-      // postnl_laatst_opgehaald schuift altijd op: zo is te zien dat de rit gelezen is.
-      if (Object.keys(v).length) updates.push({ id: bestaand.id, velden: v })
+      // Alleen bij een echte wijziging schrijven (#562): dan gaat er ook alleen iets live naar de
+      // app. postnl_laatst_opgehaald is daarmee "laatst gewijzigd" (ritdetail: "bijgewerkt HH:MM").
+      const v = { ...verschil(bestaand, inhoud), ...verschil(bestaand, status) }
+      if (Object.keys(v).length) updates.push({ id: bestaand.id, velden: { ...v, postnl_laatst_opgehaald: nu } })
     } else {
       inserts.push({
         klant_id: klantId, datum, depot,

@@ -10,7 +10,11 @@ export function kies(dag, nu, cfg, taken = TAKEN) {
     const v = t.volgende(dag, nu, cfg)
     if (!v) continue
     if (v.nu) {
-      if (!beste || t.prioriteit > beste.taak.prioriteit) beste = { taak: t, args: v.args ?? {} }
+      // Gelijke prioriteit (definitief en plannen, #562): om de beurt, wat het langst geleden is.
+      const laatst = v.laatst ?? 0
+      if (!beste || t.prioriteit > beste.taak.prioriteit || (t.prioriteit === beste.taak.prioriteit && laatst < beste.laatst)) {
+        beste = { taak: t, args: v.args ?? {}, laatst }
+      }
     } else if (v.om && (!eerst || v.om < eerst.om)) {
       eerst = { om: v.om, taak: t }
     }

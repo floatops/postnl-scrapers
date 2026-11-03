@@ -8,9 +8,9 @@ export const STANDAARD = Object.freeze({
   eindtijd: '23:00',              // daarna gaat de sessie dicht
   rustdagen: [0],                 // 0 = zondag
   ritmonitorIntervalSec: 60,
-  hercontroleMin: 5,              // na de deadline: zo vaak kijken of de shift geautoriseerd is
+  hercontroleMin: 0,              // na de deadline: zo snel als het kan kijken of de shift geautoriseerd is (ondergrens in min)
   vangnetMin: 30,                 // na de deadline zonder autorisatie: toch definitief lezen
-  naVangnetKijkenMin: 240,        // na het vangnet blijven kijken tot de autorisatie, dan nog één keer lezen
+  naVangnetKijkenMin: 1440,       // na het vangnet blijven kijken tot de autorisatie (de hele dag), dan nog één keer lezen
   dagNietBeschikbaarWachtMin: 5,  // dag staat nog niet in PostNL: zo lang wachten
   // Sessie de hele werkdag open (eerste taak tot de eindtijd), ook als er even niets te doen is:
   // een planner-opdracht vóór de deadline hoeft dan nooit in te loggen. Verloopt hij toch, dan

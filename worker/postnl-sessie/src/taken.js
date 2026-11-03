@@ -71,17 +71,24 @@ export const TAKEN = [
     // Na de deadline van een shift: kijken of hij geautoriseerd is en dan één definitieve lezing.
     // Een shift zonder bekende deadline wordt vanaf de ochtendlezing elke hercontrole bekeken:
     // de autorisatie is het echte omslagpunt, de deadline alleen wanneer we gaan kijken.
-    naam: 'definitief', prioriteit: 40, worker: 'postnl-dagplanning',
+    // Na de deadline van een shift: zo snel als het kan kijken of hij geautoriseerd is (eigenaar
+    // 03-11), om de beurt met de taak plannen (zelfde prioriteit, wat het langst geleden is), onder
+    // de ritmonitor. Pas bij de autorisatie staan de cijfers vast: PostNL schoof op 03-11 na de
+    // deadline nog tientallen stops tussen ritten (Den Hoorn 218: 183 → 45).
+    naam: 'definitief', prioriteit: 20, worker: 'postnl-dagplanning',
     volgende: (dag, nu, cfg) => {
       if (rustdag(nu, cfg) || !dag.ochtend?.gelezenOm || !voorTijd(nu, cfg.eindtijd)) return null
+      let beste = null
       let eerst = null
       for (const [shift, s] of openShifts(dag, nu, cfg)) {
         const vanaf = s.deadline ? new Date(s.deadline) : new Date(dag.ochtend.gelezenOm)
         const volgendeControle = s.laatsteControleOm ? new Date(new Date(s.laatsteControleOm).getTime() + cfg.hercontroleMin * MIN) : vanaf
         const om = new Date(Math.max(vanaf.getTime(), volgendeControle.getTime()))
-        if (om <= nu) return { nu: true, args: { shift } }
-        if (!eerst || om < eerst) eerst = om
+        const laatst = s.laatsteControleOm ? new Date(s.laatsteControleOm).getTime() : 0
+        if (om <= nu) { if (!beste || laatst < beste.laatst) beste = { shift, laatst } }
+        else if (!eerst || om < eerst) eerst = om
       }
+      if (beste) return { nu: true, args: { shift: beste.shift }, laatst: beste.laatst }
       return eerst ? { om: eerst } : null
     },
   },
@@ -149,7 +156,7 @@ export const TAKEN = [
         }),
       ].map(k => ({ ...k, om: Math.max(k.laatst + k.min * MIN, 0) }))
       const klaar = kandidaten.filter(k => k.om <= nu.getTime()).sort((a, b) => (a.laatst - b.laatst) || (a.rang - b.rang))
-      if (klaar.length) return { nu: true, args: klaar[0].args }
+      if (klaar.length) return { nu: true, args: klaar[0].args, laatst: klaar[0].laatst }
       return { om: new Date(Math.min(...kandidaten.map(k => k.om))) }
     },
   },

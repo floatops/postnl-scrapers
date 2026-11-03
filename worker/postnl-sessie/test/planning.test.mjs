@@ -8,20 +8,30 @@ import { nieuweDag, voorDatum, naOchtend, naOchtendNietBeschikbaar, naDefinitief
 
 // De taak 'plannen' heeft eigen tests onderaan; de rest gaat over de andere taken.
 const CFG = mergeInstellingen({ plannenVerversen: false })
+// De vaste ritmes van vóór "zo snel mogelijk" (03-11): de oude tests gaan over die regels.
+const OUD = mergeInstellingen({ plannenVerversen: false, hercontroleMin: 5, naVangnetKijkenMin: 240 })
+// Tijd op een minuut nauwkeurig: een taak duurt in de simulatie 10 s, dus een minuut kan opschuiven.
+const minuut = (t) => { const [u, m] = t.split(':').map(Number); return u * 60 + m }
+function rond(t, verwacht, uitleg) {
+  assert.ok(t && Math.abs(minuut(t) - minuut(verwacht)) <= 1, `${uitleg ?? ''} (${t}, verwacht ±${verwacht})`)
+}
 // Maandag 2 november 2026 (wintertijd, UTC+1).
 const om = (hhmm, datum = '2026-11-02') => new Date(`${datum}T${hhmm}:00+01:00`)
 const fmt = (d) => d.toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' })
 
 // Simuleert een dag. `postnl` bepaalt wat PostNL doet: wanneer de dag er is, de deadlines en
 // wanneer een shift geautoriseerd wordt (null = nooit).
-function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, aanvragen = {}, cfg = CFG }) {
+// Een taak duurt in het echt ~10 s (stapMs): de klok loopt in stappen van 10 s. Zo komen taken met een
+// lagere prioriteit tussen de ritmonitor (elke minuut) door, zoals in het echt.
+function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, aanvragen = {}, cfg = CFG, stapMs = 10_000 }) {
   let dag = nieuweDag(datum)
   const log = []
   let sessieOpen = false
+  const gedaan = new Set()
   let nu = om(van, datum)
   const eind = om(tot, datum)
   while (nu < eind) {
-    for (const [hhmm, a] of Object.entries(aanvragen)) if (fmt(nu) === hhmm) dag = voegAanvraagToe(dag, a)
+    for (const [hhmm, a] of Object.entries(aanvragen)) if (fmt(nu) === hhmm && !gedaan.has(hhmm)) { gedaan.add(hhmm); dag = voegAanvraagToe(dag, a) }
     const k = kies(dag, nu, cfg)
     if (k.taak) {
       sessieOpen = true
@@ -53,7 +63,7 @@ function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, 
       }
       dag = { ...dag, laatsteTaakOm: nu.toISOString() }
     } else if (!k.sessieNodig && sessieOpen) { sessieOpen = false; log.push([fmt(nu), 'sessie-dicht']) }
-    nu = new Date(nu.getTime() + 60_000)
+    nu = new Date(nu.getTime() + stapMs)
   }
   return { log, dag, aantal: (s) => log.filter(([, x]) => x.startsWith(s)).length, eerste: (s) => log.find(([, x]) => x.startsWith(s))?.[0] }
 }
@@ -68,17 +78,17 @@ const gewoneDag = {
 }
 
 test('werkdag: één ochtendlezing, per shift één definitieve lezing, ritmonitor vanaf de eerste autorisatie', () => {
-  const s = simuleer({ postnl: gewoneDag })
+  const s = simuleer({ postnl: gewoneDag, cfg: OUD })
   assert.equal(s.eerste('ochtend:niet-beschikbaar'), '05:30', 'om 05:30 kijken')
   assert.equal(s.eerste('ochtend'), '05:30')
-  assert.equal(s.log.find(([, x]) => x === 'ochtend')[0], '05:45', 'dag staat er om 05:41, na 5 min opnieuw')
+  rond(s.log.find(([, x]) => x === 'ochtend')[0], '05:45', 'dag staat er om 05:41, na 5 min opnieuw')
   assert.equal(s.aantal('ochtend:niet-beschikbaar'), 3)
   assert.equal(s.log.filter(([, x]) => x === 'ochtend').length, 1, 'de dag maar één keer volledig lezen')
-  assert.equal(s.eerste('definitief:01:geschreven'), '07:25', 'autorisatie 07:24, controles om 07:15/07:20/07:25')
-  assert.equal(s.eerste('definitief:03:geschreven'), '08:35')
-  assert.equal(s.eerste('definitief:07:vangnet'), '09:30', 'nooit geautoriseerd: na 30 min het vangnet')
+  rond(s.eerste('definitief:01:geschreven'), '07:25', 'autorisatie 07:24, controles om 07:15/07:20/07:25')
+  rond(s.eerste('definitief:03:geschreven'), '08:35')
+  rond(s.eerste('definitief:07:vangnet'), '09:30', 'nooit geautoriseerd: na 30 min het vangnet')
   assert.equal(s.aantal('definitief:01:geschreven') + s.aantal('definitief:03:geschreven') + s.aantal('definitief:07:vangnet'), 3)
-  assert.equal(s.eerste('ritmonitor'), '07:26', 'ritmonitor start meteen na de eerste autorisatie (07:25), niet pas om 08:00')
+  rond(s.eerste('ritmonitor'), '07:26', 'ritmonitor start meteen na de eerste autorisatie (07:25), niet pas om 08:00')
   // De simulatie doet één taak per minuut; na het vangnet van shift 07 kost de controle tot de
   // autorisatie (elke 5 min, hooguit 4 uur) er een paar. In het echt passen beide in dezelfde minuut.
   assert.ok(s.aantal('ritmonitor') > 850, 'elke minuut tot 23:00')
@@ -95,21 +105,21 @@ test('standaard blijft de sessie open tussen de ochtendlezing en de eerste deadl
 test('met sessieOpenHouden uit: tussen de ochtendlezing en de eerste deadline gaat de sessie dicht', () => {
   const s = simuleer({ postnl: gewoneDag, tot: '07:20', cfg: mergeInstellingen({ sessieOpenHouden: false, plannenVerversen: false }) })
   const dicht = s.log.filter(([, x]) => x === 'sessie-dicht').map(([t]) => t)
-  assert.ok(dicht.includes('05:46'), 'na de ochtendlezing dicht (volgende taak om 07:15)')
+  rond(dicht.find(t => t >= '05:40'), '05:46', 'na de ochtendlezing dicht (volgende taak om 07:15)')
 })
 
 test('geen enkele autorisatie te zien: ritmonitor start toch om 08:00 (vangnet)', () => {
-  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '01': { deadline: '07:15', autorisatie: null } } }, tot: '08:10' })
-  assert.equal(s.eerste('definitief:01:vangnet'), '07:45')
-  assert.equal(s.eerste('ritmonitor'), '07:46', 'vangnet van de shift (07:15 + 30) zet de ritmonitor aan')
+  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '01': { deadline: '07:15', autorisatie: null } } }, tot: '08:10', cfg: OUD })
+  rond(s.eerste('definitief:01:vangnet'), '07:45')
+  rond(s.eerste('ritmonitor'), '07:46', 'vangnet van de shift (07:15 + 30) zet de ritmonitor aan')
   const geen = simuleer({ postnl: { dagVanaf: '05:00', shifts: {} }, tot: '08:10' })
   assert.equal(geen.eerste('ritmonitor'), '08:00', 'zonder shifts: om 08:00')
 })
 
 test('shift zonder deadline-tekst: vanaf de ochtendlezing elke 5 min controleren', () => {
-  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '02': { deadline: null, autorisatie: '06:12' } } }, tot: '06:30' })
+  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '02': { deadline: null, autorisatie: '06:12' } } }, tot: '06:30', cfg: OUD })
   // ochtendlezing 05:30, controles 05:31, 05:36, … 06:11, 06:16 (geautoriseerd om 06:12)
-  assert.equal(s.eerste('definitief:02:geschreven'), '06:16')
+  rond(s.eerste('definitief:02:geschreven'), '06:16')
 })
 
 test('planner-opdracht gaat voor, ook vóór de ochtendlezing en midden in de ritmonitor', () => {
@@ -200,9 +210,9 @@ test('depotbeheer: nieuw depot start, gewijzigde login stopt en start opnieuw, u
 })
 
 test('stille tijd: elke 10 min wakker houden tussen de ochtendlezing en de eerste deadline, niet als de ritmonitor loopt', () => {
-  const s = simuleer({ postnl: gewoneDag, tot: '09:30' })
+  const s = simuleer({ postnl: gewoneDag, tot: '09:30', cfg: OUD })
   const wakker = s.log.filter(([, x]) => x === 'wakker').map(([t]) => t)
-  assert.deepEqual(wakker.slice(0, 3), ['05:55', '06:05', '06:15'], 'na de ochtendlezing (05:45: de dag staat er om 05:41, opnieuw geprobeerd per 5 min) elke 10 min')
+  ;['05:55', '06:05', '06:15'].forEach((t, i) => rond(wakker[i], t, 'na de ochtendlezing (±05:45) elke 10 min'))
   assert.ok(wakker.every(t => t < '07:24'), 'zodra de ritmonitor elke minuut leest niet meer nodig')
 })
 
@@ -222,16 +232,16 @@ test('autorisatie pas na het vangnet (03-11: 1-3 uur na de deadline): vangnet-le
 })
 
 test('nooit geautoriseerd na het vangnet: hooguit naVangnetKijkenMin blijven kijken', () => {
-  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '02': { deadline: '06:20', autorisatie: null } } }, tot: '14:00' })
+  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '02': { deadline: '06:20', autorisatie: null } } }, tot: '14:00', cfg: OUD })
   const laatste = s.log.filter(([, x]) => x.startsWith('definitief:02')).at(-1)[0]
   assert.ok(laatste <= '10:50', `laatste controle ${laatste}, binnen 4 uur na het vangnet van 06:50`)
 })
 
 test('shift zonder deadline (niet te lezen bij de ochtendlezing): vangnet vanaf ritmonitorUiterlijk, nooit eindeloos', () => {
-  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '01': { deadline: null, autorisatie: null } } }, tot: '13:30' })
+  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '01': { deadline: null, autorisatie: null } } }, tot: '13:30', cfg: OUD })
   const v = s.eerste('definitief:01:vangnet')
   assert.ok(v >= '08:00' && v <= '08:05', `vangnet bij de eerste controle vanaf 08:00 (${v}; controles elke 5 min)`)
-  assert.ok(s.log.filter(([, x]) => x.startsWith('definitief:01')).at(-1)[0] <= '12:00')
+  assert.ok(s.log.filter(([, x]) => x.startsWith('definitief:01')).at(-1)[0] <= '12:01')
 })
 
 test('plannen: zo snel als het kan, om de beurt ritten en stops per open shift; een shift voorbij zijn deadline overgeslagen', () => {
@@ -269,4 +279,17 @@ test('plannen: de shift die iemand in Plannen open heeft, gaat voor', async () =
   const k = kies({ ...basis, plannenKijkers: ['07'] }, om, cfg)
   assert.equal(k.taak.naam, 'plannen')
   assert.deepEqual(k.args, { soort: 'stops', shifts: ['07'] }, 'de bekeken shift gaat voor')
+})
+
+test('autorisatie zo snel als het kan (standaard): gezien binnen een minuut, om de beurt met plannen, de ritmonitor blijft elke minuut', () => {
+  const dag = { dagVanaf: '05:00', shifts: { '02': { deadline: '06:20', autorisatie: '08:41' }, '07': { deadline: '11:10', autorisatie: null } } }
+  const s = simuleer({ postnl: dag, tot: '09:30', cfg: mergeInstellingen({}) })
+  rond(s.eerste('definitief:02:geschreven'), '08:41', 'de autorisatie van 08:41 meteen gezien, niet pas bij de volgende 5 min')
+  assert.equal(s.aantal('definitief:02:geschreven'), 1, 'daarna niet meer')
+  // Tussen 06:50 (vangnet 02) en 08:41: de controles wisselen af met het verversen van shift 07.
+  const tussen = s.log.filter(([t, x]) => t >= '06:51' && t < '08:40' && (x.startsWith('definitief') || x.startsWith('plannen')))
+  assert.ok(tussen.some(([, x]) => x.startsWith('definitief:02')) && tussen.some(([, x]) => x === 'plannen:stops:07'), 'beide komen aan de beurt')
+  // De ritmonitor (vanaf het vangnet van 06:50) blijft elke minuut lezen.
+  const rm = s.log.filter(([t, x]) => x === 'ritmonitor' && t >= '07:00' && t < '09:00').length
+  assert.ok(rm >= 115, `ritmonitor ${rm} keer in 120 minuten`)
 })

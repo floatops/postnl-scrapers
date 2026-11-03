@@ -121,7 +121,11 @@ test('planRitten: alleen gewijzigde velden, nieuwe rit met klant, kanaal en stat
     { ritnummer: '901', kanaal: 'GB', shift: '9', velden: { postnl_stops: 40 } },
   ]
   const plan = planRitten({ bestaande, gelezen, klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
-  assert.deepEqual(plan.updates, [{ id: 'x', velden: { postnl_laatst_opgehaald: NU } }])
+  assert.deepEqual(plan.updates, [], 'niets veranderd: niets schrijven, dus ook niets live naar de app (#562)')
+  const gewijzigd = planRitten({ bestaande, gelezen: [{ ...gelezen[0], velden: { postnl_stops: 6, postnl_volume: '3,94' } }], klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
+  assert.deepEqual(gewijzigd.updates, [{ id: 'x', velden: { postnl_stops: 6, postnl_laatst_opgehaald: NU } }], 'alleen het gewijzigde veld, plus wanneer')
+  const naFout = planRitten({ bestaande: [{ ...bestaande[0], postnl_sync_status: 'fout', postnl_sync_error: 'x' }], gelezen: [gelezen[0]], klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU })
+  assert.deepEqual(naFout.updates, [{ id: 'x', velden: { postnl_sync_status: 'opgehaald', postnl_sync_error: null, postnl_laatst_opgehaald: NU } }], 'een oude foutstatus wordt wel opgeruimd')
   assert.deepEqual(plan.inserts, [{ klant_id: 'k', datum: '2026-11-02', depot: 'D', ritnummer: '901', status: 'gepland', shift: '9',
     postnl_kanaal: 'GB', postnl_stops: 40, postnl_laatst_opgehaald: NU, postnl_sync_status: 'opgehaald', postnl_sync_error: null }])
 })
