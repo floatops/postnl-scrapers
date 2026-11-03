@@ -230,13 +230,23 @@ export async function startWijzig(page, mendix) {
     throw new RvaFout('geen_rechten', 'Geen Wijzig-knop: het account staat niet als Ritverantwoordelijke bij deze rit')
   }
   const antwoorden = await mendix.actie(() => knop(page, SCHERM.wijzig).click())
+  // Vlak na een Opslaan (de basisrevisie) ververst RVA de pagina nog: wachten tot de bewerkstand
+  // er echt is, niet meteen kijken (proef 03-11: vals 'vergrendeld').
+  await knop(page, SCHERM.opslaan).waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
   if (await inBewerkstand(page)) return antwoorden
+  // Nog één keer proberen: de eerste klik kan in het verversen gevallen zijn.
+  if (await zichtbaar(knop(page, SCHERM.wijzig))) {
+    antwoorden.push(...await mendix.actie(() => knop(page, SCHERM.wijzig).click()))
+    await knop(page, SCHERM.opslaan).waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
+    if (await inBewerkstand(page)) return antwoorden
+  }
   const melding = await sluitVenster(page, mendix)
   throw new RvaFout('vergrendeld', `Wijzigen kan niet${melding ? `: ${melding.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`)
 }
 
 export async function opslaan(page, mendix) {
   const antwoorden = await mendix.actie(() => knop(page, SCHERM.opslaan).click(), 60_000)
+  await knop(page, SCHERM.wijzig).waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {})
   if (!(await zichtbaar(knop(page, SCHERM.wijzig)))) {
     const melding = await sluitVenster(page, mendix)
     throw new RvaFout('opslaan', `Opslaan lukte niet${melding ? `: ${melding.replace(/\s+/g, ' ').slice(0, 160)}` : ''}`)
@@ -368,8 +378,11 @@ export async function onderbreking(page, mendix, sleutel, minuten) {
 export async function verwijderOnderbreking(page, mendix, sleutel) {
   const antwoorden = await regelMenu(page, mendix, sleutel, SCHERM.menuOnderbreking)
   const v = await wachtOpVenster(page, 'plaatsgebonden onderbreking')
-  // Een bestaande onderbreking opent met de minuten ingevuld; leeg = er is er geen.
-  const minuten = (await v.locator(`${SCHERM.onderbrekingMinuten} input`).first().inputValue().catch(() => '')).trim()
+  // Een bestaande onderbreking opent met de minuten ingevuld; leeg = er is er geen. De gekozen
+  // waarde staat als tekst in de keuzelijst (caption), niet in het invoerveld (live 03-11).
+  const keuze = v.locator(SCHERM.onderbrekingMinuten).first()
+  const minuten = ((await keuze.locator('.widget-combobox-caption-text').first().innerText().catch(() => ''))
+    || (await keuze.locator('input').first().inputValue().catch(() => ''))).trim()
   if (!minuten) {
     await mendix.actie(() => v.locator(SCHERM.onderbrekingAnnuleer).first().click()).catch(() => {})
     throw new RvaFout('niet_gevonden', 'Er staat geen onderbreking na deze regel')
