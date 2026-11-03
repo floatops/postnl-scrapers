@@ -1,0 +1,14 @@
+{
+  "name": "postnl-rva",
+  "version": "1.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "proef": "node scripts/proef.mjs",
+    "test": "node --test \"test/*.test.mjs\"",
+    "playwright:install": "playwright install chromium"
+  },
+  "dependencies": {
+    "playwright": "1.63.0"
+  }
+}

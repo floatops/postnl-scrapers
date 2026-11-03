@@ -63,6 +63,8 @@ worker/postnl-ritmonitor/        Live voortgang per rit
   POSTNL_RITMONITOR.md           Volledige technische documentatie (lees dit eerst)
 worker/credentials-shared/       Ontsleutelt klant_credentials (crypto), proxyPool.js,
                                   publiekLog.js
+worker/postnl-rva/               Rijvolgorde aanpassen in RVA (Route Volgorde Applicatie)
+  POSTNL_RVA.md                  Hoe RVA werkt, de code en de proef (lees dit eerst)
 .github/workflows/                De twee Actions-workflows
 ```
 
