@@ -58,7 +58,14 @@ export async function naarDepot(page, depot, { log = console, maxMs = 90000 } = 
       await login(page, depot, { log })
       continue
     }
-    if (await page.locator(SEL_PLANNING).first().isVisible().catch(() => false)) return { ingelogd: logins > 0 }
+    if (await page.locator(SEL_PLANNING).first().isVisible().catch(() => false)) {
+      // De startpagina laadt pas daarna echt ("Overzicht shift"). Wie meteen doorklikt, ziet zijn
+      // scherm later vervangen door die startpagina (03-11: Dagplanning open, daarna toch de
+      // startpagina, en dat leek op eruit gegooid). Dus eerst die laten verschijnen.
+      await page.getByText(TEKST_STARTPAGINA, { exact: true }).first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
+      await page.waitForLoadState('networkidle', { timeout: 10_000 }).catch(() => {})
+      return { ingelogd: logins > 0 }
+    }
     await page.waitForTimeout(1000)
   }
   throw new Error(`Planning-menu niet zichtbaar na ${maxMs / 1000}s (url: ${page.url()})`)
@@ -74,10 +81,12 @@ export async function openDagplanning(page, depot, opties = {}) {
     await planning.click()
     await page.locator(SEL_DAGPLANNING).first().click({ timeout: 10_000 }).catch(() => {})
     const open = await page.locator(SEL_DAG).first().waitFor({ state: 'visible', timeout: 20_000 }).then(() => true, () => false)
-    if (open) break
-    if (poging >= 3) throw new Error('Dagplanning ging niet open in PostNL')
+    // Blijft hij open staan als PostNL klaar is? Anders laadde de startpagina er alsnog overheen.
+    const blijft = open && await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
+      .then(() => page.locator(SEL_DAG).first().isVisible().catch(() => false))
+    if (blijft) break
+    if (poging >= 3) throw new Error(open ? 'Dagplanning werd steeds vervangen door de startpagina van PostNL' : 'Dagplanning ging niet open in PostNL')
     await page.waitForTimeout(2_000)
   }
-  await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
   return uit
 }
