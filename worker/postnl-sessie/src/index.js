@@ -138,8 +138,20 @@ async function main() {
       })
     },
   })
+  // Instellingen opnieuw lezen (elk uur, bij een seintje en bij een RVA-opdracht): RVA aan- of
+  // uitzetten in postnl_instellingen werkt dan zonder herstart (matransport#569). In hetzelfde
+  // object, zodat elke depot-lus het bij zijn volgende ronde ziet; rvaWakker opent dan het tabblad.
+  const herleesInstellingen = async (reden) => {
+    try {
+      const nieuw = await opslag.instellingen(process.env.POSTNL_SESSIE_INSTELLINGEN ? JSON.parse(process.env.POSTNL_SESSIE_INSTELLINGEN) : null)
+      if (JSON.stringify(nieuw) === JSON.stringify(cfg)) return
+      log.log(`Instellingen gewijzigd (${reden})${nieuw.rva !== cfg.rva ? `: RVA ${nieuw.rva ? 'aan' : 'uit'}` : ''}`)
+      Object.assign(cfg, nieuw)
+    } catch (err) { log.warn(`Instellingen opnieuw lezen mislukt (${reden}): ${err.message}`) }
+  }
   const herlees = async (reden) => {
     if (stop) return
+    await herleesInstellingen(reden)
     try {
       const w = beheer.verwerk(await getDepots(supabase, KLANT_ID, 'postnl'), reden)
       if (!w.starten.length && !w.herstarten.length && !w.stoppen.length) log.log(`Depots gecontroleerd (${reden}): geen wijziging`)
@@ -167,8 +179,9 @@ async function main() {
   })
   // RVA-opdracht uit de app (VPS /run/postnl-rva, matransport#569): idem, meteen oppakken. De lus
   // leest rva_opdrachten ook elke 15 s als vangnet.
-  const rvaCheck = await volgWekker(process.env.POSTNL_RVA_WEKKER, 1_000, () => {
+  const rvaCheck = await volgWekker(process.env.POSTNL_RVA_WEKKER, 1_000, async () => {
     log.log('RVA-opdracht: meteen oppakken')
+    if (!cfg.rva) await herleesInstellingen('RVA-opdracht')
     for (const w of [...wekkers]) w()
   })
   const uurCheck = setInterval(() => herlees('controle per uur'), 3600_000)
