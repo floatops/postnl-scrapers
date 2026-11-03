@@ -35,8 +35,8 @@ async function leesShift(sessie, shift, datum) {
   return { antwoorden: sessie.antwoorden.slice(vanaf), deadline }
 }
 
-async function schrijf(ctx, gelezen, datum) {
-  const uit = await schrijfDagplanning(ctx.supabase, { klantId: ctx.klantId, datum, depot: ctx.depot.naam, gelezen, kolommen: ctx.kolommen })
+async function schrijf(ctx, gelezen, datum, { statusNieuw } = {}) {
+  const uit = await schrijfDagplanning(ctx.supabase, { klantId: ctx.klantId, datum, depot: ctx.depot.naam, gelezen, kolommen: ctx.kolommen, ...(statusNieuw ? { statusNieuw } : {}) })
   if (uit.tegenstrijdig?.length) {
     throw Object.assign(new Error(`Twee verschillende versies van rit(ten) ${uit.tegenstrijdig.join(', ')}: niet geschreven`), { deels: uit })
   }
@@ -70,7 +70,48 @@ async function zetRva(ctx, id, velden, filter = null) {
   return data ?? []
 }
 
+// Alle shifts en ritten van een dag die al gekozen is (keuze van naarDag).
+async function leesDag(sessie, datum, keuze) {
+  const shifts = await shiftsOpScherm(sessie.page)
+  if (!shifts.length) throw new Error('Geen shifts zichtbaar in de Dagplanning')
+  const venster = dagVenster(sessie.antwoorden, keuze)
+  const alle = [...venster.antwoorden]
+  const perShift = {}
+  for (const shift of shifts) {
+    const r = await leesShift(sessie, shift, datum)
+    alle.push(...r.antwoorden)
+    perShift[shift] = { deadline: r.deadline }
+  }
+  const ritten = dagplanningRitten(alle, { negeer: venster.negeer }).filter(r => !r.datum || r.datum === datum)
+  return { ritten, perShift }
+}
+
 export const HANDLERS = {
+  // De vorige werkdag nalezen (#562): na middernacht is alles geautoriseerd. Alleen verschillen
+  // gaan naar ritten (03-11: definitieve cijfers die door een gemiste autorisatie ontbraken).
+  async gisteren(ctx, dag, { datum }) {
+    const { sessie, nu } = ctx
+    let keuze
+    try {
+      keuze = await naarDag(sessie, datum)
+    } catch (err) {
+      if (err instanceof DagNietBeschikbaar) {
+        return { dag: { ...dag, gisteren: { gelezenOm: nu.toISOString(), datum, nietBeschikbaar: true } }, run: null, melding: `${datum} staat niet meer in PostNL` }
+      }
+      throw err
+    }
+    const { ritten, perShift } = await leesDag(sessie, datum, keuze)
+    const uit = await schrijf(ctx, ritten, datum, { statusNieuw: 'gereden' })
+    sessie.lezingen++
+    const melding = uit.bijgewerkt || uit.nieuw ? `${datum}: ${uit.bijgewerkt} bijgewerkt, ${uit.nieuw} nieuw` : null
+    return {
+      dag: { ...dag, gisteren: { gelezenOm: nu.toISOString(), datum, bijgewerkt: uit.bijgewerkt, nieuw: uit.nieuw } },
+      ...(melding ? { melding } : {}),
+      run: { worker: 'postnl-dagplanning', status: 'ok', depots_ok: 1, rijen_gelezen: ritten.length,
+        lezingen: { [ctx.depot.naam]: { soort: 'gisteren', datum, shifts: Object.keys(perShift).length, bijgewerkt: uit.bijgewerkt, nieuw: uit.nieuw } } },
+    }
+  },
+
   // RVA-opdracht (matransport#569): alle wijzigingen van één Opslaan in de app, op één rit-dag, in
   // het RVA-tabblad van deze sessie. Geen tweede login en geen eigen slot. wacht → bezig alleen als
   // hij nog wacht (een opdracht wordt nooit twee keer uitgevoerd), en na een fout geen herhaling:
@@ -204,17 +245,7 @@ export const HANDLERS = {
       if (err instanceof DagNietBeschikbaar) return { dag: naOchtendNietBeschikbaar(dag, { nu, cfg: ctx.cfg }), run: null, melding: 'dag nog niet in PostNL' }
       throw err
     }
-    const shifts = await shiftsOpScherm(sessie.page)
-    if (!shifts.length) throw new Error('Geen shifts zichtbaar in de Dagplanning')
-    const venster = dagVenster(sessie.antwoorden, keuze)
-    const alle = [...venster.antwoorden]
-    const perShift = {}
-    for (const shift of shifts) {
-      const r = await leesShift(sessie, shift, dag.datum)
-      alle.push(...r.antwoorden)
-      perShift[shift] = { deadline: r.deadline }
-    }
-    const ritten = dagplanningRitten(alle, { negeer: venster.negeer }).filter(r => !r.datum || r.datum === dag.datum)
+    const { ritten, perShift } = await leesDag(sessie, dag.datum, keuze)
     for (const [shift, s] of Object.entries(perShift)) {
       const vanShift = ritten.filter(r => hoortBijShift(r, shift))
       s.geautoriseerd = vanShift.length > 0 && vanShift.every(r => r.geautoriseerd === true)

@@ -4,7 +4,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { classificeer, herstel, isLoginUrl } from '../src/gezondheid.js'
 import { schatLevensduur, moetVernieuwen } from '../src/levensduur.js'
-import { mergeInstellingen } from '../src/instellingen.js'
+import { mergeInstellingen as mergeInstellingenEcht } from '../src/instellingen.js'
+
+// De taak 'gisteren' (nalezen van de vorige werkdag) heeft eigen tests; hier staat hij uit.
+const mergeInstellingen = (c = {}, ...rest) => mergeInstellingenEcht({ gisterenNalezen: false, ...c }, ...rest)
 
 const cfg = mergeInstellingen({})
 const DEPOT = 'pnl-oompd-process-xyz.p15.cldsvc.net'

@@ -24,6 +24,16 @@ const voorTijd = (nu, hhmm) => minutenNl(nu) < hhmmNaarMin(hhmm)
 // De shifts die nog een definitieve lezing nodig hebben, op volgorde van deadline.
 // Shifts die nog gecontroleerd moeten worden: nog niet definitief, of via het vangnet gelezen en
 // nog niet geautoriseerd (hooguit naVangnetKijkenMin na het vangnet).
+// De vorige werkdag (zondag en andere rustdagen overslaan), als 'JJJJ-MM-DD'.
+export function vorigeWerkdag(datum, rustdagen = [0]) {
+  const d = new Date(`${datum}T12:00:00Z`)
+  for (let i = 0; i < 7; i++) {
+    d.setUTCDate(d.getUTCDate() - 1)
+    if (!rustdagen.includes(d.getUTCDay())) return d.toISOString().slice(0, 10)
+  }
+  return null
+}
+
 export function openShifts(dag, nu = null, cfg = null) {
   const kijkMs = (cfg?.naVangnetKijkenMin ?? 0) * MIN
   return Object.entries(dag.shifts ?? {})
@@ -158,6 +168,17 @@ export const TAKEN = [
       const klaar = kandidaten.filter(k => k.om <= nu.getTime()).sort((a, b) => (a.laatst - b.laatst) || (a.rang - b.rang))
       if (klaar.length) return { nu: true, args: klaar[0].args, laatst: klaar[0].laatst }
       return { om: new Date(Math.min(...kandidaten.map(k => k.om))) }
+    },
+  },
+  {
+    // Na middernacht de vorige werkdag nog één keer helemaal lezen (#562): alles is dan geautoriseerd,
+    // dus de cijfers liggen vast. Alleen verschillen gaan naar ritten. Eén keer per dag.
+    naam: 'gisteren', prioriteit: 45, worker: 'postnl-dagplanning',
+    volgende: (dag, nu, cfg) => {
+      if (!cfg.gisterenNalezen || dag.gisteren?.gelezenOm || !voorTijd(nu, cfg.eindtijd)) return null
+      if (voorTijd(nu, cfg.gisterenVanaf)) return { om: opTijd(nu, cfg.gisterenVanaf) }
+      if (dag.gisteren?.nietBeschikbaar) return null
+      return { nu: true, args: { datum: vorigeWerkdag(dag.datum, cfg.rustdagen) } }
     },
   },
 ]

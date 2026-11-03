@@ -3,7 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { kies } from '../src/rij.js'
-import { STANDAARD, mergeInstellingen } from '../src/instellingen.js'
+import { STANDAARD, mergeInstellingen as mergeInstellingenEcht } from '../src/instellingen.js'
+
+// De taak 'gisteren' (nalezen van de vorige werkdag) heeft eigen tests; hier staat hij uit.
+const mergeInstellingen = (c = {}, ...rest) => mergeInstellingenEcht({ gisterenNalezen: false, ...c }, ...rest)
 import { nieuweDag, voorDatum, naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, voegAanvraagToe, aanvraagKlaar } from '../src/dagstatus.js'
 
 // De taak 'plannen' heeft eigen tests onderaan; de rest gaat over de andere taken.
@@ -292,4 +295,21 @@ test('autorisatie zo snel als het kan (standaard): gezien binnen een minuut, om 
   // De ritmonitor (vanaf het vangnet van 06:50) blijft elke minuut lezen.
   const rm = s.log.filter(([t, x]) => x === 'ritmonitor' && t >= '07:00' && t < '09:00').length
   assert.ok(rm >= 115, `ritmonitor ${rm} keer in 120 minuten`)
+})
+
+test('gisteren: na 00:30 één keer de vorige werkdag nalezen (zondag overgeslagen), daarna niet meer', async () => {
+  const { kies } = await import('../src/rij.js')
+  const { vorigeWerkdag } = await import('../src/taken.js')
+  assert.equal(vorigeWerkdag('2026-11-04'), '2026-11-03')
+  assert.equal(vorigeWerkdag('2026-11-02'), '2026-10-31', 'maandag: de zaterdag, zondag is een rustdag')
+  const cfg = mergeInstellingenEcht({ plannenVerversen: false })
+  const dag = nieuweDag('2026-11-04')
+  const k1 = kies(dag, new Date('2026-11-04T00:10:00+01:00'), cfg)
+  assert.equal(k1.taak, undefined, 'vóór 00:30 nog niet')
+  const k2 = kies(dag, new Date('2026-11-04T00:31:00+01:00'), cfg)
+  assert.equal(k2.taak.naam, 'gisteren')
+  assert.deepEqual(k2.args, { datum: '2026-11-03' })
+  const klaar = { ...dag, gisteren: { gelezenOm: '2026-11-03T23:31:00Z', datum: '2026-11-03' } }
+  assert.notEqual(kies(klaar, new Date('2026-11-04T00:40:00+01:00'), cfg).taak?.naam, 'gisteren', 'één keer per dag')
+  assert.equal(kies(dag, new Date('2026-11-04T05:31:00+01:00'), cfg).taak.naam, 'ochtend', 'de ochtendlezing gaat voor als beide nog moeten')
 })

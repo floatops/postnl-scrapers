@@ -3,7 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { draaiDepot, metLimiet } from '../src/depot.js'
-import { mergeInstellingen } from '../src/instellingen.js'
+import { mergeInstellingen as mergeInstellingenEcht } from '../src/instellingen.js'
+
+// De taak 'gisteren' (nalezen van de vorige werkdag) heeft eigen tests; hier staat hij uit.
+const mergeInstellingen = (c = {}, ...rest) => mergeInstellingenEcht({ gisterenNalezen: false, ...c }, ...rest)
 import { nieuweDag } from '../src/dagstatus.js'
 
 const DEPOT = { naam: 'Depot A', url: 'https://depot-a.example/index.html' }

@@ -10,6 +10,10 @@ export const STANDAARD = Object.freeze({
   ritmonitorIntervalSec: 60,
   hercontroleMin: 0,              // na de deadline: zo snel als het kan kijken of de shift geautoriseerd is (ondergrens in min)
   vangnetMin: 30,                 // na de deadline zonder autorisatie: toch definitief lezen
+  // Na middernacht één keer de vorige werkdag nalezen (taak 'gisteren'): dan is alles geautoriseerd
+  // en liggen de cijfers vast. Herstelt een dag waarop een autorisatie gemist werd (03-11).
+  gisterenNalezen: true,
+  gisterenVanaf: '00:30',
   naVangnetKijkenMin: 1440,       // na het vangnet blijven kijken tot de autorisatie (de hele dag), dan nog één keer lezen
   dagNietBeschikbaarWachtMin: 5,  // dag staat nog niet in PostNL: zo lang wachten
   // Sessie de hele werkdag open (eerste taak tot de eindtijd), ook als er even niets te doen is:

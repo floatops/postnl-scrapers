@@ -41,7 +41,8 @@ test('mislukt: gooit voor de herstel-beoordeling, gemarkeerd als al gelogd door 
 
 test('na een planner-opdracht blijft de sessie sluitNaLeegMin open, daarna dicht', async () => {
   const { kies } = await import('../src/rij.js')
-  const { mergeInstellingen } = await import('../src/instellingen.js')
+  const { mergeInstellingen: echt } = await import('../src/instellingen.js')
+  const mergeInstellingen = (c = {}) => echt({ gisterenNalezen: false, ...c })
   const cfg = mergeInstellingen({ sessieOpenHouden: false, plannenVerversen: false })
   const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T13:00:00Z' } }, plannerOm: '2026-11-03T05:00:00Z' }
   assert.equal(kies(d, new Date('2026-11-03T05:05:00Z'), cfg).sessieNodig, true, '5 min later: open')
@@ -50,7 +51,8 @@ test('na een planner-opdracht blijft de sessie sluitNaLeegMin open, daarna dicht
 
 test('standaard blijft de sessie de hele werkdag open, ook tussen de ochtendlezing en de eerste deadline', async () => {
   const { kies } = await import('../src/rij.js')
-  const { mergeInstellingen } = await import('../src/instellingen.js')
+  const { mergeInstellingen: echt } = await import('../src/instellingen.js')
+  const mergeInstellingen = (c = {}) => echt({ gisterenNalezen: false, ...c })
   const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T07:00:00Z' } }, laatsteTaakOm: '2026-11-03T04:55:00Z' }
   const k = kies(d, new Date('2026-11-03T05:00:00Z'), mergeInstellingen({ plannenVerversen: false }))
   assert.equal(k.taak, undefined, 'niets te doen tot de deadline')
