@@ -302,7 +302,7 @@ test('gisteren: na 00:30 één keer de vorige werkdag nalezen (zondag overgeslag
   const { vorigeWerkdag } = await import('../src/taken.js')
   assert.equal(vorigeWerkdag('2026-11-04'), '2026-11-03')
   assert.equal(vorigeWerkdag('2026-11-02'), '2026-10-31', 'maandag: de zaterdag, zondag is een rustdag')
-  const cfg = mergeInstellingenEcht({ plannenVerversen: false })
+  const cfg = mergeInstellingenEcht({ plannenVerversen: false, gisterenNalezen: true })
   const dag = nieuweDag('2026-11-04')
   const k1 = kies(dag, new Date('2026-11-04T00:10:00+01:00'), cfg)
   assert.equal(k1.taak, undefined, 'vóór 00:30 nog niet')
@@ -312,4 +312,10 @@ test('gisteren: na 00:30 één keer de vorige werkdag nalezen (zondag overgeslag
   const klaar = { ...dag, gisteren: { gelezenOm: '2026-11-03T23:31:00Z', datum: '2026-11-03' } }
   assert.notEqual(kies(klaar, new Date('2026-11-04T00:40:00+01:00'), cfg).taak?.naam, 'gisteren', 'één keer per dag')
   assert.equal(kies(dag, new Date('2026-11-04T05:31:00+01:00'), cfg).taak.naam, 'ochtend', 'de ochtendlezing gaat voor als beide nog moeten')
+})
+
+test('gisteren staat standaard uit (04-11: na middernacht toont PostNL niet de geautoriseerde planning)', async () => {
+  const { kies } = await import('../src/rij.js')
+  const k = kies(nieuweDag('2026-11-04'), new Date('2026-11-04T00:31:00+01:00'), mergeInstellingenEcht({ plannenVerversen: false }))
+  assert.notEqual(k.taak?.naam, 'gisteren')
 })

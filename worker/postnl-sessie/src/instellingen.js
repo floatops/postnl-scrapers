@@ -10,9 +10,11 @@ export const STANDAARD = Object.freeze({
   ritmonitorIntervalSec: 60,
   hercontroleMin: 0,              // na de deadline: zo snel als het kan kijken of de shift geautoriseerd is (ondergrens in min)
   vangnetMin: 30,                 // na de deadline zonder autorisatie: toch definitief lezen
-  // Na middernacht één keer de vorige werkdag nalezen (taak 'gisteren'): dan is alles geautoriseerd
-  // en liggen de cijfers vast. Herstelt een dag waarop een autorisatie gemist werd (03-11).
-  gisterenNalezen: true,
+  // Na middernacht één keer de vorige werkdag nalezen (taak 'gisteren'). STAAT UIT: op 04-11 00:30
+  // bleek de dagplanning na middernacht weer andere aantallen te tonen dan bij de autorisatie
+  // (Den Hoorn 218: 41, geautoriseerd 45, ritmonitor 45). Dat is geen geautoriseerde planning, dus
+  // het zou goede cijfers overschrijven. De definitieve lezing bij de autorisatie is de bron.
+  gisterenNalezen: false,
   gisterenVanaf: '00:30',
   naVangnetKijkenMin: 1440,       // na het vangnet blijven kijken tot de autorisatie (de hele dag), dan nog één keer lezen
   dagNietBeschikbaarWachtMin: 5,  // dag staat nog niet in PostNL: zo lang wachten
