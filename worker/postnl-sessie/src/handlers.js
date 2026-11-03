@@ -2,7 +2,7 @@
 // en de dagstatus, en geeft { dag, run } terug: de nieuwe dagstatus en wat er in worker_run_log
 // moet. Lukt iets niet, dan gooit hij: de depot-lus classificeert de fout en herstelt.
 import { openDagplanning } from '../../credentials-shared/src/postnl/login.js'
-import { dagplanningRitten } from '../../credentials-shared/src/postnl/ritten.js'
+import { dagplanningRitten, hoortBijShift } from '../../credentials-shared/src/postnl/ritten.js'
 import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
 import { leesDeadlineTekst, volgMendix } from '../../postnl-planner/src/mendix.js'
@@ -52,6 +52,18 @@ async function schrijf(ctx, gelezen, datum) {
 export const planner = { laad: () => import('../../postnl-planner/src/index.js') }
 
 export const HANDLERS = {
+  // Sessie levend houden (taak 'wakker'). naarDepot logt in hetzelfde tabblad opnieuw in als de
+  // sessie verlopen bleek: dat is een meting van de levensduur in stille tijd (gebeurtenis).
+  async wakker(ctx, dag) {
+    const { sessie } = ctx
+    // Eindigen op de Dagplanning: eindigt een taak op de startpagina, dan telt dat als eruit gegooid
+    // (proef 03-11 01:32: elke wakker-ronde 'gegooid').
+    const { ingelogd } = await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+    if (!ingelogd) return { dag, run: null }
+    sessie.herlogins++
+    return { dag, run: null, gebeurtenis: { soort: 'verlopen_stil', leeftijdMin: Math.round(sessie.leeftijdMin) }, melding: 'sessie was verlopen in stille tijd; opnieuw ingelogd in hetzelfde tabblad' }
+  },
+
   // Opdracht uit de Plannen-tab (#557) in deze open sessie: geen tweede login, geen uitloggen,
   // geen eigen slot (de sessiehouder heeft het). De planner-logica zelf is die van postnl-planner:
   // die zet de opdracht op klaar/mislukt, schrijft zijn run-log en herhaalt een doorvoer nooit.
@@ -100,7 +112,7 @@ export const HANDLERS = {
     }
     const ritten = dagplanningRitten(alle, { negeer: venster.negeer }).filter(r => !r.datum || r.datum === dag.datum)
     for (const [shift, s] of Object.entries(perShift)) {
-      const vanShift = ritten.filter(r => r.shiftPostnl === String(parseInt(shift, 10)))
+      const vanShift = ritten.filter(r => hoortBijShift(r, shift))
       s.geautoriseerd = vanShift.length > 0 && vanShift.every(r => r.geautoriseerd === true)
       s.ritten = vanShift.length
     }
@@ -120,16 +132,19 @@ export const HANDLERS = {
     const r = await leesShift(sessie, shift, dag.datum)
     const venster = dagVenster(sessie.antwoorden, keuze)
     const ritten = dagplanningRitten(venster.antwoorden, { negeer: venster.negeer })
-      .filter(x => (!x.datum || x.datum === dag.datum) && x.shiftPostnl === String(parseInt(shift, 10)))
+      .filter(x => (!x.datum || x.datum === dag.datum) && hoortBijShift(x, shift))
     const geautoriseerd = ritten.length > 0 && ritten.every(x => x.geautoriseerd === true)
-    const besluit = naDefinitief(dag, shift, { nu, geautoriseerd, cfg: ctx.cfg })
-    if (!besluit.schrijven) return { dag: besluit.dag, run: null, melding: `shift ${shift} nog niet geautoriseerd` }
+    // Geen deadline bij de ochtendlezing (03-11: Den Hoorn shift 01)? Dan nu vastleggen.
+    const metDeadline = !dag.shifts?.[shift]?.deadline && r.deadline
+      ? { ...dag, shifts: { ...dag.shifts, [shift]: { ...dag.shifts[shift], deadline: r.deadline } } } : dag
+    const besluit = naDefinitief(metDeadline, shift, { nu, geautoriseerd, cfg: ctx.cfg })
+    if (!besluit.schrijven) return { dag: besluit.dag, run: null, melding: `shift ${shift} nog niet geautoriseerd (${ritten.length} ritten)` }
     const uit = await schrijf(ctx, ritten, dag.datum)
     sessie.lezingen++
     return {
       dag: besluit.dag,
       run: { worker: 'postnl-dagplanning', status: 'ok', depots_ok: 1, rijen_gelezen: ritten.length,
-        lezingen: { [ctx.depot.naam]: { soort: 'definitief', shift, vangnet: besluit.vangnet, deadline: r.deadline, bijgewerkt: uit.bijgewerkt, nieuw: uit.nieuw } } },
+        lezingen: { [ctx.depot.naam]: { soort: besluit.naVangnet ? 'na_autorisatie' : 'definitief', shift, vangnet: besluit.vangnet, geautoriseerd, deadline: r.deadline, bijgewerkt: uit.bijgewerkt, nieuw: uit.nieuw } } },
       ...(besluit.vangnet ? { melding: 'autorisatie_niet_gezien', gebeurtenis: { soort: 'autorisatie_niet_gezien', shift } } : {}),
     }
   },

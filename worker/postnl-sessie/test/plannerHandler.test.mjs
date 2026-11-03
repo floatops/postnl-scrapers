@@ -51,7 +51,7 @@ test('na een planner-opdracht blijft de sessie sluitNaLeegMin open, daarna dicht
 test('standaard blijft de sessie de hele werkdag open, ook tussen de ochtendlezing en de eerste deadline', async () => {
   const { kies } = await import('../src/rij.js')
   const { mergeInstellingen } = await import('../src/instellingen.js')
-  const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T07:00:00Z' } } }
+  const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T07:00:00Z' } }, laatsteTaakOm: '2026-11-03T04:55:00Z' }
   const k = kies(d, new Date('2026-11-03T05:00:00Z'), mergeInstellingen({}))
   assert.equal(k.taak, undefined, 'niets te doen tot de deadline')
   assert.equal(k.sessieNodig, true, 'maar de sessie blijft open')

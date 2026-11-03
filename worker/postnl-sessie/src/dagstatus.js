@@ -10,6 +10,9 @@
 //   aanvragen: [{ id, soort: 'planner'|'depotUrl', ... }],
 // }
 
+import { minutenNl } from '../../credentials-shared/src/postnl/tekst.js'
+import { hhmmNaarMin } from './instellingen.js'
+
 const MIN = 60_000
 const iso = (d) => new Date(d).toISOString()
 
@@ -45,18 +48,31 @@ export function naOchtendNietBeschikbaar(dag, { nu, cfg }) {
 
 // Na een controle van één shift. Geeft { dag, schrijven, vangnet }:
 // schrijven = nu de definitieve lezing wegschrijven (geautoriseerd, of het vangnet).
+// Na de deadline: geautoriseerd → definitief lezen. Niet geautoriseerd → na vangnetMin toch lezen
+// (vangnet), en daarna blijven kijken tot de autorisatie er is (hooguit naVangnetKijkenMin): dan
+// nog één keer lezen, want pas dan staan de cijfers echt vast (03-11: autorisatie pas ruim 1-3 uur
+// na de deadline). Zonder deadline (niet te lezen bij de ochtendlezing) geldt het vangnet vanaf
+// ritmonitorUiterlijk, zodat een shift nooit eindeloos open blijft.
 export function naDefinitief(dag, shift, { nu, geautoriseerd, cfg }) {
   const s = { ...(dag.shifts?.[shift] ?? {}) }
   let schrijven = false
   let vangnet = false
+  let naVangnet = false
   if (geautoriseerd) {
+    naVangnet = Boolean(s.vangnet && !s.geautoriseerdOm)
     s.geautoriseerdOm = s.geautoriseerdOm ?? iso(nu)
     s.definitiefOm = iso(nu)
+    s.laatsteControleOm = iso(nu)
     schrijven = true
+  } else if (s.vangnet) {
+    s.laatsteControleOm = iso(nu)
   } else {
     const vanaf = s.deadline ? new Date(s.deadline).getTime() : null
-    if (vanaf !== null && nu.getTime() - vanaf >= cfg.vangnetMin * MIN) {
+    const vangnetTijd = vanaf !== null ? nu.getTime() - vanaf >= cfg.vangnetMin * MIN
+      : minutenNl(nu) >= hhmmNaarMin(cfg.ritmonitorUiterlijk)
+    if (vangnetTijd) {
       s.definitiefOm = iso(nu)
+      s.laatsteControleOm = iso(nu)
       s.vangnet = true
       schrijven = true
       vangnet = true
@@ -64,7 +80,7 @@ export function naDefinitief(dag, shift, { nu, geautoriseerd, cfg }) {
       s.laatsteControleOm = iso(nu)
     }
   }
-  return { dag: { ...dag, shifts: { ...dag.shifts, [shift]: s } }, schrijven, vangnet }
+  return { dag: { ...dag, shifts: { ...dag.shifts, [shift]: s } }, schrijven, vangnet, naVangnet }
 }
 
 export function naRitmonitor(dag, { nu, reden = null }) {

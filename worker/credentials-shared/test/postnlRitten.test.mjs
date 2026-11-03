@@ -201,3 +201,11 @@ test('planRitten: dezelfde rit twee keer met gelijke waarden is geen tegenstrijd
   assert.equal(plan.inserts.length, 1)
   assert.deepEqual(plan.tegenstrijdig, [])
 })
+
+test('hoortBijShift: volgens PostNL als die de shift meestuurt, anders het eerste cijfer van het ritnummer (03-11)', async () => {
+  const { hoortBijShift } = await import('../src/postnl/ritten.js')
+  assert.equal(hoortBijShift({ shiftPostnl: null, shift: '1' }, '01'), true)
+  assert.equal(hoortBijShift({ shiftPostnl: null, shift: '7' }, '01'), false)
+  assert.equal(hoortBijShift({ shiftPostnl: '3', shift: '1' }, '03'), true, 'PostNL gaat voor')
+  assert.equal(hoortBijShift({ shiftPostnl: null, shift: null }, '01'), false)
+})

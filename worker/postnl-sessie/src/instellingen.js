@@ -10,11 +10,16 @@ export const STANDAARD = Object.freeze({
   ritmonitorIntervalSec: 60,
   hercontroleMin: 5,              // na de deadline: zo vaak kijken of de shift geautoriseerd is
   vangnetMin: 30,                 // na de deadline zonder autorisatie: toch definitief lezen
+  naVangnetKijkenMin: 240,        // na het vangnet blijven kijken tot de autorisatie, dan nog één keer lezen
   dagNietBeschikbaarWachtMin: 5,  // dag staat nog niet in PostNL: zo lang wachten
   // Sessie de hele werkdag open (eerste taak tot de eindtijd), ook als er even niets te doen is:
   // een planner-opdracht vóór de deadline hoeft dan nooit in te loggen. Verloopt hij toch, dan
   // logt de volgende taak in hetzelfde tabblad opnieuw in (naarDepot). Uit = sluitNaLeegMin.
   sessieOpenHouden: true,
+  // In stille tijd elke zoveel minuten de Dagplanning opnieuw openen (taak 'wakker'): houdt de sessie
+  // levend, en is hij toch verlopen, dan meteen opnieuw inloggen in hetzelfde tabblad, vóór een
+  // planner-opdracht erop moet wachten. 0 = uit.
+  wakkerHoudenMin: 10,
   sluitNaLeegMin: 10,             // zonder sessieOpenHouden: dicht als de volgende taak verder weg ligt
   // Herstel
   gegooidVensterMin: 2,           // twee keer eruit gegooid binnen dit venster = nieuwe login
@@ -29,7 +34,7 @@ export const STANDAARD = Object.freeze({
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
-  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300 },
+  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120 },
 })
 
 function isObject(v) { return v && typeof v === 'object' && !Array.isArray(v) }

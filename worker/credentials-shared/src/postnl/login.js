@@ -66,8 +66,9 @@ export async function naarDepot(page, depot, { log = console, maxMs = 90000 } = 
 
 // Planning → Dagplanning, met herkansing: vlak na het inloggen komt een klik op het menu soms
 // niet aan (planner, 02-11 06:26, op de video).
+// Geeft { ingelogd }: true als de sessie verlopen bleek en er opnieuw is ingelogd (zie naarDepot).
 export async function openDagplanning(page, depot, opties = {}) {
-  await naarDepot(page, depot, opties)
+  const uit = await naarDepot(page, depot, opties)
   const planning = page.locator(SEL_PLANNING).first()
   for (let poging = 1; ; poging++) {
     await planning.click()
@@ -78,4 +79,5 @@ export async function openDagplanning(page, depot, opties = {}) {
     await page.waitForTimeout(2_000)
   }
   await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {})
+  return uit
 }

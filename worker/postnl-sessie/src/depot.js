@@ -30,6 +30,7 @@ export async function draaiDepot(deps) {
   const recent = []
   const logins = []
   let laatsteVoortgang = klok.nu()
+  let laatsteGegooidMelding = null
 
   // Het slot: wachten tot het vrij is (een vangnet-script kan nog bezig zijn), nooit ertussen.
   async function slotHouden() {
@@ -134,7 +135,7 @@ export async function draaiDepot(deps) {
 
       const incident = soort !== 'gezond'
       // Elke taak behalve de ritmonitor (elke minuut, die staat samengevat in de run-log) in het log.
-      if (!incident && !fout && taak !== 'ritmonitor') {
+      if (!incident && !fout && taak !== 'ritmonitor' && (taak !== 'wakker' || uitkomst?.melding)) {
         const l = uitkomst?.run?.lezingen?.[depot.naam]
         log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
       }
@@ -144,7 +145,12 @@ export async function draaiDepot(deps) {
         log.warn(`${label} ${taak}: ${soort}${fout ? ` (${String(fout.message).split('\n')[0]})` : ''} → ${actie}`)
         await opslag.gebeurtenis(sessie?.id, { soort, taak, actie, fout: fout ? String(fout.message).slice(0, 300) : null, trace: tracePad })
         // Er hoort niemand anders met deze login in te loggen: altijd melden.
-        if (soort === 'gegooid') await melden({ soort: 'gegooid', depot: depot.naam, detail: `tijdens ${taak}; trace ${tracePad ?? 'niet opgeslagen'}` })
+        // Hoogstens eens per 30 min een melding (03-11: 69 meldingen op één dag); de gebeurtenis
+        // staat er altijd.
+        if (soort === 'gegooid' && (!laatsteGegooidMelding || klok.nu() - laatsteGegooidMelding >= 30 * MIN)) {
+          laatsteGegooidMelding = klok.nu()
+          await melden({ soort: 'gegooid', depot: depot.naam, detail: `tijdens ${taak}; trace ${tracePad ?? 'niet opgeslagen'}` })
+        }
       } else if (sessie && (!sessie.laatsteOkGemeld || klok.nu() - sessie.laatsteOkGemeld > 5 * MIN)) {
         sessie.laatsteOkGemeld = klok.nu()
         await opslag.sessieBij(sessie.id, { laatste_ok_at: klok.nu().toISOString(), lezingen: sessie.lezingen })
@@ -156,14 +162,15 @@ export async function draaiDepot(deps) {
       if (plannerRun && tracePad) await opslag.runOpnames(plannerRun, [{ soort: 'trace', storage_path: tracePad }])
 
       if (uitkomst) {
-        dag = uitkomst.dag
+        // laatsteTaakOm: wanneer er voor het laatst iets in PostNL gebeurde (taak 'wakker').
+        dag = { ...uitkomst.dag, laatsteTaakOm: klok.nu().toISOString() }
         await bewaar()
         if (uitkomst.run) await naRun({ ...uitkomst.run, trace: tracePad })
         if (uitkomst.ritmonitor) telRitmonitor(depot.naam, { ok: true, ...uitkomst.ritmonitor })
         if (uitkomst.melding === 'autorisatie_niet_gezien') await melden({ soort: 'autorisatie_niet_gezien', depot: depot.naam, detail: uitkomst.gebeurtenis?.shift })
       } else if (fout) {
         if (taak === 'ritmonitor') telRitmonitor(depot.naam, { ok: false, fout: fout.message })
-        else if (!fout.alGelogd) await naRun({ worker: k.taak.worker, status: 'mislukt', depots_mislukt: [{ depot: depot.naam, fout: String(fout.message).slice(0, 300) }], foutmelding: String(fout.message).slice(0, 500), trace: tracePad })
+        else if (!fout.alGelogd && k.taak.worker) await naRun({ worker: k.taak.worker, status: 'mislukt', depots_mislukt: [{ depot: depot.naam, fout: String(fout.message).slice(0, 300) }], foutmelding: String(fout.message).slice(0, 500), trace: tracePad })
       }
 
       // Na elk incident even ademen: geen strakke lus van mislukte pogingen tegen PostNL.
@@ -185,7 +192,9 @@ export async function draaiDepot(deps) {
       if (sessie && cfg.contextWissel && Date.now() - sessie.segmentOm >= cfg.segmentMin * MIN) {
         const nogIngelogd = await sessie.nieuwSegment()
         if (!nogIngelogd) await opslag.gebeurtenis(sessie.id, { soort: 'contextwissel_nieuwe_login' })
-      } else if (sessie && sessie.leeftijdMin >= cfg.browserVernieuwenUur * 60) {
+      } else if (sessie && !cfg.contextWissel && sessie.leeftijdMin >= cfg.browserVernieuwenUur * 60) {
+        // Alleen zonder contextwissel: met contextwissel is elk videosegment al kort, en een nieuwe
+        // login om de 4 uur is dan onnodig (03-11 12:17: beide depots opnieuw ingelogd).
         await sluit('vernieuwd')
       }
     }

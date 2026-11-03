@@ -73,3 +73,11 @@ export function dagplanningRitten(antwoorden, { negeer = new Set() } = {}) {
 export function shiftsUit(antwoorden) {
   return [...new Set([...objectenOver(antwoorden, T.shift).values()].map(s => s.Name).filter(Boolean))].sort()
 }
+
+// Hoort deze rit bij de shift ("01", "07", ...)? Volgens PostNL als het antwoord de shift meestuurt;
+// anders het eerste cijfer van het ritnummer (114 → 1, 703 → 7). Op 03-11 stuurde PostNL de shift
+// bij geen enkele rit mee, waardoor elke shift leeg leek en een autorisatie nooit gezien werd.
+export function hoortBijShift(rit, shift) {
+  const s = String(parseInt(shift, 10))
+  return (rit.shiftPostnl ?? rit.shift) === s
+}

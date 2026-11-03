@@ -22,9 +22,13 @@ const rustdag = (nu, cfg) => cfg.rustdagen.includes(weekdagNl(nu))
 const voorTijd = (nu, hhmm) => minutenNl(nu) < hhmmNaarMin(hhmm)
 
 // De shifts die nog een definitieve lezing nodig hebben, op volgorde van deadline.
-export function openShifts(dag) {
+// Shifts die nog gecontroleerd moeten worden: nog niet definitief, of via het vangnet gelezen en
+// nog niet geautoriseerd (hooguit naVangnetKijkenMin na het vangnet).
+export function openShifts(dag, nu = null, cfg = null) {
+  const kijkMs = (cfg?.naVangnetKijkenMin ?? 0) * MIN
   return Object.entries(dag.shifts ?? {})
-    .filter(([, s]) => !s.definitiefOm)
+    .filter(([, s]) => !s.definitiefOm
+      || (s.vangnet && !s.geautoriseerdOm && nu && nu.getTime() - new Date(s.definitiefOm).getTime() < kijkMs))
     .sort(([, a], [, b]) => (a.deadline ?? '').localeCompare(b.deadline ?? ''))
 }
 
@@ -64,7 +68,7 @@ export const TAKEN = [
     volgende: (dag, nu, cfg) => {
       if (rustdag(nu, cfg) || !dag.ochtend?.gelezenOm || !voorTijd(nu, cfg.eindtijd)) return null
       let eerst = null
-      for (const [shift, s] of openShifts(dag)) {
+      for (const [shift, s] of openShifts(dag, nu, cfg)) {
         const vanaf = s.deadline ? new Date(s.deadline) : new Date(dag.ochtend.gelezenOm)
         const volgendeControle = s.laatsteControleOm ? new Date(new Date(s.laatsteControleOm).getTime() + cfg.hercontroleMin * MIN) : vanaf
         const om = new Date(Math.max(vanaf.getTime(), volgendeControle.getTime()))
@@ -84,6 +88,16 @@ export const TAKEN = [
       }
       const laatst = dag.ritmonitor?.laatsteOm ? new Date(dag.ritmonitor.laatsteOm) : null
       const om = laatst ? new Date(laatst.getTime() + cfg.ritmonitorIntervalSec * 1000) : nu
+      return om <= nu ? { nu: true, args: {} } : { om }
+    },
+  },
+  {
+    // Stille tijd (bv. tussen de ochtendlezing en de eerste deadline): na wakkerHoudenMin zonder
+    // andere taak de Dagplanning opnieuw openen. Alleen met sessieOpenHouden en na de ochtendlezing.
+    naam: 'wakker', prioriteit: 5, worker: null,
+    volgende: (dag, nu, cfg) => {
+      if (!cfg.sessieOpenHouden || !cfg.wakkerHoudenMin || rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd) || !dag.ochtend?.gelezenOm) return null
+      const om = new Date(new Date(dag.laatsteTaakOm ?? dag.ochtend.gelezenOm).getTime() + cfg.wakkerHoudenMin * MIN)
       return om <= nu ? { nu: true, args: {} } : { om }
     },
   },
