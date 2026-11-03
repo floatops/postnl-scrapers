@@ -234,7 +234,7 @@ test('shift zonder deadline (niet te lezen bij de ochtendlezing): vangnet vanaf 
   assert.ok(s.log.filter(([, x]) => x.startsWith('definitief:01')).at(-1)[0] <= '12:00')
 })
 
-test('plannen: per shift tot zijn deadline, daarna overgeslagen; ritten elke 2 min, stops elke 5 min', () => {
+test('plannen: zo snel als het kan, om de beurt ritten en stops per open shift; een shift voorbij zijn deadline overgeslagen', () => {
   // De simulatie doet één taak per minuut: zodra de ritmonitor elke minuut loopt, komt de lagere
   // taak plannen er niet meer tussen (in het echt duurt een ritmonitor-lezing ~10 s). Daarom hier
   // de ochtend vóór de ritmonitor: geen autorisatie, vangnet en ritmonitor pas laat.
@@ -242,16 +242,15 @@ test('plannen: per shift tot zijn deadline, daarna overgeslagen; ritten elke 2 m
   const s = simuleer({ postnl: dag, tot: '07:30', cfg: mergeInstellingen({ vangnetMin: 600, ritmonitorUiterlijk: '23:00' }) })
   const p = s.log.filter(([, x]) => x.startsWith('plannen'))
   const met = (shift, voor, na = '00:00') => p.filter(([t, x]) => x.split(':')[2].split('+').includes(shift) && t < voor && t >= na)
+  // Na de ochtendlezing (05:30) elke minuut die niet voor iets anders nodig is.
+  const tussen = s.log.filter(([t]) => t >= '05:31' && t < '06:30')
+  assert.ok(tussen.filter(([, x]) => x.startsWith('plannen')).length >= tussen.length - 15, 'vrijwel elke vrije minuut verversen, geen vaste wachttijd')
+  const eerste = p.slice(0, 4).map(([, x]) => x)
+  assert.deepEqual(eerste, ['plannen:ritten:01+02+07', 'plannen:stops:01', 'plannen:stops:02', 'plannen:stops:07'], 'om de beurt')
   assert.ok(met('01', '06:35').length > 0, 'shift 01 vóór zijn deadline')
   assert.equal(met('01', '24:00', '06:35').length, 0, 'na 06:35 wordt shift 01 overgeslagen')
-  assert.ok(met('02', '07:20', '06:35').length > 0, 'shift 02 gaat door tot 07:20')
-  assert.equal(met('02', '24:00', '07:20').length, 0)
+  assert.equal(met('02', '24:00', '07:20').length, 0, 'na 07:20 shift 02 ook')
   assert.ok(met('07', '24:00', '07:20').length > 0, 'shift 07 gaat door')
-  const ritten = p.filter(([, x]) => x.startsWith('plannen:ritten')).map(([t]) => t)
-  assert.ok(ritten.length >= 10, `ritten elke ~2 min (${ritten.length} keer)`)
-  const stops07 = p.filter(([, x]) => x === 'plannen:stops:07').map(([t]) => t)
-  const tussen = stops07.slice(1).map((t, i) => (new Date(`2026-11-02T${t}:00`) - new Date(`2026-11-02T${stops07[i]}:00`)) / 60000)
-  assert.ok(tussen.every(m => m >= 5), `stops van shift 07 elke 5 min of langer (${tussen.join(',')})`)
 })
 
 test('plannen: na de laatste deadline doet de taak niets meer', () => {
@@ -259,15 +258,15 @@ test('plannen: na de laatste deadline doet de taak niets meer', () => {
   assert.equal(s.log.filter(([t, x]) => x.startsWith('plannen') && t >= '06:00').length, 0)
 })
 
-test('plannen: de shift die iemand in Plannen open heeft, krijgt de stops elke 2 min', async () => {
+test('plannen: de shift die iemand in Plannen open heeft, gaat voor', async () => {
   const { kies } = await import('../src/rij.js')
   const cfg = mergeInstellingen({})
   const basis = { ...nieuweDag('2026-11-02'), ochtend: { gelezenOm: '2026-11-02T04:45:00Z' }, laatsteTaakOm: '2026-11-02T06:00:00Z',
     shifts: { '02': { deadline: '2026-11-02T08:00:00Z' }, '07': { deadline: '2026-11-02T10:00:00Z' } },
     plannen: { rittenOm: '2026-11-02T06:00:00Z', stopsOm: { '02': '2026-11-02T05:58:00Z', '07': '2026-11-02T05:58:00Z' } } }
   const om = new Date('2026-11-02T06:01:00Z')
-  assert.equal(kies(basis, om, cfg).taak, undefined, 'zonder kijker: stops pas na 5 min')
+  assert.deepEqual(kies(basis, om, cfg).args, { soort: 'stops', shifts: ['02'] }, 'zonder kijker: wat het langst geleden is (bij gelijk: de eerste)')
   const k = kies({ ...basis, plannenKijkers: ['07'] }, om, cfg)
   assert.equal(k.taak.naam, 'plannen')
-  assert.deepEqual(k.args, { soort: 'stops', shifts: ['07'] })
+  assert.deepEqual(k.args, { soort: 'stops', shifts: ['07'] }, 'de bekeken shift gaat voor')
 })

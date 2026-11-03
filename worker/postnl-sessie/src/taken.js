@@ -103,8 +103,9 @@ export const TAKEN = [
   },
   {
     // Plannen-tab vanzelf bijwerken (#562): alleen shifts waarvan de deadline nog niet voorbij is
-    // (daarna kan er niet meer gepland worden). Ritten elke plannenRittenMin, stops per shift elke
-    // plannenStopsMin, of plannenKijkerStopsMin als iemand die shift in Plannen open heeft.
+    // (daarna kan er niet meer gepland worden en verandert er niets). Zo snel als het kan: is al het
+    // andere gedaan (lagere prioriteit dan de ritmonitor), dan de ritten of de stops van een shift,
+    // om de beurt wat het langst geleden is. Een shift die iemand in Plannen open heeft, gaat voor.
     naam: 'plannen', prioriteit: 20, worker: null,
     volgende: (dag, nu, cfg) => {
       if (!cfg.plannenVerversen || rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd) || !dag.ochtend?.gelezenOm) return null
@@ -112,18 +113,23 @@ export const TAKEN = [
       if (!open.length) return null
       const p = dag.plannen ?? {}
       const kijkers = dag.plannenKijkers ?? []
-      const na = (iso, min) => (iso ? new Date(new Date(iso).getTime() + min * MIN) : nu)
-      // Volgorde bij gelijke tijd: eerst de ritten, dan de shift die iemand bekijkt, dan de rest.
+      const tijd = (iso) => (iso ? new Date(iso).getTime() : 0)
       const kandidaten = [
-        { om: na(p.rittenOm, cfg.plannenRittenMin), rang: 0, args: { soort: 'ritten', shifts: open } },
-        ...open.map(shift => ({
-          om: na(p.stopsOm?.[shift], kijkers.includes(shift) ? cfg.plannenKijkerStopsMin : cfg.plannenStopsMin),
-          rang: kijkers.includes(shift) ? 1 : 2,
-          args: { soort: 'stops', shifts: [shift] },
-        })),
-      ].sort((a, b) => (a.om - b.om) || (a.rang - b.rang))
-      const k = kandidaten[0]
-      return k.om <= nu ? { nu: true, args: k.args } : { om: k.om }
+        { laatst: tijd(p.rittenOm), min: cfg.plannenRittenMin, rang: 0, args: { soort: 'ritten', shifts: open } },
+        ...open.map((shift) => {
+          const kijkt = kijkers.includes(shift)
+          return {
+            // Voorsprong: een bekeken shift telt alsof hij langer geleden ververst is.
+            laatst: tijd(p.stopsOm?.[shift]) - (kijkt ? cfg.plannenKijkerVoorsprongSec * 1000 : 0),
+            min: kijkt ? cfg.plannenKijkerStopsMin : cfg.plannenStopsMin,
+            rang: kijkt ? 1 : 2,
+            args: { soort: 'stops', shifts: [shift] },
+          }
+        }),
+      ].map(k => ({ ...k, om: Math.max(k.laatst + k.min * MIN, 0) }))
+      const klaar = kandidaten.filter(k => k.om <= nu.getTime()).sort((a, b) => (a.laatst - b.laatst) || (a.rang - b.rang))
+      if (klaar.length) return { nu: true, args: klaar[0].args }
+      return { om: new Date(Math.min(...kandidaten.map(k => k.om))) }
     },
   },
 ]

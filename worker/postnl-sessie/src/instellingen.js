@@ -20,12 +20,15 @@ export const STANDAARD = Object.freeze({
   // levend, en is hij toch verlopen, dan meteen opnieuw inloggen in hetzelfde tabblad, vóór een
   // planner-opdracht erop moet wachten. 0 = uit.
   wakkerHoudenMin: 10,
-  // Plannen-tab vanzelf bijwerken (taak 'plannen'): per shift tot zijn deadline. Alleen verschillen
-  // gaan naar de app. De shift die iemand in Plannen open heeft, krijgt de stops vaker.
+  // Plannen-tab vanzelf bijwerken (taak 'plannen'): per shift tot zijn deadline, zo snel als het kan
+  // (eigenaar 03-11: geen vaste wachttijd; is al het andere gedaan, dan weer ritten of stops). Om de
+  // beurt wat het langst geleden is; de shift die iemand in Plannen open heeft, gaat voor.
+  // Alleen verschillen gaan naar de app. De minuten zijn een ondergrens (0 = meteen weer).
   plannenVerversen: true,
-  plannenRittenMin: 2,
-  plannenStopsMin: 5,
-  plannenKijkerStopsMin: 2,
+  plannenRittenMin: 0,
+  plannenStopsMin: 0,
+  plannenKijkerStopsMin: 0,
+  plannenKijkerVoorsprongSec: 120,  // zoveel eerder aan de beurt dan de rest
   sluitNaLeegMin: 10,             // zonder sessieOpenHouden: dicht als de volgende taak verder weg ligt
   // Herstel
   gegooidVensterMin: 2,           // twee keer eruit gegooid binnen dit venster = nieuwe login
