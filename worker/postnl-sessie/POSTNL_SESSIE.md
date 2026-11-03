@@ -67,7 +67,7 @@ Opnames staan op de VPS, niet in de database-opslag (die is duur; de VPS heeft r
 ## Logboek en wachtdogs
 
 - `worker_run_log` onder dezelfde namen als de losse scripts: `postnl-ritmonitor` elke 7 min samengevat (lezingen en `leeg_onbevestigd` per depot), `postnl-dagplanning` per lezing. De bestaande wachtdogs en de koppelingsbadge werken dus zoals altijd.
-- `check_postnl_sessie()` (elke 5 min): `sessiehouder_niet_actief`, `ochtend_te_laat` (07:30), `definitief_te_laat` (deadline + 45 min). `check_worker_staleness()` slaat de dagplanning over voor klanten met de sessiehouder aan.
+- `check_postnl_sessie()` (elke 5 min, matransport-migratie `20261103002006`): `sessiehouder_niet_actief`, `ochtend_te_laat` (07:30), `definitief_te_laat` (deadline + 45 min), `ritmonitor_stil` (10 min geen lezing terwijl de sessiehouder het depot heeft), `veel_logins` (> 6 per depot per dag), `login_problemen` (≥ 3× login mislukt of blokkade), en altijd `planner_niet_opgepakt` (> 3 min wacht), `planner_lang_bezig` (> 20 min), `planner_afgebroken`, `planner_mislukt` (technisch; een weigering van PostNL telt niet). Dit draait in de database: niemand hoeft mee te kijken. `check_worker_staleness()` slaat de dagplanning over voor klanten met de sessiehouder aan.
 - Meldingen gaan via `db_fout_log` → `check_operationele_fouten()` → push naar super_admin.
 
 ## Vangnet
