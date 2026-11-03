@@ -34,6 +34,19 @@ test('rva en rvaWakker draaien ook zondagnacht (rvaAltijd), niet als rvaAltijd u
   assert.equal(TAAK.rvaWakker.volgende(dag, zondagNacht, mergeInstellingen({ rva: true, rvaAltijd: false })), null)
 })
 
+test('rvaWakker komt aan de beurt terwijl plannen continu loopt (ochtend), maar niet vóór de ritmonitor', () => {
+  const cfg = mergeInstellingen({ rva: true })
+  const ochtend = new Date('2026-11-03T07:10:00+01:00')
+  const dag = {
+    ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T05:31:00Z' },
+    shifts: { '01': { deadline: '2026-11-03T09:00:00Z' } },
+    rva: { wakkerOm: '2026-11-03T05:00:00Z' },
+  }
+  assert.equal(TAAK.plannen.volgende(dag, ochtend, cfg)?.nu, true, 'plannen is aan de beurt')
+  assert.equal(kies(dag, ochtend, cfg).taak.naam, 'rvaWakker', 'en toch komt rvaWakker ertussen')
+  assert.ok(TAAK.rvaWakker.prioriteit < TAAK.ritmonitor.prioriteit)
+})
+
 test('rvaWakker: elke rvaWakkerMin, vanaf de laatste keer', () => {
   const dag = { ...nieuweDag('2026-11-03'), rva: { wakkerOm: '2026-11-03T08:55:00Z' } }
   assert.equal(TAAK.rvaWakker.volgende(dag, new Date('2026-11-03T09:00:00Z'), AAN).om.toISOString(), '2026-11-03T09:05:00.000Z')

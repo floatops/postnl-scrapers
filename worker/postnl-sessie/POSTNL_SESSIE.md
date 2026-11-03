@@ -21,7 +21,7 @@ De **autorisatie** van een rit is het omslagpunt, niet de klok (`src/taken.js`, 
 
 Met `rva: true` in `postnl_instellingen.instellingen` heeft elk depot **één browser met twee tabbladen**: OOM PD (`sessie.page`) en RVA (`sessie.rvaPage`, `https://pnl-rva.p15.cldsvc.net/`). Beide gebruiken dezelfde login en cookies (zelfde context). Er komt geen tweede login of sessie bij. Code en hoe RVA werkt: `../postnl-rva/POSTNL_RVA.md`.
 
-- **Altijd open:** het RVA-tabblad gaat open direct na het inloggen en na elk nieuw videosegment (`sessie.rvaOpenen()`). De taak `rvaWakker` (prioriteit 4) ververst elke `rvaWakkerMin` (10) het Rittenoverzicht. Is de RVA-sessie verlopen, dan logt hij in dat tabblad opnieuw in (gebeurtenis `rva_verlopen_stil`).
+- **Altijd open:** het RVA-tabblad gaat open direct na het inloggen en na elk nieuw videosegment (`sessie.rvaOpenen()`). De taak `rvaWakker` (prioriteit 25: boven `plannen`, dat 's ochtends continu loopt, onder de ritmonitor) ververst elke `rvaWakkerMin` (10) het Rittenoverzicht. Is de RVA-sessie verlopen, dan logt hij in dat tabblad opnieuw in (gebeurtenis `rva_verlopen_stil`).
 - **24/7** (`rvaAltijd`, standaard aan): `rva` en `rvaWakker` negeren `rustdagen` en `eindtijd`. De lus stopt dus 's nachts en op zondag niet. De bewaker start de sessiehouder buiten de OOM PD-werktijd met `trigger_postnl_sessie(true)`, alleen voor klanten met RVA aan. Het OOM PD-tabblad blijft 's nachts stil open.
 - **Opdrachten** (`rva_opdrachten` in matransport, één Opslaan in de app = één rij):
   - Taak `rva` (prioriteit 95: na een planner-opdracht, vóór alle OOM PD-taken) pakt steeds de **oudste** wachtende opdracht van het depot.

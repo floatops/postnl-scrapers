@@ -102,7 +102,9 @@ export const TAKEN = [
     // Het RVA-tabblad levend houden (matransport#569): elke rvaWakkerMin het Rittenoverzicht
     // verversen. Verlopen? Dan logt de handler in datzelfde tabblad opnieuw in, vóór een opdracht
     // erop moet wachten. Met rvaAltijd ook 's nachts en op zondag: dan stopt de lus nooit vanzelf.
-    naam: 'rvaWakker', prioriteit: 4, tab: 'rva', worker: null,
+    // Prioriteit 25: boven 'plannen' (20), dat 's ochtends continu aan de beurt is, onder de
+    // ritmonitor. Goedkoop en hooguit eens per rvaWakkerMin, dus hij loopt altijd tussendoor.
+    naam: 'rvaWakker', prioriteit: 25, tab: 'rva', worker: null,
     volgende: (dag, nu, cfg) => {
       if (!cfg.rva || !cfg.rvaWakkerMin) return null
       if (!cfg.rvaAltijd && (rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd))) return null
