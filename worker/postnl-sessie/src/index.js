@@ -9,7 +9,6 @@
 //   1   fout; de bewaker start hem binnen 2 minuten opnieuw, de oude scripts vangen het op
 import 'dotenv/config'
 import { randomUUID } from 'node:crypto'
-import { execFileSync } from 'node:child_process'
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
@@ -24,6 +23,7 @@ import { HANDLERS } from './handlers.js'
 import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
+import { codeVersie, gewijzigdePaden, raaktSessiehouder } from './codeversie.js'
 import fs from 'node:fs/promises'
 
 function vereis(naam) {
@@ -52,10 +52,6 @@ async function melden(m) {
   if (error) log.error(`Melden mislukt: ${error.message}`)
 }
 
-function codeVersie() {
-  try { return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8', timeout: 5000 }).trim() } catch { return null }
-}
-
 async function main() {
   const opslag = maakOpslag({ supabase, klantId: KLANT_ID, log })
   // POSTNL_SESSIE_INSTELLINGEN (json): alleen voor een handmatige proef, bv. 's nachts met andere
@@ -68,11 +64,19 @@ async function main() {
   const ritmonitor = maakRitmonitor({ supabase, klantId: KLANT_ID, login: (page, depot) => login(page, depot, { log }), log })
   const teller = maakRitmonitorTeller({ opslag, depots: depots.map(d => d.naam), log })
 
-  // Nieuwe code in de checkout: de lopende taken afmaken en met 42 stoppen.
-  const versie = codeVersie()
+  // Nieuwe code in de checkout die de sessiehouder raakt: de lopende taken afmaken en met 42
+  // stoppen. Code van een andere worker (bv. postnl-rva) geeft geen herstart (codeversie.js).
+  let versie = codeVersie()
   const codeCheck = setInterval(() => {
     const nu = codeVersie()
-    if (versie && nu && nu !== versie) { log.log(`Nieuwe code (${nu.slice(0, 7)}): herstart na de lopende taak`); stop = true; exitCode = 42 }
+    if (!versie || !nu || nu === versie) return
+    const paden = gewijzigdePaden(versie, nu)
+    if (paden && !raaktSessiehouder(paden)) {
+      log.log(`Nieuwe code (${nu.slice(0, 7)}) raakt de sessiehouder niet: geen herstart`)
+      versie = nu
+      return
+    }
+    log.log(`Nieuwe code (${nu.slice(0, 7)}): herstart na de lopende taak`); stop = true; exitCode = 42
   }, cfg.codeCheckMin * 60_000)
 
   // Gemeten levensduur per depot, elk uur ververst.
