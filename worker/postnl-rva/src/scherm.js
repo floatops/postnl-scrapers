@@ -141,10 +141,17 @@ export async function leesRittenoverzicht(page) {
   }, WEEKDAGEN)
 }
 
+// Vlak na het laden vult Mendix de rijen nog: tot 15 s blijven kijken.
 async function overzichtRij(page, ritnaam, weekdag) {
-  const rijen = await leesRittenoverzicht(page)
-  const rij = rijen.find(r => r.ritnaam === ritnaam && (!weekdag || r.dagen.includes(weekdag)))
-  if (!rij) throw new RvaFout('niet_gevonden', `Rit ${ritnaam}${weekdag ? ` op ${weekdag}` : ''} staat niet in het Rittenoverzicht`)
+  const tot = Date.now() + 15_000
+  let rij = null
+  while (!rij) {
+    const rijen = await leesRittenoverzicht(page).catch(() => [])
+    rij = rijen.find(r => r.ritnaam === ritnaam && (!weekdag || r.dagen.includes(weekdag)))
+    if (rij) break
+    if (Date.now() > tot) throw new RvaFout('niet_gevonden', `Rit ${ritnaam}${weekdag ? ` op ${weekdag}` : ''} staat niet in het Rittenoverzicht`)
+    await page.waitForTimeout(500)
+  }
   return { rij, loc: page.locator(`${SCHERM.overzicht} [role="row"]`).filter({ has: page.locator('[role="gridcell"]') }).nth(rij.index) }
 }
 
@@ -361,6 +368,12 @@ export async function onderbreking(page, mendix, sleutel, minuten) {
 export async function verwijderOnderbreking(page, mendix, sleutel) {
   const antwoorden = await regelMenu(page, mendix, sleutel, SCHERM.menuOnderbreking)
   const v = await wachtOpVenster(page, 'plaatsgebonden onderbreking')
+  // Een bestaande onderbreking opent met de minuten ingevuld; leeg = er is er geen.
+  const minuten = (await v.locator(`${SCHERM.onderbrekingMinuten} input`).first().inputValue().catch(() => '')).trim()
+  if (!minuten) {
+    await mendix.actie(() => v.locator(SCHERM.onderbrekingAnnuleer).first().click()).catch(() => {})
+    throw new RvaFout('niet_gevonden', 'Er staat geen onderbreking na deze regel')
+  }
   antwoorden.push(...await mendix.actie(() => v.locator(SCHERM.onderbrekingVerwijder).first().click()))
   // PostNL vraagt "Weet je het zeker?" (Annuleer / Ja), gezien in de proef van 03-11.
   const bevestig = await wachtOpVenster(page, 'Bevestiging')
