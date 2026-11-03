@@ -5,7 +5,7 @@
 // op tekst. Elke handeling loopt via mendix.actie(): wachten tot PostNL klaar is en de antwoorden
 // teruggeven. Een venster sluiten we met Annuleren of het kruisje, nooit met de hoofdknop, tenzij
 // het de bevestiging is die we zelf bedoelen.
-import { WEEKDAGEN } from './lezen.js'
+import { WEEKDAGEN, revisiesUit } from './lezen.js'
 import { regelSleutel, regelLabel, vindRegel } from './plan.js'
 
 export const RVA_URL = 'https://pnl-rva.p15.cldsvc.net/'
@@ -59,6 +59,14 @@ function knop(scope, [selector, tekst]) {
 }
 const zichtbaar = (loc) => loc.isVisible().catch(() => false)
 
+// Eerst naar het midden van het scherm scrollen. Playwright scrolt een element net in beeld, en
+// in een lange lijst valt het dan onder de vaste kopbalk van RVA: de klik komt niet aan (proef 03-11).
+async function inBeeld(loc) {
+  await loc.waitFor({ state: 'attached', timeout: 15_000 })
+  await loc.evaluate(el => el.scrollIntoView({ block: 'center', inline: 'center' }))
+  return loc
+}
+
 function venster(page, kop) {
   const v = page.locator(SCHERM.venster).filter({ visible: true })
   return kop ? v.filter({ hasText: kop }).last() : v.last()
@@ -75,7 +83,11 @@ export async function sluitVenster(page, mendix) {
   const v = venster(page)
   if (!(await zichtbaar(v))) return null
   const tekst = (await v.innerText().catch(() => '')).trim()
-  await mendix.actie(() => v.locator(SCHERM.vensterKruisje).first().click()).catch(() => {})
+  // Het kruisje van Mendix ligt wel bovenop, maar Playwright noemt het "niet zichtbaar" (Revisies,
+  // proef 03-11). Dus geforceerd klikken (zoals een muisklik op die plek); lukt dat niet, Escape.
+  await mendix.actie(() => v.locator(SCHERM.vensterKruisje).first().click({ force: true, timeout: 5_000 })).catch(() => {})
+  if (await zichtbaar(v)) await mendix.actie(() => page.keyboard.press('Escape')).catch(() => {})
+  await v.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => { throw new RvaFout('scherm', 'Venster ging niet dicht') })
   return tekst
 }
 
@@ -99,6 +111,11 @@ export async function openRva(page, { login = null, maxMs = 90_000 } = {}) {
     await page.waitForTimeout(1_000)
   }
   throw new RvaFout('login', `RVA niet in beeld na ${Math.round(maxMs / 1000)} s (url: ${page.url().split('?')[0]})`)
+}
+
+// De naam van het ingelogde account (rechtsboven).
+export async function eigenAccount(page) {
+  return (await page.locator('.mx-name-pop_upMenu1 .mx-name-text1').first().innerText().catch(() => '')).trim() || null
 }
 
 export async function naarRittenoverzicht(page, mendix) {
@@ -136,7 +153,13 @@ export async function openRitDag(page, mendix, ritnaam, weekdag) {
   if (!(await zichtbaar(page.locator(SCHERM.overzicht).first()))) await naarRittenoverzicht(page, mendix)
   const { rij, loc } = await overzichtRij(page, ritnaam, weekdag)
   const dagKnop = loc.locator('[role="gridcell"] [role="button"]').filter({ hasText: new RegExp(`^\\s*${weekdag}\\s*$`) }).first()
-  const antwoorden = await mendix.actie(() => dagKnop.click())
+  // Het onzichtbare invoerveld van de keuzelijst Ritverantwoordelijke (kolom ernaast) ligt over
+  // het midden van het dagvak en vangt de klik (proef 03-11). Dus op de tekst zelf klikken, en
+  // lukt dat niet, de klik rechtstreeks naar het vak sturen.
+  const antwoorden = await mendix.actie(async () => {
+    await inBeeld(dagKnop)
+    await dagKnop.locator('span').first().click({ timeout: 5_000 }).catch(() => dagKnop.dispatchEvent('click'))
+  })
   const titel = `${ritnaam} - ${dagnaam(weekdag)}`
   await page.locator(SCHERM.titel).filter({ hasText: titel }).first().waitFor({ state: 'visible', timeout: 30_000 })
     .catch(() => { throw new RvaFout('scherm', `Rit-dag ${titel} ging niet open`) })
@@ -149,7 +172,18 @@ export async function openRitDag(page, mendix, ritnaam, weekdag) {
 
 // De regels zoals ze in beeld staan, in dezelfde vorm als lezen.regelVan(). In de bewerkstand
 // staat de volgorde in een invoervak, anders als tekst.
-export async function leesRegels(page) {
+// Direct na Annuleer/Opslaan tekent Mendix bij een lange rit eerst lege regels en vult ze daarna
+// (proef 03-11, 199 regels): wachten tot elke regel een straat heeft, anders lees je leeg.
+export async function leesRegels(page, { maxMs = 15_000 } = {}) {
+  const tot = Date.now() + maxMs
+  for (;;) {
+    const regels = await leesRegelsNu(page)
+    if (regels.every(r => r.straat) || Date.now() > tot) return regels
+    await page.waitForTimeout(300)
+  }
+}
+
+async function leesRegelsNu(page) {
   return page.locator(SCHERM.regels).evaluateAll((tabellen) => tabellen.map((t) => {
     const tekst = (sel) => (t.querySelector(sel)?.innerText || '').trim()
     const getal = (s) => (s === '' ? null : Number(s))
@@ -183,6 +217,11 @@ async function regelRij(page, sleutel) {
 // toont PostNL een melding en blijft Wijzig staan: fout 'vergrendeld', niets doen.
 export async function startWijzig(page, mendix) {
   if (await inBewerkstand(page)) await annuleer(page, mendix)
+  // Geen Wijzig-knop = dit account mag deze rit niet bewerken: het moet bij de rit als
+  // Ritverantwoordelijke staan (Rittenoverzicht). Welke namen dat zijn, verschilt per klant.
+  if (!(await zichtbaar(knop(page, SCHERM.wijzig)))) {
+    throw new RvaFout('geen_rechten', 'Geen Wijzig-knop: het account staat niet als Ritverantwoordelijke bij deze rit')
+  }
   const antwoorden = await mendix.actie(() => knop(page, SCHERM.wijzig).click())
   if (await inBewerkstand(page)) return antwoorden
   const melding = await sluitVenster(page, mendix)
@@ -209,7 +248,7 @@ export async function zetVolgorde(page, mendix, sleutel, nummer) {
   const { loc } = await regelRij(page, sleutel)
   const vak = loc.locator(SCHERM.volgordeVak).first()
   return mendix.actie(async () => {
-    await vak.fill(String(nummer))
+    await (await inBeeld(vak)).fill(String(nummer))
     await vak.press('Tab')
   })
 }
@@ -217,7 +256,7 @@ export async function zetVolgorde(page, mendix, sleutel, nummer) {
 export async function zetRichting(page, mendix, sleutel, richting) {
   const { regel, loc } = await regelRij(page, sleutel)
   if (regel.richting === richting) return []
-  const antwoorden = await mendix.actie(() => loc.locator(SCHERM.richting).first().click())
+  const antwoorden = await mendix.actie(async () => (await inBeeld(loc.locator(SCHERM.richting).first())).click())
   const na = await regelRij(page, sleutel)
   if (na.regel.richting !== richting) throw new RvaFout('controle', `Richting van ${regelLabel(na.regels, sleutel)} is niet ${richting} geworden`)
   return antwoorden
@@ -226,8 +265,9 @@ export async function zetRichting(page, mendix, sleutel, richting) {
 // Rechtsklik op de regel en een keuze uit het menu dat eronder openklapt.
 async function regelMenu(page, mendix, sleutel, item) {
   const { loc } = await regelRij(page, sleutel)
-  await mendix.actie(() => loc.locator('.mx-name-container8, .mx-name-text7').first().click({ button: 'right' }))
+  await mendix.actie(async () => (await inBeeld(loc.locator('.mx-name-container8, .mx-name-text7').first())).click({ button: 'right' }))
   const keuze = knop(page, item)
+  await keuze.waitFor({ state: 'attached', timeout: 10_000 }).then(() => inBeeld(keuze)).catch(() => {})
   await keuze.waitFor({ state: 'visible', timeout: 10_000 }).catch(() => { throw new RvaFout('scherm', `Menu-keuze "${item[1]}" verscheen niet`) })
   return mendix.actie(() => keuze.click())
 }
@@ -322,7 +362,10 @@ export async function verwijderOnderbreking(page, mendix, sleutel) {
   const antwoorden = await regelMenu(page, mendix, sleutel, SCHERM.menuOnderbreking)
   const v = await wachtOpVenster(page, 'plaatsgebonden onderbreking')
   antwoorden.push(...await mendix.actie(() => v.locator(SCHERM.onderbrekingVerwijder).first().click()))
-  await v.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => {})
+  // PostNL vraagt "Weet je het zeker?" (Annuleer / Ja), gezien in de proef van 03-11.
+  const bevestig = await wachtOpVenster(page, 'Bevestiging')
+  antwoorden.push(...await mendix.actie(() => bevestig.getByRole('button', { name: 'Ja', exact: true }).click()))
+  await v.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => { throw new RvaFout('scherm', 'Venster onderbreking ging niet dicht na Verwijder') })
   return antwoorden
 }
 
@@ -339,9 +382,14 @@ export async function kopieerWeekdag(page, mendix, naar) {
       if (namen.includes(naam)) throw new RvaFout('controle', `${naam} staat niet in het kopieer-venster`)
       continue
     }
-    const schakelaar = rij.locator('input[type="checkbox"]').first()
-    const aan = await schakelaar.isChecked()
-    if (aan !== namen.includes(naam)) antwoorden.push(...await mendix.actie(() => schakelaar.click({ force: true })))
+    // De checkbox is een verborgen hulpvak (sr-only); klikken op de zichtbare schakelaar.
+    const schakelaar = rij.locator('[role="switch"]').first()
+    const stand = async () => {
+      const aria = await schakelaar.getAttribute('aria-checked').catch(() => null)
+      return aria != null ? aria === 'true' : rij.locator('input[type="checkbox"]').first().isChecked()
+    }
+    if ((await stand()) !== namen.includes(naam)) antwoorden.push(...await mendix.actie(() => schakelaar.click()))
+    if ((await stand()) !== namen.includes(naam)) throw new RvaFout('controle', `Schakelaar ${naam} staat niet goed`)
   }
   antwoorden.push(...await mendix.actie(() => v.locator(SCHERM.kopieerOpslaan).first().click(), 60_000))
   const info = await wachtOpVenster(page, 'Informatie', 30_000)
@@ -360,6 +408,23 @@ export async function openRevisies(page, mendix) {
     return { gemaaktOp: c[0], door: c[1], actief: c[2] === 'Ja' }
   }))
   return { antwoorden, rijen, venster: v }
+}
+
+// De revisies met hun inhoud (regels). De inhoud komt pas binnen ná het openen van het venster,
+// dus alle antwoorden opvangen tot het stil is. Sluit het venster weer.
+export async function leesRevisies(page, mendix) {
+  const opgevangen = []
+  const luister = (r) => { if (r.url().includes('/xas/')) r.json().then(j => opgevangen.push(j)).catch(() => {}) }
+  page.on('response', luister)
+  try {
+    const { antwoorden, rijen } = await openRevisies(page, mendix)
+    await page.waitForTimeout(2_000)
+    await mendix.wacht()
+    await sluitVenster(page, mendix)
+    return { rijen, revisies: revisiesUit([...antwoorden, ...opgevangen]) }
+  } finally {
+    page.off('response', luister)
+  }
 }
 
 // Zet de revisie met deze tijd ("dd-mm-jjjj hh:mm") terug. Twee revisies in dezelfde minuut:
@@ -385,7 +450,7 @@ async function openVerantwoordelijken(page, mendix, ritnaam, weekdag) {
   if (!(await zichtbaar(page.locator(SCHERM.overzicht).first()))) await naarRittenoverzicht(page, mendix)
   const { loc } = await overzichtRij(page, ritnaam, weekdag)
   const widget = loc.locator('.mx-name-comboBox3').first()
-  const antwoorden = await mendix.actie(() => widget.locator('input[role="combobox"]').first().click())
+  const antwoorden = await mendix.actie(async () => (await inBeeld(widget.locator('input[role="combobox"]').first())).click())
   const opties = page.locator('[role="option"]').filter({ visible: true })
   await opties.first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})
   const lijst = await opties.evaluateAll(os => os.map(o => ({ naam: (o.innerText || '').trim(), aan: o.getAttribute('aria-selected') === 'true' })))

@@ -2,8 +2,9 @@
 // testritten, met controle na elke stap. Zichtbare browser; je logt zelf in bij PostNL (geen
 // inloggegevens of sleutels nodig). Draai buiten werktijd (na 23:00).
 //
-//   node scripts/proef.mjs --klein "<ritnaam>" --groot "<ritnaam>" [--dag Za] [--echt]
+//   node scripts/proef.mjs --klein "<ritnaam>" --groot "<ritnaam>" [--dag Za] [--echt | --beide]
 //
+// --beide: eerst de proefstand, en alleen als die helemaal slaagt de echte ronde (één keer inloggen).
 // Zonder --echt: alles in de kladversie, afgesloten met Annuleer; alleen wat sowieso direct
 // opslaat (kopieer weekdag, verantwoordelijke) wordt overgeslagen. Met --echt: opslaan,
 // controleren, en daarna de revisie van vóór de proef terugzetten en vergelijken met het begin.
@@ -21,13 +22,16 @@ import { regelSleutel, verschillen, revisieTijdTekst } from '../src/plan.js'
 
 const { values: arg } = parseArgs({ options: {
   klein: { type: 'string' }, groot: { type: 'string' }, dag: { type: 'string', default: 'Za' },
-  echt: { type: 'boolean', default: false }, alleen: { type: 'string' },
+  echt: { type: 'boolean', default: false }, beide: { type: 'boolean', default: false }, alleen: { type: 'string' },
 } })
 if (!arg.klein || !arg.groot) {
-  console.error('Gebruik: node scripts/proef.mjs --klein "<ritnaam>" --groot "<ritnaam>" [--dag Za] [--echt] [--alleen <test>]')
+  console.error('Gebruik: node scripts/proef.mjs --klein "<ritnaam>" --groot "<ritnaam>" [--dag Za] [--echt | --beide] [--alleen <test>]')
   process.exit(2)
 }
-const ECHT = arg.echt
+// --beide: eerst de proefstand, en alleen als die helemaal slaagt de echte ronde (één keer inloggen).
+const RONDES = arg.beide ? [false, true] : [arg.echt]
+let ECHT = RONDES[0]
+let ronde = ''
 const DAG = arg.dag
 const map = path.resolve('opnames', nlTijdstempel())
 await fs.mkdir(map, { recursive: true })
@@ -35,18 +39,32 @@ await fs.mkdir(map, { recursive: true })
 const uitslag = []
 const log = { log: (...a) => console.log(...a), warn: (...a) => console.warn(...a) }
 function noteer(test, ok, detail = '') {
-  uitslag.push({ test, ok, detail })
-  console.log(`${ok ? '✔' : '✘'} ${test}${detail ? ` — ${detail}` : ''}`)
+  uitslag.push({ ronde: ECHT ? 'echt' : 'proef', test, ok, detail })
+  console.log(`${ok ? '✔' : '✘'} ${ronde}${test}${detail ? ` — ${detail}` : ''}`)
 }
 
 const browser = await chromium.launch({ headless: false, args: ['--start-maximized'] })
-const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, recordVideo: { dir: map, size: { width: 1440, height: 900 } }, acceptDownloads: true })
+// De sessie van de vorige proef hergebruiken (cookies, lokaal in opnames/, staat in .gitignore),
+// zodat je niet bij elke poging opnieuw hoeft in te loggen. Verlopen: dan gewoon de loginpagina.
+const SESSIE = path.resolve('opnames', '.sessie.json')
+const vorige = await fs.access(SESSIE).then(() => SESSIE, () => undefined)
+const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, recordVideo: { dir: map, size: { width: 1440, height: 900 } }, acceptDownloads: true, storageState: vorige })
 const page = await context.newPage()
 const mendix = volgMendix(page)
 
 // De revisie die nu actief is, als tekst zoals de lijst hem toont: daar zetten we na de proef op terug.
+// Echt: eerst een basisrevisie als de laatst opgeslagen revisie afwijkt van de stand van nu (zie
+// zorgVoorBasisRevisie), en dan wachten op een nieuwe minuut: de revisielijst toont minuten, en
+// de revisie van vóór de proef moet eenduidig terug te vinden zijn.
 async function actieveRevisie(rit) {
   await rva.openRitDag(page, mendix, rit, DAG)
+  if (ECHT) {
+    const { basis } = await rva.zorgVoorBasisRevisie(page, mendix, { echt: true, log })
+    if (basis) {
+      const minuut = new Date().getMinutes()
+      while (new Date().getMinutes() === minuut) await page.waitForTimeout(1_000)
+    }
+  }
   const { rijen } = await rva.openRevisies(page, mendix)
   await rva.sluitVenster(page, mendix)
   return rijen.find(r => r.actief)?.gemaaktOp ?? null
@@ -71,9 +89,10 @@ async function test(naam, fn) {
 }
 
 try {
-  console.log(`Proef RVA — ${ECHT ? 'ECHT (opslaan + terugzetten)' : 'proefstand (alles Annuleer)'} — dag ${DAG}`)
+  console.log(`Proef RVA — ${RONDES.map(e => (e ? 'echt (opslaan + terugzetten)' : 'proefstand (alles Annuleer)')).join(', daarna ')} — dag ${DAG}`)
   console.log('Log in bij PostNL in het venster dat opengaat (5 minuten de tijd)...')
   await rva.openRva(page, { maxMs: 5 * 60_000 })
+  await context.storageState({ path: SESSIE }).catch(() => {})
   await context.tracing.start({ screenshots: true, snapshots: true, title: 'RVA proef' })
   await rva.naarRittenoverzicht(page, mendix)
   const rijen = await rva.leesRittenoverzicht(page)
@@ -84,6 +103,11 @@ try {
   }
   noteer('Rittenoverzicht lezen', true, `${rijen.length} rijen`)
 
+  for (const echt of RONDES) {
+  ECHT = echt
+  ronde = RONDES.length > 1 ? `[${echt ? 'echt' : 'proef'}] ` : ''
+  if (echt && uitslag.some(u => !u.ok)) { console.log('\nProefstand niet helemaal geslaagd: de echte ronde wordt NIET gedraaid.'); break }
+  console.log(`\n── Ronde: ${echt ? 'ECHT' : 'proefstand'} ──`)
   const revKlein = await actieveRevisie(arg.klein)
   const revGroot = await actieveRevisie(arg.groot)
   noteer('Revisies lezen', Boolean(revKlein && revGroot), `actief: ${revKlein ?? '?'} / ${revGroot ?? '?'}`)
@@ -158,14 +182,17 @@ try {
   })
 
   // ── Wat direct opslaat: alleen met --echt ──
+  // Nooit het eigen account weghalen: zonder die naam is er geen Wijzig-knop meer (geen rechten).
   await test('verantwoordelijke', async () => {
+    const eigen = await rva.eigenAccount(page)
     const { gekozen } = await rva.leesVerantwoordelijken(page, mendix, arg.klein, DAG)
-    if (!ECHT || gekozen.length < 2) return noteer('verantwoordelijke lezen', true, `${gekozen.length} gekozen${ECHT ? ' (minder dan 2: wijzigen overgeslagen)' : ''}`)
-    await rva.zetVerantwoordelijken(page, mendix, arg.klein, DAG, gekozen.slice(0, 1))
+    const ander = gekozen.find(n => n !== eigen)
+    if (!ECHT || !eigen || !gekozen.includes(eigen) || !ander) return noteer('verantwoordelijke lezen', true, `${gekozen.length} gekozen, eigen account ${gekozen.includes(eigen) ? 'erbij' : 'NIET erbij'}${ECHT ? ' (wijzigen overgeslagen)' : ''}`)
+    await rva.zetVerantwoordelijken(page, mendix, arg.klein, DAG, gekozen.filter(n => n !== ander))
     const tussen = (await rva.leesVerantwoordelijken(page, mendix, arg.klein, DAG)).gekozen
     await rva.zetVerantwoordelijken(page, mendix, arg.klein, DAG, gekozen)
     const terug = (await rva.leesVerantwoordelijken(page, mendix, arg.klein, DAG)).gekozen
-    noteer('verantwoordelijke wijzigen en terug', tussen.length === 1 && terug.length === gekozen.length && gekozen.every(n => terug.includes(n)))
+    noteer('verantwoordelijke: andere naam weg en terug', !tussen.includes(ander) && tussen.includes(eigen) && terug.length === gekozen.length && gekozen.every(n => terug.includes(n)), `terug: ${terug.length} namen`)
   })
 
   await test('kopieer', async () => {
@@ -180,13 +207,16 @@ try {
     const na = verschillen(beginKlein, await rva.leesRegels(page))
     noteer('kopieer weekdag', na.length === 0, `PostNL: ${melding.slice(0, 80)}`)
   })
+  }
 } catch (err) {
-  noteer('proef', false, String(err.message).split('\n')[0])
+  // Waar in de code: de eerste regel uit scherm.js/index.js/proef.mjs in de stack.
+  const waar = String(err.stack).split('\n').find(l => /(scherm|index)\.js|proef\.mjs/.test(l))?.trim().split(/[\\/]/).slice(-2).join('/') ?? ''
+  noteer('proef', false, `${String(err.message).split('\n')[0]}${waar ? ` (bij ${waar})` : ''}`)
 } finally {
   await context.tracing.stop({ path: path.join(map, 'trace.zip') }).catch(() => {})
   await context.close().catch(() => {})
   await browser.close().catch(() => {})
-  await fs.writeFile(path.join(map, 'uitslag.json'), JSON.stringify({ echt: ECHT, dag: DAG, uitslag }, null, 2))
+  await fs.writeFile(path.join(map, 'uitslag.json'), JSON.stringify({ rondes: RONDES.map(e => (e ? 'echt' : 'proef')), dag: DAG, uitslag }, null, 2))
   const fout = uitslag.filter(u => !u.ok).length
   console.log(`\n${uitslag.length - fout}/${uitslag.length} geslaagd. Opname: ${map}`)
   process.exitCode = fout ? 1 : 0

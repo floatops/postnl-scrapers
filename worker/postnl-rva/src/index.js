@@ -37,10 +37,34 @@ const UITVOEREN = {
   onderbreking_weg: (page, m, h) => rva.verwijderOnderbreking(page, m, h.regel),
 }
 
+// Annuleer zet de LAATST OPGESLAGEN REVISIE terug, niet de stand van vlak voor Wijzig (proef
+// 03-11: PostNL had na 15-09 een straat uit de lijst gehaald zonder revisie; Annuleer zette hem
+// terug). Wijkt de stand van nu af van de actieve revisie, dan eerst Wijzig + Opslaan zonder
+// wijziging: een revisie van precies deze stand. Wijzig begint wél vanaf de stand van nu.
+// Geeft { basis: true } als er zo'n basisrevisie gemaakt is. Op de rit-dag-pagina aanroepen.
+export async function zorgVoorBasisRevisie(page, mendix, { echt = false, log = console } = {}) {
+  const nu = await rva.leesRegels(page)
+  const { revisies } = await rva.leesRevisies(page, mendix)
+  const actief = revisies.find(r => r.actief)
+  const afwijking = actief?.regels ? verschillen(actief.regels, nu) : ['geen actieve revisie met inhoud gevonden']
+  if (!afwijking.length) return { basis: false }
+  if (!echt) throw new rva.RvaFout('revisie_wijkt_af', `Annuleer is hier niet veilig: de laatst opgeslagen revisie wijkt af van wat er nu staat (${afwijking.join('; ')})`)
+  await rva.startWijzig(page, mendix)
+  await rva.opslaan(page, mendix)
+  const na = verschillen(nu, await rva.leesRegels(page))
+  if (na.length) throw new rva.RvaFout('controle', `Basisrevisie wijkt af van de stand ervoor: ${na.join('; ')}`)
+  log.log(`  basisrevisie gemaakt (de laatst opgeslagen revisie week af: ${afwijking.join('; ')})`)
+  return { basis: true }
+}
+
 // Voert de opdracht uit in de open RVA-pagina. Geeft per handeling wat er gebeurde. Een fout
-// midden in een handeling: geen herhaling, wel Annuleer (de kladversie weg), en dan gooien.
+// midden in een handeling: geen herhaling, wel Annuleer (terug naar de basisrevisie), en dan gooien.
 export async function voerUit(page, mendix, opdracht, { echt = false, log = console } = {}) {
   await rva.openRitDag(page, mendix, opdracht.rit, opdracht.dag)
+  // Een achtergebleven bewerkstand van dit account (vorige poging) eerst weg: Revisies werkt
+  // alleen buiten de bewerkstand. Die Annuleer zet de basisrevisie van die poging terug.
+  if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
+  await zorgVoorBasisRevisie(page, mendix, { echt, log })
   const voor = await rva.leesRegels(page)
   await rva.startWijzig(page, mendix)
   const stappen = []
