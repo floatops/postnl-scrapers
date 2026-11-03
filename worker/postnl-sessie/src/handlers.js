@@ -52,6 +52,33 @@ async function schrijf(ctx, gelezen, datum) {
 export const planner = { laad: () => import('../../postnl-planner/src/index.js') }
 
 export const HANDLERS = {
+  // Plannen-tab bijwerken in de open sessie (#562): alleen verschillen, alleen ritten vóór hun
+  // deadline (postnl-planner verversPlanning). Loopt er een Plannen-opdracht, dan niet ertussen.
+  async plannen(ctx, dag, { soort, shifts }) {
+    const { sessie, supabase, nu } = ctx
+    const p = { ...(dag.plannen ?? {}), stopsOm: { ...(dag.plannen?.stopsOm ?? {}) } }
+    // Altijd de tijd vastleggen, ook bij overslaan of een fout: anders meteen opnieuw.
+    if (soort === 'ritten') p.rittenOm = nu.toISOString()
+    else for (const s of shifts) p.stopsOm[s] = nu.toISOString()
+    const verder = { ...dag, plannen: p }
+    const { data: lopend, error } = await supabase.from('planning_taken').select('id')
+      .eq('klant_id', ctx.klantId).in('status', ['wacht', 'bezig']).limit(1)
+    if (error) throw Object.assign(new Error(`Plannen-opdrachten niet gelezen: ${error.message}`), { database: true, dag: verder })
+    if (lopend?.length) return { dag: verder, run: null }
+    try {
+      await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+      const { verversPlanning } = await planner.laad()
+      const uit = await verversPlanning(sessie.page, volgMendix(sessie.page), { depot: sessie.depot.naam, datum: dag.datum, soort, shifts, nu })
+      sessie.lezingen++
+      const tel = (t) => (t ? t.nieuw + t.gewijzigd + t.weg : 0)
+      const tekst = (naam, t) => (tel(t) ? `${naam} ${t.nieuw} nieuw, ${t.gewijzigd} gewijzigd, ${t.weg} weg` : null)
+      const delen = [tekst('ritten', uit.ritten), tekst('stops', uit.stops)].filter(Boolean)
+      return { dag: verder, run: null, ...(delen.length ? { melding: `shift ${shifts.join(', ')}: ${delen.join('; ')}` } : {}) }
+    } catch (err) {
+      throw Object.assign(err, { dag: verder })
+    }
+  },
+
   // Sessie levend houden (taak 'wakker'). naarDepot logt in hetzelfde tabblad opnieuw in als de
   // sessie verlopen bleek: dat is een meting van de levensduur in stille tijd (gebeurtenis).
   async wakker(ctx, dag) {

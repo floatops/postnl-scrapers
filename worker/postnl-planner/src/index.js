@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -54,6 +54,7 @@ async function db(belofte, wat) {
 const zetTaak = (id, velden) => db(supabase.from('planning_taken').update(velden).eq('id', id), 'taak bijwerken')
 // Wat de planner in de balk ziet. Mag een opdracht nooit laten mislukken.
 async function zetStap(id, stap, voortgang) {
+  if (!id) return   // verversen door de sessiehouder: geen opdracht, geen balk
   const { error } = await supabase.from('planning_taken').update({ stap, ...(voortgang != null && { voortgang: Math.round(voortgang) }) }).eq('id', id)
   if (error) console.warn('stap niet bijgewerkt:', error.message)
 }
@@ -104,9 +105,9 @@ async function openDagplanning(page, depot) {
 }
 
 // Alle ritten per shift, met de deadline uit de tekst op de pagina.
-async function leesRitten(page, mendix, taak) {
+async function leesRitten(page, mendix, taak, { shifts = null } = {}) {
   const uit = []
-  for (const shift of await leesShifts(page)) {
+  for (const shift of (await leesShifts(page)).filter(s => !shifts || shifts.includes(s))) {
     const ritten = await kiesShift(page, mendix, shift)
     const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum)
     // Log zonder namen of adressen: alleen shift, aantal ritten en de tijd van PostNL.
@@ -116,43 +117,70 @@ async function leesRitten(page, mendix, taak) {
   return uit
 }
 
-async function bewaarRitten(taak, ritten) {
+// Wanneer ritten of stops van een shift voor het laatst gecontroleerd zijn (ook als er niets
+// veranderde). Mag een opdracht nooit laten mislukken.
+async function zetVersheid(taak, shifts, velden) {
+  if (!shifts.length) return
+  const { error } = await supabase.from('planning_versheid').upsert(
+    shifts.map(shift => ({ klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ...velden })),
+    { onConflict: 'klant_id,depot,datum,shift' })
+  if (error) console.warn('versheid niet bijgewerkt:', error.message)
+}
+
+// Alleen verschillen schrijven (#562). `inScope`: welke bestaande ritten deze ronde bekeken zijn;
+// alleen die kunnen weg (de sessiehouder slaat ritten voorbij hun deadline over).
+async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
   const nu = new Date().toISOString()
+  const bestaand = await db(supabase.from('planning_ritten').select(['rit_id', ...RIT_VELDEN].join(', '))
+    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum), 'ritten lezen')
   // De chauffeurlijst staat alleen op een open rit. Ritten die deze ronde niet open waren
   // (andere shift, geen stops) houden wat ze hadden.
-  const bekend = new Map((await db(supabase.from('planning_ritten').select('rit_id, chauffeur_wijzigbaar, chauffeur_opties, stops_gelezen')
-    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum), 'ritten lezen')).map(r => [r.rit_id, r]))
-  if (ritten.length) {
-    await db(supabase.from('planning_ritten').upsert(
-      ritten.map(r => ({
-        ...r,
-        stops_gelezen: r.stops_gelezen ?? bekend.get(r.rit_id)?.stops_gelezen ?? null,
-        chauffeur_wijzigbaar: r.chauffeur_wijzigbaar ?? bekend.get(r.rit_id)?.chauffeur_wijzigbaar ?? false,
-        chauffeur_opties: r.chauffeur_opties ?? bekend.get(r.rit_id)?.chauffeur_opties ?? [],
-        klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum, opgehaald_at: nu,
-      })),
-      { onConflict: 'klant_id,rit_id' }), 'ritten bewaren')
+  const bekend = new Map(bestaand.map(r => [r.rit_id, r]))
+  const rijen = ritten.map(r => ({
+    ...r,
+    stops_gelezen: r.stops_gelezen ?? bekend.get(r.rit_id)?.stops_gelezen ?? null,
+    chauffeur_wijzigbaar: r.chauffeur_wijzigbaar ?? bekend.get(r.rit_id)?.chauffeur_wijzigbaar ?? false,
+    chauffeur_opties: r.chauffeur_opties ?? bekend.get(r.rit_id)?.chauffeur_opties ?? [],
+    klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum,
+  }))
+  const v = verschil(bestaand.filter(inScope), rijen, 'rit_id', RIT_VELDEN)
+  const schrijf = [...v.nieuw, ...v.gewijzigd].map(r => ({ ...r, opgehaald_at: nu }))
+  if (schrijf.length) await db(supabase.from('planning_ritten').upsert(schrijf, { onConflict: 'klant_id,rit_id' }), 'ritten bewaren')
+  if (v.weg.length) {
+    await db(supabase.from('planning_ritten').delete().eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).in('rit_id', v.weg), 'oude ritten weghalen')
   }
-  await db(supabase.from('planning_ritten').delete()
-    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).lt('opgehaald_at', nu), 'oude ritten weghalen')
+  await zetVersheid(taak, [...new Set(ritten.map(r => r.shift))], { ritten_om: nu })
+  return { nieuw: v.nieuw.length, gewijzigd: v.gewijzigd.length, weg: v.weg.length }
 }
 
 // Leest de stops van alle ritten van één shift. Ritten die in de planning geen stops hebben,
 // worden ook niet geopend.
+// Alleen verschillen (#562): per rit de gewijzigde of nieuwe stops, en na een volledige ronde de
+// stops die er niet meer zijn. Alleen van de ritten in `ritten`: de sessiehouder geeft geen ritten
+// mee die voorbij hun deadline zijn, en die blijven dus onaangeroerd.
 async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang = async () => {}) {
   await kiesShift(page, mendix, shift)
   const eigen = ritten.filter(r => r.shift === shift)
   const nu = new Date().toISOString()
+  const bestaand = await db(supabase.from('planning_stops').select(['stop_id', ...STOP_VELDEN].join(', '))
+    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).eq('shift', shift), 'stops lezen')
+  const gelezenRitten = new Set(eigen.map(r => r.rit_id))
+  const gezien = []
+  const telling = { nieuw: 0, gewijzigd: 0, weg: 0 }
   let klaar = 0
   for (const rit of eigen) {
     if (rit.stops > 0) {
       const stops = await openRit(page, mendix, rit.ritnaam)
       const eigenStops = stops
-      // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is.
-      if (eigenStops.length) {
-        await db(supabase.from('planning_stops').upsert(
-          eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu })),
-          { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
+      const rijen = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu }))
+      gezien.push(...rijen)
+      // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is. Alleen wat anders is.
+      const v = verschil(bestaand, rijen, 'stop_id', STOP_VELDEN)
+      const schrijf = [...v.nieuw, ...v.gewijzigd]
+      telling.nieuw += v.nieuw.length
+      telling.gewijzigd += v.gewijzigd.length
+      if (schrijf.length) {
+        await db(supabase.from('planning_stops').upsert(schrijf, { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
       }
       rit.stops_gelezen = eigenStops.length
       const opScherm = (await leesStopTabel(page).catch(() => [])).length
@@ -168,9 +196,15 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
     }
     await opVoortgang(++klaar / Math.max(1, eigen.length), eigen[klaar]?.ritnaam)
   }
-  // Pas na een complete ronde: bij een fout onderweg blijft de vorige stand staan.
-  await db(supabase.from('planning_stops').delete()
-    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).eq('shift', shift).lt('opgehaald_at', nu), 'oude stops weghalen')
+  // Pas na een complete ronde: bij een fout onderweg blijft de vorige stand staan. Alleen stops van
+  // ritten die deze ronde gelezen zijn (een rit zonder stops telt als gelezen).
+  const weg = verschil(bestaand.filter(s => gelezenRitten.has(s.rit_id)), gezien, 'stop_id', STOP_VELDEN).weg
+  if (weg.length) {
+    await db(supabase.from('planning_stops').delete().eq('klant_id', KLANT_ID).in('stop_id', weg), 'oude stops weghalen')
+  }
+  telling.weg = weg.length
+  await zetVersheid(taak, [shift], { stops_om: nu })
+  return telling
 }
 
 async function voerOphalenUit(page, mendix, taak) {
@@ -412,6 +446,27 @@ async function bewaarTrace(lokaal, depotNaam, soort) {
   }
 }
 let tellingDoorvoer = {}
+
+// Voor de sessiehouder (#562): de Plannen-tab bijwerken in zijn open sessie, alleen voor ritten die
+// nog vóór hun deadline zijn (daarna kan er niet meer gepland worden). soort 'ritten': de koppen van
+// de gegeven shifts; soort 'stops': ook de stops van die ritten. Geeft het aantal verschillen.
+export async function verversPlanning(page, mendix, { depot, datum, soort, shifts, nu = new Date() }) {
+  const taak = { id: null, depot, datum }
+  const open = (r) => shifts.includes(r.shift) && (!r.deadline || new Date(r.deadline) > nu)
+  await kiesDag(page, mendix, dagLabel(datum))
+  const ritten = (await leesRitten(page, mendix, taak, { shifts })).filter(open)
+  const uit = { ritten: null, stops: null }
+  if (soort === 'stops') {
+    uit.stops = { nieuw: 0, gewijzigd: 0, weg: 0 }
+    for (const shift of shifts) {
+      const t = await leesStopsVanShift(page, mendix, taak, shift, ritten)
+      for (const k of Object.keys(uit.stops)) uit.stops[k] += t[k]
+    }
+  }
+  // Na de stops: dan staan ook de chauffeurkeuze en de deadline per open rit erin.
+  uit.ritten = await bewaarRitten(taak, ritten, { inScope: open })
+  return uit
+}
 
 // `metSessie(depot, doorvoeren, werk)` levert de PostNL-pagina: standaard een eigen browser met
 // login, slot en uitloggen; de sessiehouder geeft zijn open sessie. Geeft { fout, telling } terug

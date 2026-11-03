@@ -42,7 +42,7 @@ test('mislukt: gooit voor de herstel-beoordeling, gemarkeerd als al gelogd door 
 test('na een planner-opdracht blijft de sessie sluitNaLeegMin open, daarna dicht', async () => {
   const { kies } = await import('../src/rij.js')
   const { mergeInstellingen } = await import('../src/instellingen.js')
-  const cfg = mergeInstellingen({ sessieOpenHouden: false })
+  const cfg = mergeInstellingen({ sessieOpenHouden: false, plannenVerversen: false })
   const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T13:00:00Z' } }, plannerOm: '2026-11-03T05:00:00Z' }
   assert.equal(kies(d, new Date('2026-11-03T05:05:00Z'), cfg).sessieNodig, true, '5 min later: open')
   assert.equal(kies(d, new Date('2026-11-03T05:11:00Z'), cfg).sessieNodig, false, '11 min later: dicht (06:11, vóór de ritmonitor)')
@@ -52,7 +52,17 @@ test('standaard blijft de sessie de hele werkdag open, ook tussen de ochtendlezi
   const { kies } = await import('../src/rij.js')
   const { mergeInstellingen } = await import('../src/instellingen.js')
   const d = { ...nieuweDag('2026-11-03'), ochtend: { gelezenOm: '2026-11-03T04:31:00Z' }, shifts: { '01': { deadline: '2026-11-03T07:00:00Z' } }, laatsteTaakOm: '2026-11-03T04:55:00Z' }
-  const k = kies(d, new Date('2026-11-03T05:00:00Z'), mergeInstellingen({}))
+  const k = kies(d, new Date('2026-11-03T05:00:00Z'), mergeInstellingen({ plannenVerversen: false }))
   assert.equal(k.taak, undefined, 'niets te doen tot de deadline')
   assert.equal(k.sessieNodig, true, 'maar de sessie blijft open')
+})
+
+test('plannen-handler: loopt er een Plannen-opdracht, dan niet ertussen, wel de tijd vastleggen', async () => {
+  let aangeroepen = false
+  planner.laad = async () => ({ verversPlanning: async () => { aangeroepen = true } })
+  const supabase = { from: () => ({ select: () => ({ eq: () => ({ in: () => ({ limit: async () => ({ data: [{ id: 'x' }], error: null }) }) }) }) }) }
+  const nu = new Date('2026-11-03T06:00:00Z')
+  const uit = await HANDLERS.plannen({ sessie: sessie(), supabase, klantId: 'k', nu }, dag, { soort: 'stops', shifts: ['07'] })
+  assert.equal(aangeroepen, false)
+  assert.equal(uit.dag.plannen.stopsOm['07'], nu.toISOString())
 })

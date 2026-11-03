@@ -62,6 +62,14 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) log.error(`Gebeurtenis loggen mislukt (${g.soort}): ${error.message}`)
     },
 
+    // Shifts die iemand nu in Plannen open heeft (hartslag van de app, laatste 2 min). Mag nooit gooien.
+    async plannenKijkers(depot, datum) {
+      const { data, error } = await supabase.from('planning_kijkers').select('shift')
+        .eq('klant_id', klantId).eq('depot', depot).eq('datum', datum).gt('gezien_at', new Date(Date.now() - 2 * 60_000).toISOString())
+      if (error) return []
+      return [...new Set((data ?? []).map(k => k.shift))]
+    },
+
     // Planner-opdrachten van dit depot die nog wachten (Plannen, #557). Niet 'bezig': die heeft
     // al iemand (of hing na een crash) en mag nooit een tweede keer worden uitgevoerd.
     async plannerOpdrachten(depot) {

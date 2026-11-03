@@ -173,3 +173,26 @@ test('alleen verplaatsen binnen dezelfde shift', () => {
   assert.match(shiftReden(a, { ritnaam: '0704 y', shift: '07' }), /binnen dezelfde shift/)
   assert.equal(shiftReden(a, null), null)
 })
+
+test('verschil: alleen wat anders is gaat naar de app (#562)', async () => {
+  const { verschil, STOP_VELDEN, RIT_VELDEN } = await import('../src/logica.js')
+  const stop = (id, rit, extra = {}) => ({ stop_id: id, rit_id: rit, shift: '07', straat: 'Laan', huisnummer: '1', toevoeging: null, stuks: 2, volume: 0.5, opgehaald_at: '2026-11-03T06:00:00Z', ...extra })
+  const bestaand = [stop('a', 'r1'), stop('b', 'r1'), stop('c', 'r2')]
+  const gelezen = [
+    stop('a', 'r1', { opgehaald_at: '2026-11-03T07:00:00Z' }),   // alleen tijd anders: niets
+    stop('b', 'r2'),                                              // verplaatst naar een andere rit
+    stop('d', 'r2'),                                              // nieuw
+  ]
+  const v = verschil(bestaand, gelezen, 'stop_id', STOP_VELDEN)
+  assert.deepEqual(v.nieuw.map(s => s.stop_id), ['d'])
+  assert.deepEqual(v.gewijzigd.map(s => s.stop_id), ['b'])
+  assert.deepEqual(v.weg, ['c'])
+  assert.deepEqual(verschil(bestaand, bestaand, 'stop_id', STOP_VELDEN), { nieuw: [], gewijzigd: [], weg: [] }, 'niets veranderd: niets schrijven')
+
+  // Database en PostNL schrijven hetzelfde anders: "0.5" vs 0.5, ander ISO-formaat, lege lijst.
+  const rit = { rit_id: 'r1', shift: '07', ritnaam: '0703 x', chauffeur: null, chauffeur_wijzigbaar: false, chauffeur_opties: [], geautoriseerd: false, bewerkbaar: true, geblokkeerd: false, stops: 10, stuks: 20, volume: '1.5', deadline: '2026-11-03T10:10:00+00:00', stops_gelezen: 10 }
+  const zelfdeRit = { ...rit, volume: 1.5, deadline: '2026-11-03T10:10:00.000Z' }
+  assert.equal(verschil([rit], [zelfdeRit], 'rit_id', RIT_VELDEN).gewijzigd.length, 0)
+  assert.equal(verschil([rit], [{ ...zelfdeRit, stops: 11 }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
+  assert.equal(verschil([rit], [{ ...zelfdeRit, chauffeur_opties: ['A'] }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
+})

@@ -20,6 +20,12 @@ export const STANDAARD = Object.freeze({
   // levend, en is hij toch verlopen, dan meteen opnieuw inloggen in hetzelfde tabblad, vóór een
   // planner-opdracht erop moet wachten. 0 = uit.
   wakkerHoudenMin: 10,
+  // Plannen-tab vanzelf bijwerken (taak 'plannen'): per shift tot zijn deadline. Alleen verschillen
+  // gaan naar de app. De shift die iemand in Plannen open heeft, krijgt de stops vaker.
+  plannenVerversen: true,
+  plannenRittenMin: 2,
+  plannenStopsMin: 5,
+  plannenKijkerStopsMin: 2,
   sluitNaLeegMin: 10,             // zonder sessieOpenHouden: dicht als de volgende taak verder weg ligt
   // Herstel
   gegooidVensterMin: 2,           // twee keer eruit gegooid binnen dit venster = nieuwe login
@@ -34,7 +40,7 @@ export const STANDAARD = Object.freeze({
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
-  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120 },
+  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300 },
 })
 
 function isObject(v) { return v && typeof v === 'object' && !Array.isArray(v) }

@@ -101,6 +101,31 @@ export const TAKEN = [
       return om <= nu ? { nu: true, args: {} } : { om }
     },
   },
+  {
+    // Plannen-tab vanzelf bijwerken (#562): alleen shifts waarvan de deadline nog niet voorbij is
+    // (daarna kan er niet meer gepland worden). Ritten elke plannenRittenMin, stops per shift elke
+    // plannenStopsMin, of plannenKijkerStopsMin als iemand die shift in Plannen open heeft.
+    naam: 'plannen', prioriteit: 20, worker: null,
+    volgende: (dag, nu, cfg) => {
+      if (!cfg.plannenVerversen || rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd) || !dag.ochtend?.gelezenOm) return null
+      const open = Object.entries(dag.shifts ?? {}).filter(([, s]) => s.deadline && new Date(s.deadline) > nu).map(([k]) => k).sort()
+      if (!open.length) return null
+      const p = dag.plannen ?? {}
+      const kijkers = dag.plannenKijkers ?? []
+      const na = (iso, min) => (iso ? new Date(new Date(iso).getTime() + min * MIN) : nu)
+      // Volgorde bij gelijke tijd: eerst de ritten, dan de shift die iemand bekijkt, dan de rest.
+      const kandidaten = [
+        { om: na(p.rittenOm, cfg.plannenRittenMin), rang: 0, args: { soort: 'ritten', shifts: open } },
+        ...open.map(shift => ({
+          om: na(p.stopsOm?.[shift], kijkers.includes(shift) ? cfg.plannenKijkerStopsMin : cfg.plannenStopsMin),
+          rang: kijkers.includes(shift) ? 1 : 2,
+          args: { soort: 'stops', shifts: [shift] },
+        })),
+      ].sort((a, b) => (a.om - b.om) || (a.rang - b.rang))
+      const k = kandidaten[0]
+      return k.om <= nu ? { nu: true, args: k.args } : { om: k.om }
+    },
+  },
 ]
 
 export const TAAK = Object.fromEntries(TAKEN.map(t => [t.naam, t]))

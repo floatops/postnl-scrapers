@@ -241,3 +241,34 @@ export function teOudeTraces(namen, nu = new Date(), dagen = TRACE_BEWAAR_DAGEN)
     return m && m[1] < grens
   })
 }
+
+// Alleen verschillen schrijven (floatops/matransport#562): de app ziet live wat er in PostNL
+// veranderde, en een ronde zonder wijziging schrijft niets. Vergelijkt de inhoud, niet opgehaald_at.
+export const RIT_VELDEN = ['shift', 'ritnaam', 'chauffeur', 'chauffeur_wijzigbaar', 'chauffeur_opties', 'geautoriseerd',
+  'bewerkbaar', 'geblokkeerd', 'stops', 'stuks', 'volume', 'deadline', 'stops_gelezen']
+export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'stuks', 'volume']
+
+const ISO = /^\d{4}-\d{2}-\d{2}T/
+function zelfde(a, b) {
+  if (a == null || b == null) return (a ?? null) === (b ?? null)
+  if (Array.isArray(a) || Array.isArray(b)) return JSON.stringify(a) === JSON.stringify(b)
+  if (typeof a === 'number' || typeof b === 'number') return Number(a) === Number(b)
+  if (typeof a === 'string' && typeof b === 'string' && ISO.test(a) && ISO.test(b)) return Date.parse(a) === Date.parse(b)
+  return a === b
+}
+
+// bestaand: rijen uit de database (alleen die in de reikwijdte van deze ronde), gelezen: wat PostNL
+// nu toont. Geeft { nieuw, gewijzigd, weg (sleutels) }. Een veld dat de lezing niet heeft, telt niet.
+export function verschil(bestaand, gelezen, sleutel, velden) {
+  const oud = new Map(bestaand.map(r => [r[sleutel], r]))
+  const nieuw = []
+  const gewijzigd = []
+  const gezien = new Set()
+  for (const r of gelezen) {
+    gezien.add(r[sleutel])
+    const o = oud.get(r[sleutel])
+    if (!o) nieuw.push(r)
+    else if (velden.some(v => v in r && !zelfde(o[v], r[v]))) gewijzigd.push(r)
+  }
+  return { nieuw, gewijzigd, weg: bestaand.filter(o => !gezien.has(o[sleutel])).map(o => o[sleutel]) }
+}

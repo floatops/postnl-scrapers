@@ -83,6 +83,9 @@ export async function draaiDepot(deps) {
         for (const a of dag.aanvragen.filter(a => a.soort === 'planner')) if (!opdrachten.some(o => o.id === a.id)) dag = aanvraagKlaar(dag, a.id)
       }
 
+      // Wie heeft Plannen open voor dit depot? Die shift krijgt de stops vaker (taak 'plannen').
+      if (cfg.plannenVerversen && opslag.plannenKijkers) dag = { ...dag, plannenKijkers: await opslag.plannenKijkers(depot.naam, dag.datum) }
+
       // Slot verlengen bij elke ronde: de lus leeft. Kwijt (lease verlopen, bv. na een lange
       // hapering)? Dan eerst de sessie dicht en opnieuw wachten, nooit verder zonder slot.
       if (!(await opslag.slotPak(sleutel, houder, cfg.slotLeaseSec))) {
@@ -135,7 +138,7 @@ export async function draaiDepot(deps) {
 
       const incident = soort !== 'gezond'
       // Elke taak behalve de ritmonitor (elke minuut, die staat samengevat in de run-log) in het log.
-      if (!incident && !fout && taak !== 'ritmonitor' && (taak !== 'wakker' || uitkomst?.melding)) {
+      if (!incident && !fout && taak !== 'ritmonitor' && (!['wakker', 'plannen'].includes(taak) || uitkomst?.melding)) {
         const l = uitkomst?.run?.lezingen?.[depot.naam]
         log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
       }
@@ -169,6 +172,8 @@ export async function draaiDepot(deps) {
         if (uitkomst.ritmonitor) telRitmonitor(depot.naam, { ok: true, ...uitkomst.ritmonitor })
         if (uitkomst.melding === 'autorisatie_niet_gezien') await melden({ soort: 'autorisatie_niet_gezien', depot: depot.naam, detail: uitkomst.gebeurtenis?.shift })
       } else if (fout) {
+        // Een taak die bij een fout zijn eigen volgende tijd meegeeft (plannen): niet meteen opnieuw.
+        if (fout.dag) { dag = fout.dag; await bewaar() }
         if (taak === 'ritmonitor') telRitmonitor(depot.naam, { ok: false, fout: fout.message })
         else if (!fout.alGelogd && k.taak.worker) await naRun({ worker: k.taak.worker, status: 'mislukt', depots_mislukt: [{ depot: depot.naam, fout: String(fout.message).slice(0, 300) }], foutmelding: String(fout.message).slice(0, 500), trace: tracePad })
       }

@@ -6,7 +6,8 @@ import { kies } from '../src/rij.js'
 import { STANDAARD, mergeInstellingen } from '../src/instellingen.js'
 import { nieuweDag, voorDatum, naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, voegAanvraagToe, aanvraagKlaar } from '../src/dagstatus.js'
 
-const CFG = mergeInstellingen({})
+// De taak 'plannen' heeft eigen tests onderaan; de rest gaat over de andere taken.
+const CFG = mergeInstellingen({ plannenVerversen: false })
 // Maandag 2 november 2026 (wintertijd, UTC+1).
 const om = (hhmm, datum = '2026-11-02') => new Date(`${datum}T${hhmm}:00+01:00`)
 const fmt = (d) => d.toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour: '2-digit', minute: '2-digit' })
@@ -43,6 +44,12 @@ function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, 
         dag = aanvraagKlaar(dag, k.args.id); log.push([fmt(nu), 'planner'])
       } else if (t === 'wakker') {
         log.push([fmt(nu), 'wakker'])
+      } else if (t === 'plannen') {
+        const pl = { ...(dag.plannen ?? {}), stopsOm: { ...(dag.plannen?.stopsOm ?? {}) } }
+        if (k.args.soort === 'ritten') pl.rittenOm = nu.toISOString()
+        else for (const sh of k.args.shifts) pl.stopsOm[sh] = nu.toISOString()
+        dag = { ...dag, plannen: pl }
+        log.push([fmt(nu), `plannen:${k.args.soort}:${k.args.shifts.join('+')}`])
       }
       dag = { ...dag, laatsteTaakOm: nu.toISOString() }
     } else if (!k.sessieNodig && sessieOpen) { sessieOpen = false; log.push([fmt(nu), 'sessie-dicht']) }
@@ -86,7 +93,7 @@ test('standaard blijft de sessie open tussen de ochtendlezing en de eerste deadl
 })
 
 test('met sessieOpenHouden uit: tussen de ochtendlezing en de eerste deadline gaat de sessie dicht', () => {
-  const s = simuleer({ postnl: gewoneDag, tot: '07:20', cfg: mergeInstellingen({ sessieOpenHouden: false }) })
+  const s = simuleer({ postnl: gewoneDag, tot: '07:20', cfg: mergeInstellingen({ sessieOpenHouden: false, plannenVerversen: false }) })
   const dicht = s.log.filter(([, x]) => x === 'sessie-dicht').map(([t]) => t)
   assert.ok(dicht.includes('05:46'), 'na de ochtendlezing dicht (volgende taak om 07:15)')
 })
@@ -201,7 +208,7 @@ test('stille tijd: elke 10 min wakker houden tussen de ochtendlezing en de eerst
 
 test('wakker houden staat uit zonder sessieOpenHouden of met wakkerHoudenMin 0', () => {
   for (const c of [{ sessieOpenHouden: false }, { wakkerHoudenMin: 0 }]) {
-    const s = simuleer({ postnl: gewoneDag, tot: '07:20', cfg: mergeInstellingen(c) })
+    const s = simuleer({ postnl: gewoneDag, tot: '07:20', cfg: mergeInstellingen({ ...c, plannenVerversen: false }) })
     assert.equal(s.aantal('wakker'), 0)
   }
 })
@@ -225,4 +232,42 @@ test('shift zonder deadline (niet te lezen bij de ochtendlezing): vangnet vanaf 
   const v = s.eerste('definitief:01:vangnet')
   assert.ok(v >= '08:00' && v <= '08:05', `vangnet bij de eerste controle vanaf 08:00 (${v}; controles elke 5 min)`)
   assert.ok(s.log.filter(([, x]) => x.startsWith('definitief:01')).at(-1)[0] <= '12:00')
+})
+
+test('plannen: per shift tot zijn deadline, daarna overgeslagen; ritten elke 2 min, stops elke 5 min', () => {
+  // De simulatie doet één taak per minuut: zodra de ritmonitor elke minuut loopt, komt de lagere
+  // taak plannen er niet meer tussen (in het echt duurt een ritmonitor-lezing ~10 s). Daarom hier
+  // de ochtend vóór de ritmonitor: geen autorisatie, vangnet en ritmonitor pas laat.
+  const dag = { dagVanaf: '05:00', shifts: { '01': { deadline: '06:35', autorisatie: null }, '02': { deadline: '07:20', autorisatie: null }, '07': { deadline: '11:10', autorisatie: null } } }
+  const s = simuleer({ postnl: dag, tot: '07:30', cfg: mergeInstellingen({ vangnetMin: 600, ritmonitorUiterlijk: '23:00' }) })
+  const p = s.log.filter(([, x]) => x.startsWith('plannen'))
+  const met = (shift, voor, na = '00:00') => p.filter(([t, x]) => x.split(':')[2].split('+').includes(shift) && t < voor && t >= na)
+  assert.ok(met('01', '06:35').length > 0, 'shift 01 vóór zijn deadline')
+  assert.equal(met('01', '24:00', '06:35').length, 0, 'na 06:35 wordt shift 01 overgeslagen')
+  assert.ok(met('02', '07:20', '06:35').length > 0, 'shift 02 gaat door tot 07:20')
+  assert.equal(met('02', '24:00', '07:20').length, 0)
+  assert.ok(met('07', '24:00', '07:20').length > 0, 'shift 07 gaat door')
+  const ritten = p.filter(([, x]) => x.startsWith('plannen:ritten')).map(([t]) => t)
+  assert.ok(ritten.length >= 10, `ritten elke ~2 min (${ritten.length} keer)`)
+  const stops07 = p.filter(([, x]) => x === 'plannen:stops:07').map(([t]) => t)
+  const tussen = stops07.slice(1).map((t, i) => (new Date(`2026-11-02T${t}:00`) - new Date(`2026-11-02T${stops07[i]}:00`)) / 60000)
+  assert.ok(tussen.every(m => m >= 5), `stops van shift 07 elke 5 min of langer (${tussen.join(',')})`)
+})
+
+test('plannen: na de laatste deadline doet de taak niets meer', () => {
+  const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '01': { deadline: '06:00', autorisatie: '06:05' } } }, tot: '09:00', cfg: mergeInstellingen({}) })
+  assert.equal(s.log.filter(([t, x]) => x.startsWith('plannen') && t >= '06:00').length, 0)
+})
+
+test('plannen: de shift die iemand in Plannen open heeft, krijgt de stops elke 2 min', async () => {
+  const { kies } = await import('../src/rij.js')
+  const cfg = mergeInstellingen({})
+  const basis = { ...nieuweDag('2026-11-02'), ochtend: { gelezenOm: '2026-11-02T04:45:00Z' }, laatsteTaakOm: '2026-11-02T06:00:00Z',
+    shifts: { '02': { deadline: '2026-11-02T08:00:00Z' }, '07': { deadline: '2026-11-02T10:00:00Z' } },
+    plannen: { rittenOm: '2026-11-02T06:00:00Z', stopsOm: { '02': '2026-11-02T05:58:00Z', '07': '2026-11-02T05:58:00Z' } } }
+  const om = new Date('2026-11-02T06:01:00Z')
+  assert.equal(kies(basis, om, cfg).taak, undefined, 'zonder kijker: stops pas na 5 min')
+  const k = kies({ ...basis, plannenKijkers: ['07'] }, om, cfg)
+  assert.equal(k.taak.naam, 'plannen')
+  assert.deepEqual(k.args, { soort: 'stops', shifts: ['07'] })
 })
