@@ -196,12 +196,12 @@ export async function zetVerantwoordelijkenVeilig(page, mendix, rit, dag, namen,
 }
 
 // Het Rittenoverzicht als rijen voor rva_ritten (plan.ritRijen).
+// Alle pagina's (20 rijen per pagina, matransport#573).
 export async function leesRitten(page, mendix) {
-  const antwoorden = await rva.naarRittenoverzicht(page, mendix)
-  const scherm = await rva.leesRittenoverzicht(page).catch(() => [])
-  return ritRijen(rittenUit(antwoorden), scherm)
+  const { antwoorden, rijen } = await rva.leesAlleRitten(page, mendix)
+  return ritRijen(rittenUit(antwoorden), rijen)
 }
 
 export * from './scherm.js'
-export { regelSleutel, stappenVoorVolgorde, knipDelen, verschillen, revisieTijdTekst, ritRijen, rittenTeSchrijven } from './plan.js'
+export { regelSleutel, stappenVoorVolgorde, knipDelen, verschillen, revisieTijdTekst, ritRijen, rittenTeSchrijven, volgendeBijlezen } from './plan.js'
 export { regelsUit, ritDagUit, rittenUit, revisiesUit, onderbrekingenUit, regelGuidsUit } from './lezen.js'

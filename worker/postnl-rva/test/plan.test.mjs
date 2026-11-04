@@ -86,3 +86,17 @@ test('rittenTeSchrijven: alleen nieuw of anders, en alles na 12 uur opnieuw (gez
   assert.equal(rittenTeSchrijven([{ ...rij, dagen: ['Di'], gezien_at: '2026-11-04T11:00:00Z' }], [rij], nu).length, 1)
   assert.equal(rittenTeSchrijven([], [rij], nu).length, 1)
 })
+
+test('volgendeBijlezen: eerst wat ontbreekt, dan de oudste boven de grens; overslaan werkt; alles vers = null', async () => {
+  const { volgendeBijlezen } = await import('../src/plan.js')
+  const nu = new Date('2026-11-04T12:00:00Z')
+  const ritten = [{ naam: 'A', dagen: ['Ma', 'Di'] }, { naam: 'B', dagen: ['Za'] }]
+  const vers = '2026-11-04T11:00:00Z'
+  assert.deepEqual(volgendeBijlezen(ritten, [{ rit: 'A', weekdag: 'Ma', gelezen_at: vers }, { rit: 'B', weekdag: 'Za', gelezen_at: vers }], nu), { rit: 'A', weekdag: 'Di' })
+  assert.deepEqual(volgendeBijlezen(ritten, [
+    { rit: 'A', weekdag: 'Ma', gelezen_at: '2026-11-03T20:00:00Z' }, { rit: 'A', weekdag: 'Di', gelezen_at: '2026-11-04T01:00:00Z' }, { rit: 'B', weekdag: 'Za', gelezen_at: vers },
+  ], nu), { rit: 'A', weekdag: 'Ma' })
+  assert.deepEqual(volgendeBijlezen(ritten, [{ rit: 'A', weekdag: 'Ma', gelezen_at: null }, { rit: 'A', weekdag: 'Di', gelezen_at: vers }, { rit: 'B', weekdag: 'Za', gelezen_at: vers }], nu), { rit: 'A', weekdag: 'Ma' }, 'verouderd (null) telt als ontbrekend')
+  assert.equal(volgendeBijlezen(ritten, [], nu, { overslaan: () => true }), null)
+  assert.equal(volgendeBijlezen(ritten, ['Ma', 'Di'].map(d => ({ rit: 'A', weekdag: d, gelezen_at: vers })).concat({ rit: 'B', weekdag: 'Za', gelezen_at: vers }), nu), null)
+})

@@ -109,6 +109,9 @@ async function schrijfRitten(ctx, r, rijen) {
   return teSchrijven.length
 }
 
+// Rit-dagen waarvan het bijlezen net mislukte: `klant|depot|rit|dag` → tot wanneer overslaan (ms).
+export const bijlezenMislukt = new Map()
+
 // Soorten die bij PostNL direct opslaan (geen Wijzig/Opslaan): alleen met RVA_ECHT=ja.
 const RVA_DIRECT = ['kopieren', 'revisie_terug', 'verantwoordelijken']
 
@@ -265,6 +268,43 @@ export const HANDLERS = {
         }
       }
       throw Object.assign(err, { dag: klaar, bewaren: true })
+    }
+  },
+
+  // Rijvolgorde bijlezen (matransport#573): één rit-dag die ontbreekt of verouderd is, naar
+  // rva_regels. Mislukt het (scherm), dan die rit-dag een uur overslaan en het RVA-tabblad herladen:
+  // geen sessiefout, geen nieuwe login.
+  async rvaBijlezen(ctx, dag) {
+    const { sessie, supabase, klantId, nu, cfg } = ctx
+    const depot = sessie.depot.naam
+    const verder = (rust) => ({ ...dag, rva: { ...(dag.rva ?? {}), bijlezenOm: nu.toISOString(), bijlezenRust: rust } })
+    const [ritten, regels] = await Promise.all([
+      supabase.from('rva_ritten').select('naam, dagen').eq('klant_id', klantId).eq('depot', depot),
+      supabase.from('rva_regels').select('rit, weekdag, gelezen_at').eq('klant_id', klantId).eq('depot', depot),
+    ])
+    const dbFout = ritten.error ?? regels.error
+    if (dbFout) throw Object.assign(new Error(`RVA bijlezen: ${dbFout.message}`), { database: true, dag: verder(true) })
+    const r = await rva.laad()
+    const sleutel = (k) => `${klantId}|${depot}|${k}`
+    const keuze = r.volgendeBijlezen(ritten.data ?? [], regels.data ?? [], nu, {
+      uur: cfg.rvaBijlezenUur, overslaan: (k) => (bijlezenMislukt.get(sleutel(k)) ?? 0) > nu.getTime(),
+    })
+    if (!keuze) return { dag: verder(true), run: null }
+    const o = { id: null, depot, rit: keuze.rit, weekdag: keuze.weekdag }
+    try {
+      const { page } = await rvaKlaar(sessie, r)
+      const gelezen = await r.leesRitDag(page, volgMendix(page), o.rit, o.weekdag)
+      await schrijfRegels(ctx, o, gelezen)
+      sessie.lezingen++
+      return { dag: verder(false), run: null, melding: `${o.rit} ${o.weekdag}: bijgelezen, ${gelezen.regels.length} regels` }
+    } catch (err) {
+      if (err.database) throw Object.assign(err, { dag: verder(false) })
+      bijlezenMislukt.set(sleutel(`${o.rit}|${o.weekdag}`), nu.getTime() + 3_600_000)
+      if (await herstelRvaTab(sessie, r)) {
+        sessie.log.warn(`[${depot}] RVA bijlezen ${o.rit} ${o.weekdag} mislukt (over een uur opnieuw): ${String(err.message).split('\n')[0].slice(0, 160)}`)
+        return { dag: verder(false), run: null }
+      }
+      throw Object.assign(err, { dag: verder(false) })
     }
   },
 

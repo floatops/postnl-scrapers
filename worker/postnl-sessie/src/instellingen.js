@@ -43,6 +43,12 @@ export const STANDAARD = Object.freeze({
   rva: false,
   rvaAltijd: true,
   rvaWakkerMin: 10,
+  // rvaBijlezen (matransport#573): als er niets anders te doen is, elke rvaBijlezenSec één rit-dag
+  // lezen die ontbreekt of ouder is dan rvaBijlezenUur; is alles vers, dan rvaBijlezenRustMin wachten.
+  // Een rit-dag die mislukt, komt na een uur weer aan de beurt. 0 = uit.
+  rvaBijlezenSec: 20,
+  rvaBijlezenUur: 6,
+  rvaBijlezenRustMin: 10,
   sluitNaLeegMin: 10,             // zonder sessieOpenHouden: dicht als de volgende taak verder weg ligt
   // Herstel
   gegooidVensterMin: 2,           // twee keer eruit gegooid binnen dit venster = nieuwe login
@@ -57,7 +63,7 @@ export const STANDAARD = Object.freeze({
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
-  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120 },
+  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180 },
 })
 
 function isObject(v) { return v && typeof v === 'object' && !Array.isArray(v) }

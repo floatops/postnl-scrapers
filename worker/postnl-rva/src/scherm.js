@@ -143,24 +143,92 @@ export async function leesRittenoverzicht(page) {
   }, WEEKDAGEN)
 }
 
-// Vlak na het laden vult Mendix de rijen nog: tot 15 s blijven kijken.
-async function overzichtRij(page, ritnaam, weekdag) {
-  const tot = Date.now() + 15_000
-  let rij = null
-  while (!rij) {
-    const rijen = await leesRittenoverzicht(page).catch(() => [])
-    rij = rijen.find(r => r.ritnaam === ritnaam && (!weekdag || r.dagen.includes(weekdag)))
-    if (rij) break
-    if (Date.now() > tot) throw new RvaFout('niet_gevonden', `Rit ${ritnaam}${weekdag ? ` op ${weekdag}` : ''} staat niet in het Rittenoverzicht`)
-    await page.waitForTimeout(500)
+// Het Rittenoverzicht toont 20 rijen per pagina ("1 to 20 of 40", gezien 04-11, matransport#573),
+// met een zoekveld erboven. Tot 04-11 las de worker alleen pagina 1: de helft van de ritten ontbrak,
+// en een rit op pagina 2 kon niet geopend worden.
+const PAGINA = {
+  zoek: 'input[aria-label="Zoeken"]',
+  volgende: 'button[aria-label="Go to next page"]',
+  eerste: 'button[aria-label="Go to first page"]',
+  status: '.paging-status',
+}
+const knopAan = async (loc) => (await zichtbaar(loc)) && !(await loc.isDisabled().catch(() => true))
+
+// Het zoekveld van het overzicht vullen (leeg = alles). false = er is geen zoekveld.
+async function zoekInOverzicht(page, mendix, tekst) {
+  const veld = page.locator(PAGINA.zoek).filter({ visible: true }).first()
+  if (!(await veld.count())) return false
+  if ((await veld.inputValue().catch(() => '')) === tekst) return true
+  await mendix.actie(() => veld.fill(tekst))
+  await page.waitForTimeout(800)
+  await mendix.wacht()
+  return true
+}
+
+// Wachten tot de eerste rij een andere is dan `voor` (na bladeren of zoeken), hooguit 10 s.
+async function wachtOpAndereRijen(page, voor) {
+  const tot = Date.now() + 10_000
+  while (Date.now() < tot) {
+    const n = await leesRittenoverzicht(page).catch(() => [])
+    if (n[0]?.ritnaam && n[0].ritnaam !== voor) return
+    await page.waitForTimeout(300)
   }
+}
+
+// Alle pagina's van het Rittenoverzicht: de rijen van het scherm en de Mendix-antwoorden. Zet het
+// zoekveld eerst leeg en laat het overzicht daarna weer op pagina 1 staan.
+export async function leesAlleRitten(page, mendix, { maxPaginas = 25 } = {}) {
+  const antwoorden = await naarRittenoverzicht(page, mendix)
+  await zoekInOverzicht(page, mendix, '')
+  const rijen = []
+  for (let i = 0; i < maxPaginas; i++) {
+    const hier = await leesRittenoverzicht(page)
+    rijen.push(...hier)
+    const volgende = page.locator(PAGINA.volgende).first()
+    if (!(await knopAan(volgende))) break
+    antwoorden.push(...await mendix.actie(() => volgende.click()))
+    await wachtOpAndereRijen(page, hier[0]?.ritnaam)
+  }
+  const eerste = page.locator(PAGINA.eerste).first()
+  if (await knopAan(eerste)) await mendix.actie(() => eerste.click()).catch(() => {}) // bewust: alleen netjes achterlaten
+  return { antwoorden, rijen, status: await page.locator(PAGINA.status).first().innerText().catch(() => null) }
+}
+
+// Vlak na het laden vult Mendix de rijen nog: even blijven kijken. Staat de rit niet op deze
+// pagina, dan eerst het zoekveld (snel), anders pagina voor pagina vanaf het begin.
+async function overzichtRij(page, ritnaam, weekdag, mendix = null) {
+  const vind = async (ms) => {
+    const tot = Date.now() + ms
+    for (;;) {
+      const rijen = await leesRittenoverzicht(page).catch(() => [])
+      const rij = rijen.find(r => r.ritnaam === ritnaam && (!weekdag || r.dagen.includes(weekdag)))
+      if (rij || Date.now() > tot) return rij ?? null
+      await page.waitForTimeout(500)
+    }
+  }
+  let rij = await vind(mendix ? 6_000 : 15_000)
+  if (!rij && mendix && await zoekInOverzicht(page, mendix, ritnaam)) rij = await vind(8_000)
+  if (!rij && mendix) {
+    await zoekInOverzicht(page, mendix, '')
+    const eerste = page.locator(PAGINA.eerste).first()
+    if (await knopAan(eerste)) await mendix.actie(() => eerste.click())
+    for (let i = 0; !rij && i < 25; i++) {
+      rij = await vind(2_000)
+      const volgende = page.locator(PAGINA.volgende).first()
+      if (rij || !(await knopAan(volgende))) break
+      const voor = (await leesRittenoverzicht(page).catch(() => []))[0]?.ritnaam
+      await mendix.actie(() => volgende.click())
+      await wachtOpAndereRijen(page, voor)
+    }
+  }
+  if (!rij) throw new RvaFout('niet_gevonden', `Rit ${ritnaam}${weekdag ? ` op ${weekdag}` : ''} staat niet in het Rittenoverzicht`)
   return { rij, loc: page.locator(`${SCHERM.overzicht} [role="row"]`).filter({ has: page.locator('[role="gridcell"]') }).nth(rij.index) }
 }
 
 // Opent de rit-dag. Er zijn per route twee rijen (Ma, en Di–Za): we nemen de rij waar die dag in staat.
 export async function openRitDag(page, mendix, ritnaam, weekdag) {
   if (!(await zichtbaar(page.locator(SCHERM.overzicht).first()))) await naarRittenoverzicht(page, mendix)
-  const { rij, loc } = await overzichtRij(page, ritnaam, weekdag)
+  const { rij, loc } = await overzichtRij(page, ritnaam, weekdag, mendix)
   const dagKnop = loc.locator('[role="gridcell"] [role="button"]').filter({ hasText: new RegExp(`^\\s*${weekdag}\\s*$`) }).first()
   // Het onzichtbare invoerveld van de keuzelijst Ritverantwoordelijke (kolom ernaast) ligt over
   // het midden van het dagvak en vangt de klik (proef 03-11). Dus op de tekst zelf klikken, en
@@ -479,7 +547,7 @@ export async function zetRevisieTerug(page, mendix, gemaaktOpTekst) {
 // De keuzelijst Ritverantwoordelijke van een rij openen: alle namen en welke aan staan.
 async function openVerantwoordelijken(page, mendix, ritnaam, weekdag) {
   if (!(await zichtbaar(page.locator(SCHERM.overzicht).first()))) await naarRittenoverzicht(page, mendix)
-  const { loc } = await overzichtRij(page, ritnaam, weekdag)
+  const { loc } = await overzichtRij(page, ritnaam, weekdag, mendix)
   const widget = loc.locator('.mx-name-comboBox3').first()
   const antwoorden = await mendix.actie(async () => (await inBeeld(widget.locator('input[role="combobox"]').first())).click())
   const opties = page.locator('[role="option"]').filter({ visible: true })

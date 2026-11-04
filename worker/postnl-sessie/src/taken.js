@@ -130,6 +130,20 @@ export const TAKEN = [
     },
   },
   {
+    // Rijvolgorde compleet en vers houden (matransport#573): één rit-dag uit RVA lezen die nog
+    // ontbreekt of ouder is dan rvaBijlezenUur, naar rva_regels. Zo hoeft niemand een lijst op te
+    // vragen, en komt een mislukte rit-dag vanzelf terug. Laagste prioriteit: alleen als er niets
+    // anders te doen is; met rvaAltijd ook 's nachts.
+    naam: 'rvaBijlezen', prioriteit: 3, tab: 'rva', worker: null,
+    volgende: (dag, nu, cfg) => {
+      if (!cfg.rva || !cfg.rvaBijlezenSec) return null
+      if (!cfg.rvaAltijd && (rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd))) return null
+      const wacht = dag.rva?.bijlezenRust ? cfg.rvaBijlezenRustMin * MIN : cfg.rvaBijlezenSec * 1000
+      const om = dag.rva?.bijlezenOm ? new Date(new Date(dag.rva.bijlezenOm).getTime() + wacht) : nu
+      return om <= nu ? { nu: true, args: {} } : { om }
+    },
+  },
+  {
     // Stille tijd (bv. tussen de ochtendlezing en de eerste deadline): na wakkerHoudenMin zonder
     // andere taak de Dagplanning opnieuw openen. Alleen met sessieOpenHouden en na de ochtendlezing.
     naam: 'wakker', prioriteit: 5, worker: null,

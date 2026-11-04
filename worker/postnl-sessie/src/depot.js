@@ -155,7 +155,7 @@ export async function draaiDepot(deps) {
 
       const incident = soort !== 'gezond'
       // Elke taak behalve de ritmonitor (elke minuut, die staat samengevat in de run-log) in het log.
-      if (!incident && !fout && taak !== 'ritmonitor' && (!['wakker', 'plannen', 'rvaWakker'].includes(taak) || uitkomst?.melding)) {
+      if (!incident && !fout && taak !== 'ritmonitor' && (!['wakker', 'plannen', 'rvaWakker', 'rvaBijlezen'].includes(taak) || uitkomst?.melding)) {
         const l = uitkomst?.run?.lezingen?.[depot.naam]
         log.log(`${label} ${taak} klaar${uitkomst?.melding ? `: ${uitkomst.melding}` : ''}${l ? ` (${l.nieuw ?? 0} nieuw, ${l.bijgewerkt ?? 0} bijgewerkt)` : ''}`)
       }

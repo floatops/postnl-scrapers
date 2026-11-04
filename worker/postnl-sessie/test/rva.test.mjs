@@ -57,7 +57,7 @@ test('rvaWakker: elke rvaWakkerMin, vanaf de laatste keer', () => {
 })
 
 test('de lus stopt zondagnacht niet met RVA aan, wel zonder (zoals altijd)', () => {
-  const dag = { ...nieuweDag('2026-11-08'), rva: { wakkerOm: '2026-11-08T00:58:00Z' } }
+  const dag = { ...nieuweDag('2026-11-08'), rva: { wakkerOm: '2026-11-08T00:58:00Z', bijlezenOm: '2026-11-08T00:58:00Z', bijlezenRust: true } }
   const met = kies(dag, zondagNacht, AAN)
   assert.ok(met.wachtTot, 'RVA aan: er is altijd een volgende tijd (rvaWakker)')
   assert.equal(met.sessieNodig, true, 'en de sessie blijft open')
@@ -314,4 +314,46 @@ test('rvaVolgorde: eerst opslaan, dan wat iemand in de app open heeft, dan de bu
     { id: 'oud', soort: null },
   ]
   assert.deepEqual(rvaVolgorde(lijst).map(o => o.id), ['wijzig', 'oud', 'open', 'bulk1', 'bulk2'])
+})
+
+test('taak rvaBijlezen: laagste prioriteit, elke rvaBijlezenSec, en na "alles vers" rvaBijlezenRustMin', () => {
+  assert.ok(TAAK.rvaBijlezen.prioriteit < TAAK.wakker.prioriteit && TAAK.rvaBijlezen.prioriteit < TAAK.rvaWakker.prioriteit)
+  assert.equal(TAAK.rvaBijlezen.volgende(nieuweDag('2026-11-04'), nu, UIT), null)
+  assert.equal(TAAK.rvaBijlezen.volgende(nieuweDag('2026-11-04'), nu, AAN).nu, true)
+  const net = { ...nieuweDag('2026-11-04'), rva: { bijlezenOm: nu.toISOString() } }
+  assert.equal(TAAK.rvaBijlezen.volgende(net, nu, AAN).om.getTime(), nu.getTime() + AAN.rvaBijlezenSec * 1000)
+  const rust = { ...nieuweDag('2026-11-04'), rva: { bijlezenOm: nu.toISOString(), bijlezenRust: true } }
+  assert.equal(TAAK.rvaBijlezen.volgende(rust, nu, AAN).om.getTime(), nu.getTime() + AAN.rvaBijlezenRustMin * 60_000)
+})
+
+test('rva-handler bijlezen: leest de rit-dag die ontbreekt naar rva_regels; mislukt = een uur overslaan, tabblad herladen, niet gooien', async () => {
+  const { bijlezenMislukt } = await import('../src/handlers.js')
+  bijlezenMislukt.clear()
+  const tabellen = { rva_ritten: [{ naam: 'proefrit', dagen: ['Za'] }], rva_regels: [] }
+  const db = nepDbTabellen(null)
+  const basis = db.from
+  db.from = (t) => (t in tabellen ? { select: () => { const q = { eq: () => q, then: (ok) => Promise.resolve({ data: tabellen[t], error: null }).then(ok) }; return q }, upsert: basis(t).upsert } : basis(t))
+  let gelezen = null
+  rva.laad = async () => ({
+    RVA_URL: 'https://rva.example/', openRva: async () => ({ ingelogd: false }),
+    volgendeBijlezen: (await import('../../postnl-rva/src/plan.js')).volgendeBijlezen,
+    leesRitDag: async (p, m, rit, d) => { gelezen = [rit, d]; return { regels: [1, 2, 3], onderbrekingen: [], revisies: [], vergrendeld: false } },
+  })
+  const s = nepSessie()
+  const uit = await HANDLERS.rvaBijlezen({ sessie: s, supabase: db, klantId: 'k', nu, cfg: AAN }, nieuweDag('2026-11-04'))
+  assert.deepEqual(gelezen, ['proefrit', 'Za'])
+  assert.ok(db.geschreven.upserts.some(x => x.tabel === 'rva_regels' && x.rijen.rit === 'proefrit'))
+  assert.equal(uit.dag.rva.bijlezenRust, false)
+
+  rva.laad = async () => ({
+    RVA_URL: 'https://rva.example/', openRva: async () => ({ ingelogd: false }),
+    volgendeBijlezen: (await import('../../postnl-rva/src/plan.js')).volgendeBijlezen,
+    leesRitDag: async () => { throw new Error('locator.waitFor: Timeout 15000ms exceeded.') },
+  })
+  s.rvaTab = async function () { this.rvaPage = { naam: 'rva-tab', on() {}, goto: async () => {} }; return this.rvaPage }
+  const fout = await HANDLERS.rvaBijlezen({ sessie: s, supabase: db, klantId: 'k', nu, cfg: AAN }, nieuweDag('2026-11-04'))
+  assert.equal(fout.run, null)
+  assert.ok(bijlezenMislukt.get('k|Depot A|proefrit|Za') > nu.getTime(), 'een uur overslaan')
+  const daarna = await HANDLERS.rvaBijlezen({ sessie: s, supabase: db, klantId: 'k', nu, cfg: AAN }, nieuweDag('2026-11-04'))
+  assert.equal(daarna.dag.rva.bijlezenRust, true, 'niets anders te lezen: rust')
 })

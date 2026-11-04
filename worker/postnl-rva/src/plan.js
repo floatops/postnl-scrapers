@@ -121,3 +121,22 @@ export function rittenTeSchrijven(bestaand, gelezen, nu = new Date(), verversUur
     return !b || !zelfde(b, r) || nu - new Date(b.gezien_at) > verversUur * 3_600_000
   })
 }
+
+// Welke rit-dag de sessiehouder als volgende uit RVA leest (taak rvaBijlezen, matransport#573):
+// eerst wat nog nooit gelezen is (of als verouderd gemarkeerd), dan de oudste lezing die ouder is
+// dan `uur`. `overslaan(rit|dag)`: bv. een rit-dag die net mislukte. null = alles is vers.
+export function volgendeBijlezen(ritten, regels, nu = new Date(), { uur = 6, overslaan = () => false } = {}) {
+  const gelezen = new Map(regels.map(g => [`${g.rit}|${g.weekdag}`, g.gelezen_at]))
+  const kandidaten = []
+  for (const r of ritten) {
+    for (const d of r.dagen ?? []) {
+      const k = `${r.naam}|${d}`
+      if (overslaan(k)) continue
+      const t = gelezen.get(k)
+      const ouderdom = t == null ? Infinity : nu - new Date(t)
+      if (ouderdom > uur * 3_600_000) kandidaten.push({ rit: r.naam, weekdag: d, ouderdom })
+    }
+  }
+  kandidaten.sort((a, b) => b.ouderdom - a.ouderdom)
+  return kandidaten[0] ? { rit: kandidaten[0].rit, weekdag: kandidaten[0].weekdag } : null
+}
