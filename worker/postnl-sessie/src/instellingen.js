@@ -63,6 +63,12 @@ export const STANDAARD = Object.freeze({
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
+  // Geheugenwacht (geheugen.js, matransport#578): deel van de V8-heapgrens (~4 GB op de VPS).
+  // Normaal ~650 MB rss; de crashes van 04-11 kwamen bij ~3,3 GB. Herstarten gebeurt ná de lopende
+  // taak (tot 15 min bij RVA), dus ruim op tijd.
+  geheugenWaarschuwDeel: 0.35,
+  geheugenHerstartDeel: 0.5,
+  geheugenLogMin: 15,
   taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180 },
 })
 

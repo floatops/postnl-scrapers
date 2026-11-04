@@ -9,6 +9,7 @@
 //   1   fout; de bewaker start hem binnen 2 minuten opnieuw, de oude scripts vangen het op
 import 'dotenv/config'
 import { randomUUID } from 'node:crypto'
+import { getHeapStatistics } from 'node:v8'
 import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
@@ -24,6 +25,7 @@ import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
 import { codeVersie, gewijzigdePaden, raaktSessiehouder } from './codeversie.js'
+import { beoordeelGeheugen, geheugenTekst } from './geheugen.js'
 import fs from 'node:fs/promises'
 
 function vereis(naam) {
@@ -78,6 +80,26 @@ async function main() {
     }
     log.log(`Nieuwe code (${nu.slice(0, 7)}): herstart na de lopende taak`); stop = true; exitCode = 42
   }, cfg.codeCheckMin * 60_000)
+
+  // Geheugenwacht (geheugen.js, matransport#578): elke minuut de heap; elk kwartier in het log. Te
+  // vol: melding en netjes herstarten na de lopende taak, nooit een crash midden in een opdracht.
+  const limietMb = getHeapStatistics().heap_size_limit / 1048576
+  let gewaarschuwd = false
+  let geheugenGelogd = 0
+  const geheugenCheck = setInterval(async () => {
+    const m = process.memoryUsage()
+    const meting = { heapMb: m.heapUsed / 1048576, limietMb, rssMb: m.rss / 1048576 }
+    if (Date.now() - geheugenGelogd >= cfg.geheugenLogMin * 60_000) { log.log(`Geheugen: ${geheugenTekst(meting)}`); geheugenGelogd = Date.now() }
+    const oordeel = beoordeelGeheugen({ ...meting, cfg, gewaarschuwd })
+    if (oordeel === 'waarschuwen') {
+      gewaarschuwd = true
+      await melden({ soort: 'geheugen_hoog', detail: geheugenTekst(meting) })
+    } else if (oordeel === 'herstarten' && !stop) {
+      log.log(`Geheugen te vol (${geheugenTekst(meting)}): herstart na de lopende taak`)
+      await melden({ soort: 'geheugen_herstart', detail: `${geheugenTekst(meting)}; herstart na de lopende taak` })
+      stop = true; exitCode = 42
+    }
+  }, 60_000)
 
   // Gemeten levensduur per depot, elk uur ververst.
   const schattingen = {}
@@ -195,7 +217,7 @@ async function main() {
   await beheer.wacht()
   clearInterval(wekkerCheck); clearInterval(plannerCheck); clearInterval(rvaCheck); clearInterval(uurCheck)
   await teller.flush()
-  clearInterval(codeCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
+  clearInterval(codeCheck); clearInterval(geheugenCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
 }
 
 main()
