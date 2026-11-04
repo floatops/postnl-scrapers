@@ -297,7 +297,10 @@ async function leesRegelsNu(page) {
   }))
 }
 
-export const inBewerkstand = async (page) => zichtbaar(knop(page, SCHERM.opslaan)) && !(await zichtbaar(knop(page, SCHERM.wijzig)))
+// Beide checks met await: zonder await op Opslaan is de Promise altijd waar, en gold een rit-dag
+// zonder Wijzig-knop (account geen ritverantwoordelijke) als bewerkstand. Dan klikte de worker op
+// een Annuleer die er niet is (30 s time-out) en kwam hij nooit bij zorgVoorRechten (matransport#589).
+export const inBewerkstand = async (page) => (await zichtbaar(knop(page, SCHERM.opslaan))) && !(await zichtbaar(knop(page, SCHERM.wijzig)))
 
 // Mag dit account deze rit-dag bewerken? Alleen een ritverantwoordelijke ziet Wijzig (of zit al in de bewerkstand).
 export const magWijzigen = async (page) => (await zichtbaar(knop(page, SCHERM.wijzig))) || inBewerkstand(page)
