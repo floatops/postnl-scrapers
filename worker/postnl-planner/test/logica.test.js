@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, rittenUit,
-  selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen,
+  selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen, verschil, STOP_VELDEN,
 } from '../src/logica.js'
 
 const attrs = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { value: v }]))
@@ -94,8 +94,22 @@ test('stop naar rij bevat alleen wat de app toont', () => {
   const rij = stopNaarRij(stop, { klantId: 'k', depot: 'd', datum: '2026-11-02', shift: '02', ritId: 'R1', opgehaaldAt: 't' })
   assert.deepEqual(rij, {
     klant_id: 'k', depot: 'd', datum: '2026-11-02', shift: '02', rit_id: 'R1', stop_id: '1',
-    straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, stuks: 1, volume: 0.019, opgehaald_at: 't',
+    straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, postcode: '2676AA', stuks: 1, volume: 0.019, opgehaald_at: 't',
   })
+})
+
+test('postcode zonder spatie en in hoofdletters, leeg blijft leeg (matransport#587)', () => {
+  const rij = (PostalCode) => stopNaarRij(stopsUit([{ partialObjects: [stopObject('1', { Street: 'X', PostalCode })] }])[0],
+    { klantId: 'k', depot: 'd', datum: '2026-11-04', shift: '01', ritId: 'R1', opgehaaldAt: 't' })
+  assert.equal(rij('2676 aa').postcode, '2676AA')
+  assert.equal(rij(null).postcode, null)
+  assert.equal(rij('').postcode, null)
+})
+
+test('bestaande stop zonder postcode wordt bij de volgende ronde aangevuld (matransport#587)', () => {
+  const oud = { stop_id: 's1', rit_id: 'r1', shift: '01', straat: 'X', huisnummer: '1', toevoeging: null, postcode: null, stuks: 1, volume: 0.1 }
+  assert.equal(verschil([oud], [{ ...oud, postcode: '2676AA' }], 'stop_id', STOP_VELDEN).gewijzigd.length, 1)
+  assert.equal(verschil([{ ...oud, postcode: '2676AA' }], [{ ...oud, postcode: '2676AA' }], 'stop_id', STOP_VELDEN).gewijzigd.length, 0)
 })
 
 test('tvi is de Nederlandse tijd', () => {

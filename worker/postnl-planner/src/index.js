@@ -153,6 +153,21 @@ async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
   return { nieuw: v.nieuw.length, gewijzigd: v.gewijzigd.length, weg: v.weg.length }
 }
 
+// planning_stops.postcode (matransport#587) komt op Stack B pas met de volgende promotie, en deze
+// checkout draait voor beide stacks. Zonder die kolom bewaart de worker de stops zoals voorheen.
+// Eén keer per proces gevraagd; alleen "kolom bestaat niet" (42703) telt, elke andere fout is luid.
+let postcodeKolom = null
+async function stopVelden() {
+  if (postcodeKolom === null) {
+    const { error } = await supabase.from('planning_stops').select('postcode').limit(1)
+    if (error && error.code !== '42703') throw new Error(`stops lezen: ${error.message}`)
+    postcodeKolom = !error
+    if (!postcodeKolom) console.warn('planning_stops.postcode bestaat nog niet op deze stack: stops zonder postcode bewaard')
+  }
+  return postcodeKolom ? STOP_VELDEN : STOP_VELDEN.filter(v => v !== 'postcode')
+}
+const zonderPostcode = ({ postcode, ...rij }) => rij
+
 // Leest de stops van alle ritten van één shift. Ritten die in de planning geen stops hebben,
 // worden ook niet geopend.
 // Alleen verschillen (#562): per rit de gewijzigde of nieuwe stops, en na een volledige ronde de
@@ -166,7 +181,8 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
   if (deel && !eigen.length) return { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
   await kiesShift(page, mendix, shift)
   const nu = new Date().toISOString()
-  const bestaand = await db(supabase.from('planning_stops').select(['stop_id', ...STOP_VELDEN].join(', '))
+  const velden = await stopVelden()
+  const bestaand = await db(supabase.from('planning_stops').select(['stop_id', ...velden].join(', '))
     .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).eq('shift', shift), 'stops lezen')
   const gelezenRitten = new Set()
   const gezien = []
@@ -179,9 +195,10 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
       const stops = await openRit(page, mendix, rit.ritnaam)
       const eigenStops = stops
       const rijen = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu }))
+        .map(r => (postcodeKolom ? r : zonderPostcode(r)))
       gezien.push(...rijen)
       // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is. Alleen wat anders is.
-      const v = verschil(bestaand, rijen, 'stop_id', STOP_VELDEN)
+      const v = verschil(bestaand, rijen, 'stop_id', velden)
       const schrijf = [...v.nieuw, ...v.gewijzigd]
       telling.nieuw += v.nieuw.length
       telling.gewijzigd += v.gewijzigd.length
@@ -204,7 +221,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
   }
   // Pas na een complete ronde: bij een fout onderweg blijft de vorige stand staan. Alleen stops van
   // ritten die deze ronde gelezen zijn (een rit zonder stops telt als gelezen).
-  const weg = verschil(bestaand.filter(s => gelezenRitten.has(s.rit_id)), gezien, 'stop_id', STOP_VELDEN).weg
+  const weg = verschil(bestaand.filter(s => gelezenRitten.has(s.rit_id)), gezien, 'stop_id', velden).weg
   if (weg.length) {
     await db(supabase.from('planning_stops').delete().eq('klant_id', KLANT_ID).in('stop_id', weg), 'oude stops weghalen')
   }

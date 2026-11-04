@@ -78,7 +78,8 @@ function tekst(waarde) {
   return t || null
 }
 
-// Voor de app: alleen wat daar getoond wordt. Verder niets, het zijn adressen.
+// Voor de app: alleen wat daar nodig is. Verder niets, het zijn adressen. De postcode
+// (matransport#587) is voor de stops op de kaart van een rit: met huisnummer + toevoeging het adres.
 // De stoplijst bevat geen StopID en RideID: de guid is het vaste kenmerk, en de rit is die we open hebben.
 export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt }) {
   return {
@@ -88,6 +89,7 @@ export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaa
     straat: tekst(stop.Street) ?? '(onbekend)',
     huisnummer: tekst(stop.BuildingNumber),
     toevoeging: tekst(stop.BuildingNumberExtension),
+    postcode: tekst(String(stop.PostalCode ?? '').replace(/\s+/g, '').toUpperCase()),
     stuks: Math.round(getal(stop.Pieces)),
     volume: getal(stop.Volume),
     opgehaald_at: opgehaaldAt,
@@ -253,7 +255,7 @@ export function teOudeTraces(namen, nu = new Date(), dagen = TRACE_BEWAAR_DAGEN)
 // veranderde, en een ronde zonder wijziging schrijft niets. Vergelijkt de inhoud, niet opgehaald_at.
 export const RIT_VELDEN = ['shift', 'ritnaam', 'chauffeur', 'chauffeur_wijzigbaar', 'chauffeur_opties', 'geautoriseerd',
   'bewerkbaar', 'geblokkeerd', 'stops', 'stuks', 'volume', 'deadline', 'stops_gelezen']
-export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'stuks', 'volume']
+export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'postcode', 'stuks', 'volume']
 
 const ISO = /^\d{4}-\d{2}-\d{2}T/
 function zelfde(a, b) {
