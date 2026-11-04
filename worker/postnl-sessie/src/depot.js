@@ -88,6 +88,12 @@ export async function draaiDepot(deps) {
         if (rva) {
           for (const o of rva) dag = voegAanvraagToe(dag, { id: o.id, soort: 'rva', depot: depot.naam })
           for (const a of dag.aanvragen.filter(a => a.soort === 'rva')) if (!rva.some(o => o.id === a.id)) dag = aanvraagKlaar(dag, a.id)
+          // Volgorde van de wachtrij (opslag.rvaVolgorde, matransport#573): wat iemand opslaat of in de
+          // app open heeft gaat voor, ook als het later binnenkwam dan een al bekende bulk-lezing.
+          const plek = new Map(rva.map((o, i) => [o.id, i]))
+          const opVolgorde = dag.aanvragen.filter(a => a.soort === 'rva').sort((a, b) => (plek.get(a.id) ?? 1e9) - (plek.get(b.id) ?? 1e9))
+          let j = 0
+          dag = { ...dag, aanvragen: dag.aanvragen.map(a => (a.soort === 'rva' ? opVolgorde[j++] : a)) }
         }
       }
 

@@ -10,6 +10,14 @@ async function vereis(belofte, wat) {
   return data
 }
 
+// Volgorde van de RVA-wachtrij (matransport#573): eerst wat iemand opslaat (wijzigen e.d.), dan een
+// lezing die iemand in de app open heeft (parameters.voorrang), dan de rest; binnen elke groep de
+// oudste eerst. Zo wacht een chauffeur nooit achter een bulk-lezing van alle ritten.
+export function rvaVolgorde(opdrachten) {
+  const groep = (o) => ((o.soort ?? 'wijzigen') !== 'ophalen' ? 0 : o.parameters?.voorrang ? 1 : 2)
+  return opdrachten.map((o, i) => ({ o, i })).sort((a, b) => groep(a.o) - groep(b.o) || a.i - b.i).map(x => x.o)
+}
+
 export function maakOpslag({ supabase, klantId, log = console }) {
   return {
     async instellingen(boven = null) {
@@ -95,10 +103,10 @@ export function maakOpslag({ supabase, klantId, log = console }) {
     // RVA-opdrachten van dit depot die nog wachten (matransport#569), oudste eerst. Niet 'bezig':
     // die is al begonnen (of hing na een crash) en mag nooit een tweede keer worden uitgevoerd.
     async rvaOpdrachten(depot) {
-      const { data, error } = await supabase.from('rva_opdrachten').select('id, depot, status')
+      const { data, error } = await supabase.from('rva_opdrachten').select('id, depot, status, soort, parameters')
         .eq('klant_id', klantId).eq('depot', depot).eq('status', 'wacht').order('aangemaakt_at')
       if (error) { log.warn(`[${depot}] RVA-opdrachten niet gelezen: ${error.message}`); return null }
-      return data ?? []
+      return rvaVolgorde(data ?? [])
     },
 
     runStart: (worker) => startRunLog(supabase, { worker, klantId }),

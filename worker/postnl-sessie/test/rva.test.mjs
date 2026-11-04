@@ -285,3 +285,33 @@ test('rvaWakker: het Rittenoverzicht gaat naar rva_ritten, alleen wat anders is'
   assert.equal(u.rijen[0].depot, 'Depot A')
   assert.equal(u.opties.onConflict, 'klant_id,depot,sleutel')
 })
+
+// ── matransport#573 (04-11): schermfout herstelt alleen het RVA-tabblad; voorrang in de wachtrij ──
+
+test('rva-handler: schermfout → mislukt, RVA-tabblad herladen, niet gooien (geen nieuwe login)', async () => {
+  let geladen = null
+  rva.laad = async () => ({
+    RVA_URL: 'https://rva.example/', openRva: async () => ({ ingelogd: false }),
+    leesRitDag: async () => { throw new Error('locator.waitFor: Timeout 15000ms exceeded.') },
+  })
+  const s = nepSessie()
+  s.rvaTab = async function () { this.rvaPage = { naam: 'rva-tab', on() {}, goto: async (u) => { geladen = u } }; return this.rvaPage }
+  const db = nepDbTabellen({ ...opdracht, soort: 'ophalen', handelingen: [] })
+  const uit = await HANDLERS.rva({ sessie: s, supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
+  assert.equal(geladen, 'https://rva.example/')
+  assert.equal(db.updates.at(-1).status, 'mislukt')
+  assert.equal(uit.run.status, 'mislukt')
+  assert.deepEqual(uit.dag.aanvragen, [])
+})
+
+test('rvaVolgorde: eerst opslaan, dan wat iemand in de app open heeft, dan de bulk; binnen een groep de oudste eerst', async () => {
+  const { rvaVolgorde } = await import('../src/opslag.js')
+  const lijst = [
+    { id: 'bulk1', soort: 'ophalen', parameters: {} },
+    { id: 'open', soort: 'ophalen', parameters: { voorrang: true } },
+    { id: 'bulk2', soort: 'ophalen' },
+    { id: 'wijzig', soort: 'wijzigen' },
+    { id: 'oud', soort: null },
+  ]
+  assert.deepEqual(rvaVolgorde(lijst).map(o => o.id), ['wijzig', 'oud', 'open', 'bulk1', 'bulk2'])
+})

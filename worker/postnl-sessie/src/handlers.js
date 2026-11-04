@@ -60,6 +60,18 @@ async function rvaKlaar(sessie, r) {
   return { page, ingelogd }
 }
 
+// Het RVA-tabblad vers laden na een schermfout (matransport#573). true = het staat er weer.
+async function herstelRvaTab(sessie, r) {
+  try {
+    const page = await sessie.rvaTab()
+    await page.goto(r.RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    await r.openRva(page, { login: (p) => login(p, sessie.depot, { log: sessie.log }) })
+    return true
+  } catch {
+    return false // bewust: dan gooit de handler de oorspronkelijke fout, en herstelt de depot-lus
+  }
+}
+
 // Een RVA-opdracht bijwerken. Een databasefout gooit (nooit stil).
 async function zetRva(ctx, id, velden, filter = null) {
   let q = ctx.supabase.from('rva_opdrachten').update(velden).eq('id', id).eq('klant_id', ctx.klantId)
@@ -73,7 +85,7 @@ async function zetRva(ctx, id, velden, filter = null) {
 async function schrijfRegels(ctx, o, gelezen) {
   const { error } = await ctx.supabase.from('rva_regels').upsert({
     klant_id: ctx.klantId, depot: o.depot, rit: o.rit, weekdag: o.weekdag,
-    regels: gelezen.regels, onderbrekingen: gelezen.onderbrekingen, revisies: gelezen.revisies,
+    regels: gelezen.regels, onderbrekingen: gelezen.onderbrekingen, ...(gelezen.revisies ? { revisies: gelezen.revisies } : {}),
     vergrendeld: gelezen.vergrendeld === true, gelezen_at: new Date().toISOString(), opdracht_id: o.id,
   }, { onConflict: 'klant_id,depot,rit,weekdag' })
   if (error) throw Object.assign(new Error(`RVA-regels opslaan: ${error.message}`), { database: true })
@@ -241,6 +253,17 @@ export const HANDLERS = {
       const reden = `${err.soort ? `[${err.soort}] ` : ''}${String(err.message).split('\n')[0]}`.slice(0, 500)
       await zetRva(ctx, id, { status: 'mislukt', klaar_at: new Date().toISOString(), stap: null, melding: reden, resultaat: { stappen: err.stappen ?? [] } })
         .catch(e => sessie.log.error(`${label}: opdracht ${id} niet op mislukt gezet: ${e.message}`))
+      // Een fout op het RVA-scherm (time-out, venster bleef open) is geen sessieprobleem: alleen het
+      // RVA-tabblad opnieuw laden en door met de volgende opdracht. Gooien zou de hele sessie (ook
+      // OOM PD) sluiten en opnieuw inloggen; op 04-11 gaven 8 time-outs zo 4 logins en 10 min pauze.
+      // Lukt het herladen niet (browser weg, database), dan wel gooien voor het herstel.
+      if (!err.database && r && await herstelRvaTab(sessie, r)) {
+        log.warn(`${soort} mislukt, RVA-tabblad herladen: ${reden.slice(0, 160)}`)
+        return {
+          dag: klaar, bewaren: true, melding: `${o.rit} ${o.weekdag}: ${soort} mislukt (${reden.slice(0, 120)})`,
+          run: { worker: 'postnl-rva', status: 'mislukt', depots_mislukt: [{ depot: sessie.depot.naam, fout: reden.slice(0, 300) }], foutmelding: reden },
+        }
+      }
       throw Object.assign(err, { dag: klaar, bewaren: true })
     }
   },

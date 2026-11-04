@@ -143,11 +143,19 @@ export async function leesRitDag(page, mendix, rit, dag, { revisies = true } = {
     .map(o => ({ soort: o.soort, minuten: o.minuten, naRegel: guids.get(o.naRegel) ?? null }))
     .filter(o => o.naRegel)
   const bewerkstand = await rva.inBewerkstand(page)
-  const rev = revisies && !bewerkstand ? (await rva.leesRevisies(page, mendix)).revisies : []
+  // Revisies zijn bijzaak: lukt het lezen niet (geen revisies, venster traag), dan het venster dicht en
+  // zonder revisies verder (null = niet gelezen; de oude blijven dan in matransport staan).
+  let rev = []
+  if (revisies && !bewerkstand) {
+    rev = await rva.leesRevisies(page, mendix).then(x => x.revisies).catch(async () => {
+      await rva.sluitVenster(page, mendix).catch(() => {}) // bewust: er stond misschien geen venster open
+      return null
+    })
+  }
   return {
     regels: regels.map(({ oudeVolgorde, ...r }) => ({ ...r, geknipt: geknipt.get(regelSleutel(r)) ?? false })),
     onderbrekingen,
-    revisies: rev.slice(0, REVISIES_MAX).map(x => ({ gemaaktOp: x.gemaaktOp, door: x.door, actief: x.actief, regels: x.regels?.map(kortRegel) ?? null })),
+    revisies: rev == null ? null : rev.slice(0, REVISIES_MAX).map(x => ({ gemaaktOp: x.gemaaktOp, door: x.door, actief: x.actief, regels: x.regels?.map(kortRegel) ?? null })),
     vergrendeld: opSlot || bewerkstand,
   }
 }
