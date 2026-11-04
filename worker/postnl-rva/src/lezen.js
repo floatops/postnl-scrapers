@@ -101,3 +101,11 @@ export function meldingenOver(antwoorden) {
   const gezien = new Set()
   return antwoorden.flatMap(meldingenUit).filter(m => !gezien.has(m.tekst) && gezien.add(m.tekst))
 }
+
+// guid → regelsleutel, uit dezelfde antwoorden. Een onderbreking wijst naar de guid van de regel
+// waarna hij komt; de app kent regels alleen op inhoud (plan.regelSleutel).
+export function regelGuidsUit(antwoorden, sleutelVan) {
+  const uit = new Map()
+  for (const o of objectenOver(antwoorden, T.regel).values()) uit.set(o.guid, sleutelVan(regelVan(o)))
+  return uit
+}

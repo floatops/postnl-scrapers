@@ -118,10 +118,12 @@ export async function eigenAccount(page) {
   return (await page.locator('.mx-name-pop_upMenu1 .mx-name-text1').first().innerText().catch(() => '')).trim() || null
 }
 
+// Geeft de Mendix-antwoorden terug: daarin staan de ritten met hun nummer (lezen.rittenUit).
 export async function naarRittenoverzicht(page, mendix) {
-  await mendix.actie(() => page.locator(SCHERM.menuRittenoverzicht).first().click())
+  const antwoorden = await mendix.actie(() => page.locator(SCHERM.menuRittenoverzicht).first().click())
   await page.locator(`${SCHERM.overzicht} [role="row"] [role="gridcell"]`).first().waitFor({ state: 'visible', timeout: 30_000 })
   await mendix.wacht()
+  return antwoorden
 }
 
 // Het Rittenoverzicht zoals het in beeld staat: per rij de ritnaam, welke dagen erin staan, welke
@@ -210,6 +212,9 @@ async function leesRegelsNu(page) {
 }
 
 export const inBewerkstand = async (page) => zichtbaar(knop(page, SCHERM.opslaan)) && !(await zichtbaar(knop(page, SCHERM.wijzig)))
+
+// Mag dit account deze rit-dag bewerken? Alleen een ritverantwoordelijke ziet Wijzig (of zit al in de bewerkstand).
+export const magWijzigen = async (page) => (await zichtbaar(knop(page, SCHERM.wijzig))) || inBewerkstand(page)
 
 async function regelRij(page, sleutel) {
   const regels = await leesRegels(page)

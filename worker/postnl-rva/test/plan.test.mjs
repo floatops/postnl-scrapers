@@ -60,3 +60,29 @@ test('revisieTijdTekst: zoals de revisielijst hem toont (NL-tijd)', () => {
   assert.equal(revisieTijdTekst(Date.UTC(2026, 10, 2, 23, 34, 48)), '03-11-2026 00:34')
   assert.equal(revisieTijdTekst(Date.UTC(2026, 7, 21, 7, 50, 18)), '21-08-2026 09:50')
 })
+
+test('ritRijen: scherm is de basis, nummer uit de antwoorden, en ritten die niet op het scherm staan erbij', async () => {
+  const { ritRijen } = await import('../src/plan.js')
+  const trips = [{ naam: '0114 Proef', nummer: '0114', dagen: ['Ma', 'Di'], verantwoordelijken: ['A'] }, { naam: '0216 Ander', nummer: '0216', dagen: ['Za'], verantwoordelijken: [] }]
+  const scherm = [
+    { ritnaam: '0114 Proef', dagen: ['Ma'], opSlot: [], verantwoordelijkenTekst: 'A, B' },
+    { ritnaam: '0114 Proef', dagen: ['Di', 'Wo'], opSlot: ['Wo'], verantwoordelijkenTekst: '' },
+  ]
+  const rijen = ritRijen(trips, scherm)
+  assert.deepEqual(rijen.map(x => x.sleutel), ['0114|Ma', '0114|Di', '0216|Za'])
+  assert.deepEqual(rijen[0].verantwoordelijken, ['A', 'B'])
+  assert.deepEqual(rijen[1].verantwoordelijken, ['A'], 'leeg op het scherm: uit de antwoorden')
+  assert.deepEqual(rijen[1].vergrendeld_dagen, ['Wo'])
+  assert.equal(rijen[0].ritnummer, '114')
+  assert.equal(ritRijen([], [{ ritnaam: '0307 Zonder', dagen: ['Ma'] }])[0].ritnummer, '307', 'nummer uit de naam')
+})
+
+test('rittenTeSchrijven: alleen nieuw of anders, en alles na 12 uur opnieuw (gezien_at)', async () => {
+  const { rittenTeSchrijven } = await import('../src/plan.js')
+  const nu = new Date('2026-11-04T12:00:00Z')
+  const rij = { sleutel: 's', naam: 'n', trip_nummer: '1', ritnummer: '1', dagen: ['Ma'], verantwoordelijken: [], vergrendeld_dagen: [] }
+  assert.deepEqual(rittenTeSchrijven([{ ...rij, gezien_at: '2026-11-04T11:00:00Z' }], [rij], nu), [])
+  assert.equal(rittenTeSchrijven([{ ...rij, gezien_at: '2026-11-03T20:00:00Z' }], [rij], nu).length, 1)
+  assert.equal(rittenTeSchrijven([{ ...rij, dagen: ['Di'], gezien_at: '2026-11-04T11:00:00Z' }], [rij], nu).length, 1)
+  assert.equal(rittenTeSchrijven([], [rij], nu).length, 1)
+})

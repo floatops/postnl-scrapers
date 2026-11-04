@@ -81,3 +81,43 @@ export function revisieTijdTekst(ms) {
     .formatToParts(new Date(ms)).reduce((o, p) => ({ ...o, [p.type]: p.value }), {})
   return `${d.day}-${d.month}-${d.year} ${d.hour}:${d.minute}`
 }
+
+// ── Rittenoverzicht → rva_ritten in matransport (matransport#573) ─────────────
+
+const ritnummerVan = (nummer) => (nummer ? (String(nummer).replace(/^0+/, '') || String(nummer)) : null)
+const namenUitTekst = (t) => String(t ?? '').split(/\s*[,\n]\s*/).map(s => s.trim()).filter(Boolean)
+
+// Eén rij per route-rij zoals RVA hem toont (per route twee: Ma, en Di–Za). Het scherm is de basis
+// (naam, dagen, slotje, verantwoordelijken); het tripnummer komt uit de Mendix-antwoorden (rittenUit).
+// Ritten die alleen in de antwoorden staan (niet op het scherm, bv. een lange lijst) komen er ook bij.
+export function ritRijen(trips, scherm) {
+  const nummerVan = (naam) => trips.find(t => t.naam === naam)?.nummer ?? String(naam).match(/^\s*(\d+)/)?.[1] ?? null
+  const rijen = scherm.filter(s => s.ritnaam && s.dagen?.length).map(s => ({
+    naam: s.ritnaam, nummer: nummerVan(s.ritnaam), dagen: s.dagen, opSlot: s.opSlot ?? [],
+    verantwoordelijken: namenUitTekst(s.verantwoordelijkenTekst).length ? namenUitTekst(s.verantwoordelijkenTekst) : (trips.find(t => t.naam === s.ritnaam)?.verantwoordelijken ?? []),
+  }))
+  for (const t of trips) {
+    if (!t.naam || !t.dagen?.length || rijen.some(r => r.naam === t.naam)) continue
+    rijen.push({ naam: t.naam, nummer: t.nummer, dagen: t.dagen, opSlot: [], verantwoordelijken: t.verantwoordelijken ?? [] })
+  }
+  const gezien = new Set()
+  return rijen.map(r => {
+    const nummer = r.nummer == null ? null : String(r.nummer).trim()
+    return {
+      sleutel: `${nummer ?? r.naam}|${r.dagen[0]}`, naam: r.naam, trip_nummer: nummer, ritnummer: ritnummerVan(nummer),
+      dagen: r.dagen, verantwoordelijken: r.verantwoordelijken, vergrendeld_dagen: r.opSlot,
+    }
+  }).filter(r => !gezien.has(r.sleutel) && gezien.add(r.sleutel))
+}
+
+// Wat er naar rva_ritten moet: nieuwe of gewijzigde rijen, plus rijen die langer dan `verversUur`
+// niet bijgewerkt zijn (gezien_at: matransport ruimt een rij op die 30 dagen niet gezien is).
+export function rittenTeSchrijven(bestaand, gelezen, nu = new Date(), verversUur = 12) {
+  const oud = new Map(bestaand.map(b => [b.sleutel, b]))
+  const zelfde = (a, b) => JSON.stringify([a.naam, a.trip_nummer, a.ritnummer, a.dagen, a.verantwoordelijken, a.vergrendeld_dagen])
+    === JSON.stringify([b.naam, b.trip_nummer, b.ritnummer, b.dagen, b.verantwoordelijken, b.vergrendeld_dagen])
+  return gelezen.filter(r => {
+    const b = oud.get(r.sleutel)
+    return !b || !zelfde(b, r) || nu - new Date(b.gezien_at) > verversUur * 3_600_000
+  })
+}

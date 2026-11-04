@@ -206,3 +206,82 @@ test('lus: twee RVA-opdrachten na elkaar op volgorde, en een OOM PD-startpagina 
   assert.deepEqual(volgorde, ['a', 'b'], 'op volgorde van binnenkomst, elk één keer')
   assert.equal(gebeurtenissen.filter(g => g.soort === 'gegooid').length, 0, 'OOM PD op de startpagina telt niet bij een RVA-taak')
 })
+
+// ── matransport#573: ophalen, direct-opslaan-soorten, ritten naar rva_ritten ──
+
+// Nep-Supabase per tabel: rva_opdrachten zoals nepDb, en upserts/updates op de andere tabellen onthouden.
+function nepDbTabellen(opdracht, { ritten = [] } = {}) {
+  const basis = nepDb(opdracht)
+  const geschreven = { upserts: [], updates: [] }
+  const anders = (tabel) => ({
+    upsert: async (rijen, opties) => { geschreven.upserts.push({ tabel, rijen, opties }); return { error: null } },
+    update: (v) => {
+      const q = { eq: () => q, in: () => q, then: (ok) => { geschreven.updates.push({ tabel, v }); return Promise.resolve({ error: null }).then(ok) } }
+      return q
+    },
+    select: () => { const q = { eq: () => q, then: (ok) => Promise.resolve({ data: ritten, error: null }).then(ok) }; return q },
+  })
+  return { ...basis, geschreven, from: (tabel) => (tabel === 'rva_opdrachten' ? basis.from(tabel) : anders(tabel)) }
+}
+
+test('rva-handler ophalen: leest de rit-dag en zet hem in rva_regels, ook zonder RVA_ECHT', async () => {
+  delete process.env.RVA_ECHT
+  const gelezen = { regels: [{ volgorde: 1, straat: 'Appelstraat' }], onderbrekingen: [], revisies: [], vergrendeld: false }
+  rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), leesRitDag: async (p, m, rit, d) => { assert.deepEqual([rit, d], ['proefrit', 'Za']); return gelezen } })
+  const db = nepDbTabellen({ ...opdracht, soort: 'ophalen', handelingen: [] })
+  const uit = await HANDLERS.rva({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
+  const u = db.geschreven.upserts.find(x => x.tabel === 'rva_regels')
+  assert.equal(u.rijen.klant_id, 'k')
+  assert.deepEqual(u.rijen.regels, gelezen.regels)
+  assert.equal(u.opties.onConflict, 'klant_id,depot,rit,weekdag')
+  assert.equal(db.updates.at(-1).status, 'klaar')
+  assert.equal(uit.bewaren, false, 'alleen lezen: geen opname bewaren')
+})
+
+test('rva-handler kopieren in de proefstand: mislukt met uitleg, niets in RVA, niet gooien', async () => {
+  delete process.env.RVA_ECHT
+  let gekopieerd = false
+  rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), kopieerNaar: async () => { gekopieerd = true } })
+  const db = nepDbTabellen({ ...opdracht, soort: 'kopieren', handelingen: [], parameters: { naar: ['Di'] } })
+  const uit = await HANDLERS.rva({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
+  assert.equal(gekopieerd, false)
+  assert.equal(db.updates.at(-1).status, 'mislukt')
+  assert.match(db.updates.at(-1).melding, /Proefstand/)
+  assert.deepEqual(uit.dag.aanvragen, [])
+})
+
+test('rva-handler kopieren echt: doeldagen als verouderd gemarkeerd', async () => {
+  process.env.RVA_ECHT = 'ja'
+  rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), kopieerNaar: async (p, m, rit, d, naar) => { assert.deepEqual(naar, ['Di', 'Wo']); return { melding: 'De volgende weekdagen zijn succesvol gekopieerd' } } })
+  const db = nepDbTabellen({ ...opdracht, soort: 'kopieren', handelingen: [], parameters: { naar: ['Di', 'Wo'] } })
+  await HANDLERS.rva({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
+  assert.deepEqual(db.geschreven.updates.find(x => x.tabel === 'rva_regels').v, { gelezen_at: null })
+  assert.equal(db.updates.at(-1).status, 'klaar')
+  delete process.env.RVA_ECHT
+})
+
+test('rva-handler wijzigen echt: de nieuwe stand gaat meteen naar rva_regels; account toegevoegd staat in de melding', async () => {
+  process.env.RVA_ECHT = 'ja'
+  rva.laad = async () => ({
+    regelSleutel: () => 'x', openRva: async () => ({ ingelogd: false }),
+    voerUit: async () => ({ stappen: [], opgeslagen: true, na: [1], rechtenToegevoegd: true }),
+    leesRitDag: async () => ({ regels: [1, 2], onderbrekingen: [], revisies: [], vergrendeld: false }),
+  })
+  const db = nepDbTabellen(opdracht)
+  await HANDLERS.rva({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
+  assert.ok(db.geschreven.upserts.some(x => x.tabel === 'rva_regels'))
+  assert.match(db.updates.at(-1).melding, /^Opgeslagen in RVA\. Het account is eerst als ritverantwoordelijke toegevoegd\.$/)
+  assert.equal(db.updates.at(-1).resultaat.rechtenToegevoegd, true)
+  delete process.env.RVA_ECHT
+})
+
+test('rvaWakker: het Rittenoverzicht gaat naar rva_ritten, alleen wat anders is', async () => {
+  const gelezen = [{ sleutel: '0114|Ma', naam: '0114 proef', trip_nummer: '0114', ritnummer: '114', dagen: ['Ma'], verantwoordelijken: [], vergrendeld_dagen: [] }]
+  rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), leesRitten: async () => gelezen, rittenTeSchrijven: (b, g) => g })
+  const db = nepDbTabellen(null)
+  await HANDLERS.rvaWakker({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, nieuweDag('2026-11-03'))
+  const u = db.geschreven.upserts.find(x => x.tabel === 'rva_ritten')
+  assert.equal(u.rijen[0].klant_id, 'k')
+  assert.equal(u.rijen[0].depot, 'Depot A')
+  assert.equal(u.opties.onConflict, 'klant_id,depot,sleutel')
+})

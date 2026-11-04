@@ -6,6 +6,7 @@ Afgesproken volgorde:
 1. **Klaar (03-11):** alle handelingen uit de opnames kunnen uitvoeren en controleren (`src/`, `scripts/proef.mjs`, live getest).
 2. **Gebouwd (03-11):** in de sessiehouder, met één browser per depot en twee tabbladen (OOM PD + RVA, dezelfde login), RVA 24/7, met een wachtrij (`rva_opdrachten` + edge function `rva-opdracht` in matransport). Zie `../postnl-sessie/POSTNL_SESSIE.md` § RVA. Nog te doen: de meting met `scripts/twee-tabs.mjs` na 23:00, dan aanzetten in de proefstand.
 3. **Daarna:** het scherm voor chauffeurs in de app, met een **voortgangsbalk** tijdens het doorvoeren (afspraak eigenaar 03-11; `rva_opdrachten.stap` en `.voortgang` worden al live bijgewerkt).
+4. **Gebouwd (04-11, matransport#573):** de app-kant. Nieuwe functies hier: `leesRitDag` (regels, onderbrekingen als regelsleutel, de laatste `REVISIES_MAX` revisies met regels, slot; wijzigt niets, ook geen achtergebleven bewerkstand), `kopieerNaar`, `revisieTerug`, `zetVerantwoordelijkenVeilig` (eigen account moet blijven), `leesRitten` (Rittenoverzicht → rijen voor `rva_ritten`, `plan.ritRijen`/`rittenTeSchrijven`) en `zorgVoorRechten`: **staat het eigen account niet als ritverantwoordelijke bij de rit, dan zet `voerUit` het er echt zelf bij** (keuze eigenaar 03-11) en opent de rit-dag opnieuw; in de proefstand fout `geen_rechten`.
 
 ## Hoe RVA werkt (vastgesteld op de opnames van 03-11)
 

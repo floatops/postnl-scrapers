@@ -13,8 +13,8 @@
 //       { soort: 'onderbreking', regel, minuten },
 //       { soort: 'onderbreking_weg', regel } ] }
 // <sleutel> = plan.regelSleutel(regel). Veiligheid: zonder `echt` eindigt alles met Annuleer.
-import { regelSleutel, zetOpPlek, knipDelen, verschillen } from './plan.js'
-import { meldingenOver } from './lezen.js'
+import { regelSleutel, zetOpPlek, knipDelen, verschillen, revisieTijdTekst, ritRijen } from './plan.js'
+import { meldingenOver, regelsUit, rittenUit, onderbrekingenUit, regelGuidsUit } from './lezen.js'
 import * as rva from './scherm.js'
 
 // Wat we na een handeling verwachten te zien, of null als dat niet vooraf vast te leggen is.
@@ -68,6 +68,7 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
   // Een achtergebleven bewerkstand van dit account (vorige poging) eerst weg: Revisies werkt
   // alleen buiten de bewerkstand. Die Annuleer zet de basisrevisie van die poging terug.
   if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
+  const { toegevoegd: rechtenToegevoegd } = await zorgVoorRechten(page, mendix, opdracht.rit, opdracht.dag, { echt, log, meld })
   await meld('Controleren wat er nu in RVA staat', 15)
   await zorgVoorBasisRevisie(page, mendix, { echt, log })
   const voor = await rva.leesRegels(page)
@@ -102,9 +103,97 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
   // Opgeslagen: wat nu in beeld staat moet de kladversie zijn. Proef: weer gelijk aan het begin.
   const controle = echt ? verschillen(kladversie, na) : verschillen(voor, na)
   if (controle.length) throw Object.assign(new rva.RvaFout('controle', `${echt ? 'Na Opslaan' : 'Na Annuleer'}: ${controle.join('; ')}`), { stappen })
-  return { voor, kladversie, na, stappen, opgeslagen: echt }
+  return { voor, kladversie, na, stappen, opgeslagen: echt, rechtenToegevoegd }
+}
+
+// ── Voor het scherm Rijvolgorde in de app (matransport#573) ─────────────────
+
+// Alleen een ritverantwoordelijke ziet Wijzig. Staat het eigen account er niet bij, dan zet de
+// worker het er echt zelf bij (keuze eigenaar 03-11): de andere namen blijven, en daarna gaat
+// de rit-dag opnieuw open. In de proefstand niet: dan fout geen_rechten. Op de rit-dag-pagina.
+export async function zorgVoorRechten(page, mendix, rit, dag, { echt = false, log = console, meld = async () => {} } = {}) {
+  if (await rva.magWijzigen(page)) return { toegevoegd: false }
+  if (!echt) throw new rva.RvaFout('geen_rechten', 'Het account staat niet als ritverantwoordelijke bij deze rit (proefstand: niet zelf toegevoegd)')
+  const eigen = await rva.eigenAccount(page)
+  if (!eigen) throw new rva.RvaFout('geen_rechten', 'Geen Wijzig-knop, en de naam van het eigen account is niet te lezen')
+  await meld('Account toevoegen als ritverantwoordelijke', 12)
+  const { gekozen, alle } = await rva.leesVerantwoordelijken(page, mendix, rit, dag)
+  if (gekozen.includes(eigen)) throw new rva.RvaFout('geen_rechten', 'Geen Wijzig-knop, terwijl het account al ritverantwoordelijke is')
+  if (!alle.includes(eigen)) throw new rva.RvaFout('geen_rechten', 'Het eigen account staat niet in de keuzelijst Ritverantwoordelijke')
+  await rva.zetVerantwoordelijken(page, mendix, rit, dag, [...gekozen, eigen])
+  log.log('  ritverantwoordelijke: eigen account toegevoegd')
+  await rva.openRitDag(page, mendix, rit, dag)
+  if (!(await rva.magWijzigen(page))) throw new rva.RvaFout('geen_rechten', 'Account toegevoegd als ritverantwoordelijke, maar nog geen Wijzig-knop')
+  return { toegevoegd: true }
+}
+
+// Een revisie in de vorm voor de app: zonder guid, regels alleen met wat het scherm toont.
+const kortRegel = (r) => ({ postcode: r.postcode, straat: r.straat, van: r.van, tm: r.tm, evenOneven: r.evenOneven, richting: r.richting })
+export const REVISIES_MAX = 6
+
+// De huidige stand van één rit-dag lezen, zonder iets te wijzigen: regels, onderbrekingen (naRegel
+// als regelsleutel), de laatste revisies met inhoud, en of hij op slot staat. Een achtergebleven
+// bewerkstand blijft staan (het kan iemand zijn die met dezelfde login in RVA werkt).
+export async function leesRitDag(page, mendix, rit, dag, { revisies = true } = {}) {
+  const { antwoorden, opSlot } = await rva.openRitDag(page, mendix, rit, dag)
+  const regels = await rva.leesRegels(page)
+  const geknipt = new Map(regelsUit(antwoorden).map(r => [regelSleutel(r), r.geknipt]))
+  const guids = regelGuidsUit(antwoorden, regelSleutel)
+  const onderbrekingen = onderbrekingenUit(antwoorden)
+    .map(o => ({ soort: o.soort, minuten: o.minuten, naRegel: guids.get(o.naRegel) ?? null }))
+    .filter(o => o.naRegel)
+  const bewerkstand = await rva.inBewerkstand(page)
+  const rev = revisies && !bewerkstand ? (await rva.leesRevisies(page, mendix)).revisies : []
+  return {
+    regels: regels.map(({ oudeVolgorde, ...r }) => ({ ...r, geknipt: geknipt.get(regelSleutel(r)) ?? false })),
+    onderbrekingen,
+    revisies: rev.slice(0, REVISIES_MAX).map(x => ({ gemaaktOp: x.gemaaktOp, door: x.door, actief: x.actief, regels: x.regels?.map(kortRegel) ?? null })),
+    vergrendeld: opSlot || bewerkstand,
+  }
+}
+
+// Kopieer weekdag (slaat bij PostNL direct op). Controleert de melding van PostNL.
+export async function kopieerNaar(page, mendix, rit, dag, naar, { echt = false, log = console, meld = async () => {} } = {}) {
+  if (!echt) throw new rva.RvaFout('proefstand', 'Kopiëren slaat in RVA direct op; in de proefstand gebeurt er niets')
+  await meld('Rit-dag openen', 20)
+  await rva.openRitDag(page, mendix, rit, dag)
+  if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
+  await zorgVoorRechten(page, mendix, rit, dag, { echt, log, meld })
+  await meld(`Kopiëren naar ${naar.join(', ')}`, 60)
+  const { melding } = await rva.kopieerWeekdag(page, mendix, naar)
+  if (!/succesvol/i.test(melding)) throw new rva.RvaFout('controle', `Kopiëren: PostNL meldde "${melding.slice(0, 160)}"`)
+  return { melding }
+}
+
+// Een revisie terugzetten (slaat bij PostNL direct op). `gemaaktOp` in ms, zoals in de app.
+export async function revisieTerug(page, mendix, rit, dag, gemaaktOp, { echt = false, log = console, meld = async () => {} } = {}) {
+  if (!echt) throw new rva.RvaFout('proefstand', 'Een revisie terugzetten slaat in RVA direct op; in de proefstand gebeurt er niets')
+  await meld('Rit-dag openen', 20)
+  await rva.openRitDag(page, mendix, rit, dag)
+  if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
+  await zorgVoorRechten(page, mendix, rit, dag, { echt, log, meld })
+  await meld('Revisie terugzetten', 60)
+  await rva.zetRevisieTerug(page, mendix, revisieTijdTekst(gemaaktOp))
+}
+
+// Ritverantwoordelijken zetten (elke klik slaat direct op). Het eigen account moet erbij blijven:
+// zonder kan dit account de rit niet meer bewerken, en de app dus ook niet.
+export async function zetVerantwoordelijkenVeilig(page, mendix, rit, dag, namen, { echt = false } = {}) {
+  if (!echt) throw new rva.RvaFout('proefstand', 'Ritverantwoordelijken slaan in RVA direct op; in de proefstand gebeurt er niets')
+  const eigen = await rva.eigenAccount(page)
+  if (!eigen) throw new rva.RvaFout('controle', 'De naam van het eigen account is niet te lezen; uit voorzorg niets gewijzigd')
+  if (!namen.includes(eigen)) throw new rva.RvaFout('controle', 'Het eigen account moet ritverantwoordelijke blijven, anders kan FloatOps deze rit niet meer bewerken')
+  await rva.zetVerantwoordelijken(page, mendix, rit, dag, namen)
+  return (await rva.leesVerantwoordelijken(page, mendix, rit, dag)).gekozen
+}
+
+// Het Rittenoverzicht als rijen voor rva_ritten (plan.ritRijen).
+export async function leesRitten(page, mendix) {
+  const antwoorden = await rva.naarRittenoverzicht(page, mendix)
+  const scherm = await rva.leesRittenoverzicht(page).catch(() => [])
+  return ritRijen(rittenUit(antwoorden), scherm)
 }
 
 export * from './scherm.js'
-export { regelSleutel, stappenVoorVolgorde, knipDelen, verschillen, revisieTijdTekst } from './plan.js'
-export { regelsUit, ritDagUit, rittenUit, revisiesUit, onderbrekingenUit } from './lezen.js'
+export { regelSleutel, stappenVoorVolgorde, knipDelen, verschillen, revisieTijdTekst, ritRijen, rittenTeSchrijven } from './plan.js'
+export { regelsUit, ritDagUit, rittenUit, revisiesUit, onderbrekingenUit, regelGuidsUit } from './lezen.js'

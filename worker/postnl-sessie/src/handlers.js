@@ -69,6 +69,37 @@ async function zetRva(ctx, id, velden, filter = null) {
   return data ?? []
 }
 
+// De gelezen stand van een rit-dag naar rva_regels (matransport#573): dat toont het scherm Rijvolgorde.
+async function schrijfRegels(ctx, o, gelezen) {
+  const { error } = await ctx.supabase.from('rva_regels').upsert({
+    klant_id: ctx.klantId, depot: o.depot, rit: o.rit, weekdag: o.weekdag,
+    regels: gelezen.regels, onderbrekingen: gelezen.onderbrekingen, revisies: gelezen.revisies,
+    vergrendeld: gelezen.vergrendeld === true, gelezen_at: new Date().toISOString(), opdracht_id: o.id,
+  }, { onConflict: 'klant_id,depot,rit,weekdag' })
+  if (error) throw Object.assign(new Error(`RVA-regels opslaan: ${error.message}`), { database: true })
+}
+
+// Het Rittenoverzicht naar rva_ritten: alleen nieuwe of gewijzigde rijen, en elke 12 uur alles
+// (gezien_at; matransport ruimt een rij op die 30 dagen niet gezien is). Geeft het aantal geschreven rijen.
+async function schrijfRitten(ctx, r, rijen) {
+  const { supabase, klantId, sessie } = ctx
+  const depot = sessie.depot.naam
+  const { data: bestaand, error } = await supabase.from('rva_ritten')
+    .select('sleutel, naam, trip_nummer, ritnummer, dagen, verantwoordelijken, vergrendeld_dagen, gezien_at')
+    .eq('klant_id', klantId).eq('depot', depot)
+  if (error) throw Object.assign(new Error(`RVA-ritten lezen: ${error.message}`), { database: true })
+  const teSchrijven = r.rittenTeSchrijven(bestaand ?? [], rijen, ctx.nu)
+  if (!teSchrijven.length) return 0
+  const gezien = new Date().toISOString()
+  const { error: fout } = await supabase.from('rva_ritten')
+    .upsert(teSchrijven.map(x => ({ ...x, klant_id: klantId, depot, gezien_at: gezien })), { onConflict: 'klant_id,depot,sleutel' })
+  if (fout) throw Object.assign(new Error(`RVA-ritten opslaan: ${fout.message}`), { database: true })
+  return teSchrijven.length
+}
+
+// Soorten die bij PostNL direct opslaan (geen Wijzig/Opslaan): alleen met RVA_ECHT=ja.
+const RVA_DIRECT = ['kopieren', 'revisie_terug', 'verantwoordelijken']
+
 // Alle shifts en ritten van een dag die al gekozen is (keuze van naarDag).
 async function leesDag(sessie, datum, keuze) {
   const shifts = await shiftsOpScherm(sessie.page)
@@ -130,21 +161,82 @@ export const HANDLERS = {
     // Voortgangsbalk in de app: elke stap live naar rva_opdrachten. Mislukt dat bijwerken, dan
     // gaat de opdracht gewoon door (alleen de balk loopt dan achter).
     const opStap = ({ stap, voortgang }) => zetRva(ctx, id, { stap, voortgang }).catch(e => sessie.log.warn(`${label}: voortgang niet bijgewerkt: ${e.message}`))
-    try {
-      const r = await rva.laad()
-      const { page } = await rvaKlaar(sessie, r)
-      // Een regel kan als sleutel of als object (postcode, straat, van, tm, evenOneven) komen.
-      const handelingen = (o.handelingen ?? []).map(h => ({ ...h, regel: typeof h.regel === 'string' ? h.regel : r.regelSleutel(h.regel ?? {}) }))
-      const uit = await r.voerUit(page, volgMendix(page), { rit: o.rit, dag: o.weekdag, handelingen }, { echt, log, opStap })
+    const soort = o.soort ?? 'wijzigen'
+    // Kopiëren, een revisie terugzetten en verantwoordelijken slaan bij PostNL direct op: in de
+    // proefstand niets doen. Geen technische fout, dus niet gooien (geen herstel nodig).
+    if (RVA_DIRECT.includes(soort) && !echt) {
+      await zetRva(ctx, id, { status: 'mislukt', klaar_at: new Date().toISOString(), stap: null, melding: 'Proefstand: dit slaat in RVA direct op, en RVA_ECHT staat niet aan. Er is niets gewijzigd.' })
+      return { dag: klaar, run: null }
+    }
+    const mendixVan = (page) => volgMendix(page)
+    const klaarMet = async (melding, resultaat, gelezen = 0) => {
+      await zetRva(ctx, id, { status: 'klaar', klaar_at: new Date().toISOString(), stap: null, voortgang: 100, melding, resultaat })
       sessie.lezingen++
-      const melding = echt ? 'Opgeslagen in RVA' : 'Proefstand: alles gecontroleerd, niets opgeslagen (RVA_ECHT staat niet aan)'
-      await zetRva(ctx, id, { status: 'klaar', klaar_at: new Date().toISOString(), stap: null, voortgang: 100, melding, resultaat: { opgeslagen: uit.opgeslagen, stappen: uit.stappen, regels: uit.na.length } })
       // bewaren: trace en video van elke RVA-opdracht 30 dagen op de VPS (fout/), ook als hij
       // slaagt en ook in de proefstand: de eerste maand willen we alles kunnen terugkijken.
       return {
-        dag: klaar, bewaren: true, melding: `${o.rit} ${o.weekdag}: ${uit.stappen.length} handeling(en), ${echt ? 'opgeslagen' : 'proefstand'}`,
-        run: { worker: 'postnl-rva', status: 'ok', depots_ok: 1, rijen_gelezen: uit.na.length, lezingen: { [sessie.depot.naam]: { opdracht: id, handelingen: uit.stappen.length, opgeslagen: uit.opgeslagen } } },
+        dag: klaar, bewaren: soort !== 'ophalen', melding: `${o.rit} ${o.weekdag}: ${soort} — ${melding}`,
+        run: { worker: 'postnl-rva', status: 'ok', depots_ok: 1, rijen_gelezen: gelezen, lezingen: { [sessie.depot.naam]: { opdracht: id, soort, ...resultaat } } },
       }
+    }
+    // Na een wijziging de nieuwe stand meteen naar de app. Lukt dat niet, dan is de opdracht toch
+    // gelukt (de app haalt hem dan zelf op); alleen een waarschuwing.
+    const naLezen = async (page) => {
+      try {
+        await opStap({ stap: 'Nieuwe stand lezen', voortgang: 95 })
+        const gelezen = await r.leesRitDag(page, mendixVan(page), o.rit, o.weekdag)
+        await schrijfRegels(ctx, o, gelezen)
+        return gelezen.regels.length
+      } catch (e) {
+        log.warn(`nieuwe stand niet gelezen: ${e.message}`)
+        return null
+      }
+    }
+    let r
+    try {
+      r = await rva.laad()
+      const { page } = await rvaKlaar(sessie, r)
+      const m = mendixVan(page)
+
+      if (soort === 'ophalen') {
+        await opStap({ stap: 'Rit-dag openen', voortgang: 30 })
+        const gelezen = await r.leesRitDag(page, m, o.rit, o.weekdag)
+        await opStap({ stap: 'Regels opslaan', voortgang: 90 })
+        await schrijfRegels(ctx, o, gelezen)
+        return await klaarMet(`${gelezen.regels.length} regels gelezen`, { regels: gelezen.regels.length }, gelezen.regels.length)
+      }
+
+      if (soort === 'kopieren') {
+        const { melding } = await r.kopieerNaar(page, m, o.rit, o.weekdag, o.parameters?.naar ?? [], { echt, log, meld: (stap, voortgang) => opStap({ stap, voortgang }) })
+        // De doeldagen zijn veranderd: als verouderd markeren, het scherm haalt ze bij openen opnieuw op.
+        const { error: fout } = await supabase.from('rva_regels').update({ gelezen_at: null })
+          .eq('klant_id', klantId).eq('depot', o.depot).eq('rit', o.rit).in('weekdag', o.parameters?.naar ?? [])
+        if (fout) log.warn(`doeldagen niet als verouderd gemarkeerd: ${fout.message}`)
+        return await klaarMet(melding, { naar: o.parameters?.naar })
+      }
+
+      if (soort === 'revisie_terug') {
+        await r.revisieTerug(page, m, o.rit, o.weekdag, o.parameters?.gemaaktOp, { echt, log, meld: (stap, voortgang) => opStap({ stap, voortgang }) })
+        const regels = await naLezen(page)
+        return await klaarMet('Revisie teruggezet in RVA', { regels }, regels ?? 0)
+      }
+
+      if (soort === 'verantwoordelijken') {
+        await opStap({ stap: 'Ritverantwoordelijken opslaan', voortgang: 50 })
+        const gekozen = await r.zetVerantwoordelijkenVeilig(page, m, o.rit, o.weekdag, o.parameters?.namen ?? [], { echt })
+        const { error: fout } = await supabase.from('rva_ritten').update({ verantwoordelijken: gekozen })
+          .eq('klant_id', klantId).eq('depot', o.depot).eq('naam', o.rit)
+        if (fout) log.warn(`rva_ritten niet bijgewerkt: ${fout.message}`)
+        return await klaarMet('Ritverantwoordelijken opgeslagen in RVA', { verantwoordelijken: gekozen.length })
+      }
+
+      // wijzigen. Een regel kan als sleutel of als object (postcode, straat, van, tm, evenOneven) komen.
+      const handelingen = (o.handelingen ?? []).map(h => ({ ...h, regel: typeof h.regel === 'string' ? h.regel : r.regelSleutel(h.regel ?? {}) }))
+      const uit = await r.voerUit(page, m, { rit: o.rit, dag: o.weekdag, handelingen }, { echt, log, opStap })
+      const regels = echt ? await naLezen(page) : null
+      const melding = (echt ? 'Opgeslagen in RVA' : 'Proefstand: alles gecontroleerd, niets opgeslagen (RVA_ECHT staat niet aan)')
+        + (uit.rechtenToegevoegd ? '. Het account is eerst als ritverantwoordelijke toegevoegd.' : '')
+      return await klaarMet(melding, { opgeslagen: uit.opgeslagen, stappen: uit.stappen, regels: regels ?? uit.na.length, rechtenToegevoegd: uit.rechtenToegevoegd === true }, uit.na.length)
     } catch (err) {
       const reden = `${err.soort ? `[${err.soort}] ` : ''}${String(err.message).split('\n')[0]}`.slice(0, 500)
       await zetRva(ctx, id, { status: 'mislukt', klaar_at: new Date().toISOString(), stap: null, melding: reden, resultaat: { stappen: err.stappen ?? [] } })
@@ -161,7 +253,14 @@ export const HANDLERS = {
     try {
       const r = await rva.laad()
       const { page, ingelogd } = await rvaKlaar(sessie, r)
-      await r.naarRittenoverzicht(page, volgMendix(page))
+      if (r.leesRitten && ctx.supabase) {
+        // Meteen het Rittenoverzicht naar rva_ritten (matransport#573): welke ritten er zijn, met
+        // nummer, dagen, slotjes en verantwoordelijken. Mislukt dat, dan blijft het tabblad toch wakker.
+        const rijen = await r.leesRitten(page, volgMendix(page))
+        await schrijfRitten(ctx, r, rijen).catch(e => sessie.log.warn(`[${sessie.depot.naam}] RVA: ritten niet opgeslagen: ${e.message}`))
+      } else {
+        await r.naarRittenoverzicht(page, volgMendix(page))
+      }
       if (!ingelogd) return { dag: verder, run: null }
       // De meting (sessie_verlopen) legt de levensmeter in sessie.js vast.
       return { dag: verder, run: null, melding: 'RVA-sessie was verlopen; opnieuw ingelogd in het RVA-tabblad' }

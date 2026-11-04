@@ -30,6 +30,8 @@ Met `rva: true` in `postnl_instellingen.instellingen` heeft elk depot **één br
   - Gewekt via `POSTNL_RVA_WEKKER` (VPS `/run/postnl-rva`, binnen een seconde), met elke 15 s lezen als vangnet.
   - Status `wacht → bezig` alleen als hij nog op `wacht` staat, en daarna `klaar` of `mislukt` met de reden. Na een fout geen herhaling: `voerUit` doet dan Annuleer.
   - `stap` en `voortgang` (0–100) worden live bijgewerkt, voor de voortgangsbalk in de app.
+  - **Soorten (matransport#573):** `wijzigen` (zoals hierboven, daarna de nieuwe stand naar `rva_regels`), `ophalen` (alleen lezen naar `rva_regels`, ook zonder `RVA_ECHT`, geen opname bewaren), `kopieren` (doeldagen in `rva_regels` op verouderd), `revisie_terug` en `verantwoordelijken`. Die laatste drie slaan in RVA direct op: zonder `RVA_ECHT=ja` meteen `mislukt` met uitleg, zonder iets te doen.
+  - `rvaWakker` schrijft het Rittenoverzicht naar `rva_ritten` (alleen verschillen, elke 12 uur alles voor `gezien_at`). Mislukt dat, dan blijft het tabblad toch wakker.
   - Echt opslaan in RVA alleen met `RVA_ECHT=ja` in de omgeving (de `.env` op de VPS, zonder herstart gelezen); anders proefstand.
 - **Beoordelen na een RVA-taak:** het RVA-tabblad (loginpagina, crash, fout), **niet** de OOM PD-startpagina. Een verse login staat daar, en een RVA-taak laat dat tabblad ongemoeid; anders gaf elke RVA-taak een valse "gegooid".
 - **Opnames:** elke RVA-opdracht bewaart trace en video 30 dagen in `fout/` (`bewaren: true`, ook als hij slaagt en in de proefstand). De video van het RVA-tabblad heet `video-rva-*.webm`.
