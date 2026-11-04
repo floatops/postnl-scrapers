@@ -232,3 +232,24 @@ test('verweesde planner-opdracht (crash): opgeruimd zodra het slot van ons is, n
   assert.equal(opgeruimd[0].depot, DEPOT.naam)
   assert.ok(opgeruimd[0].om >= vrijOm, 'pas met het slot in de hand: daarvoor kan het vangnet-script er nog mee bezig zijn')
 })
+
+test('verweesde sessierij (crash): afgesloten zodra het slot van ons is, vóór de eigen login (matransport#591)', async () => {
+  let vrijOm = null
+  const afgesloten = []
+  const o = opzet({ duurMin: 3, slot: (nu) => { if (!vrijOm) vrijOm = nu.getTime() + 60_000; return nu.getTime() >= vrijOm },
+    handlers: { ritmonitor: async (ctx, dag) => ({ ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } }) } })
+  o.deps.opslag.sluitVerweesdeSessiesAf = async (depot) => { afgesloten.push({ depot, om: o.klok.nu().getTime(), logs: o.log.length }); return 1 }
+  await draaiDepot(o.deps)
+  assert.equal(afgesloten.length, 1, 'één keer, bij het pakken van het slot')
+  assert.equal(afgesloten[0].depot, DEPOT.naam)
+  assert.ok(afgesloten[0].om >= vrijOm, 'pas met het slot in de hand')
+  assert.ok(!o.log.slice(0, afgesloten[0].logs).some(r => r.startsWith('open')), 'vóór de eigen sessie: die mag hij nooit zelf afsluiten')
+})
+
+test('verweesdeSessieEinde: einde = laatste geslaagde taak, anders de login; reden proces_weg (matransport#591)', async () => {
+  const { verweesdeSessieEinde } = await import('../src/opslag.js')
+  assert.deepEqual(verweesdeSessieEinde({ ingelogd_at: '2026-11-04T05:52:00Z', laatste_ok_at: '2026-11-04T06:20:00Z' }),
+    { einde_at: '2026-11-04T06:20:00Z', einde_reden: 'proces_weg' })
+  assert.deepEqual(verweesdeSessieEinde({ ingelogd_at: '2026-11-04T05:52:00Z', laatste_ok_at: null }),
+    { einde_at: '2026-11-04T05:52:00Z', einde_reden: 'proces_weg' }, 'nooit "nu": dan lijkt hij uren geldig')
+})

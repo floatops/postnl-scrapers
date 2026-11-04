@@ -41,6 +41,9 @@ export async function draaiDepot(deps) {
         // Met het slot in de hand is niemand anders met dit depot bezig: een opdracht die nog op
         // 'bezig' staat, is van een gecrasht proces (matransport#578).
         await opslag.ruimVerweesdePlannerOp?.(depot.naam)
+        // Idem een sessierij zonder einde (matransport#591). Een eigen sessie is hier nooit open:
+        // bij de start nog niet, na slot_kwijt al gesloten.
+        await opslag.sluitVerweesdeSessiesAf?.(depot.naam)
         return true
       }
       if (!gemeld) { log.log(`${label} Sessie-slot bezet door een ander proces — wachten`); gemeld = true }

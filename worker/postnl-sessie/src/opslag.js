@@ -116,6 +116,25 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       }
     },
 
+    // Sessierijen van dit depot zonder einde: het proces dat ze opende is weg (crash, exit 134,
+    // kill) zonder ze af te sluiten (matransport#591; 04-11 bleven er zo 5 per depot open). Alleen
+    // aanroepen met het slot in de hand en zonder eigen open sessie. Mag de sessie niet stilleggen.
+    async sluitVerweesdeSessiesAf(depot) {
+      try {
+        const rijen = await vereis(supabase.from('postnl_sessies').select('id, ingelogd_at, laatste_ok_at')
+          .eq('klant_id', klantId).eq('depot', depot).is('einde_at', null), 'open sessies lezen')
+        for (const r of rijen) {
+          await vereis(supabase.from('postnl_sessies').update(verweesdeSessieEinde(r))
+            .eq('id', r.id).eq('klant_id', klantId).is('einde_at', null), 'verweesde sessie afsluiten')
+        }
+        if (rijen.length) log.warn(`[${depot}] ${rijen.length} sessie(s) van een vorig proces stonden nog open: afgesloten (proces_weg)`)
+        return rijen.length
+      } catch (err) {
+        log.warn(`[${depot}] Verweesde sessies niet afgesloten: ${err.message}`)
+        return 0
+      }
+    },
+
     // Sessie-slot (#361): pakken of verlengen. true = van ons.
     async slotPak(sleutel, houder, seconden) {
       const { data, error } = await supabase.rpc('postnl_sessie_pak', { p_sleutel: sleutel, p_houder: houder, p_seconden: seconden })
@@ -144,6 +163,13 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) log.warn(`Opnames bij run ${id} niet opgeslagen: ${error.message}`)
     },
   }
+}
+
+// Puur (getest): het einde van een verweesde sessierij. Het laatste moment waarop hij bewezen
+// werkte (de laatste geslaagde taak), anders de login zelf; nooit "nu", want dan lijkt een sessie
+// van een proces dat 's ochtends crashte de hele dag geldig. In de levensduur een ondergrens.
+export function verweesdeSessieEinde(rij) {
+  return { einde_at: rij.laatste_ok_at ?? rij.ingelogd_at, einde_reden: 'proces_weg' }
 }
 
 // Puur (getest): de levensduren uit rijen van postnl_sessies.
