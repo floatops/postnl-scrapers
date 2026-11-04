@@ -518,11 +518,32 @@ export async function kopieerWeekdag(page, mendix, naar) {
   return { antwoorden, melding: tekst.replace(/\s+/g, ' ') }
 }
 
+// Wachten tot de revisielijst geladen is: true bij een eerste rij, false als hij leeg is. Een
+// rit-dag die nooit is opgeslagen heeft geen revisies: dan staat er "0 to 0 of 0" en komt er nooit
+// een rij (Waddinxveen 04-11, matransport#589). Tot dan wachtte de worker 15 s op een rij en
+// mislukte elke eerste opslag. Leeg pas na `stilMs` zo: vlak na openen kan de lijst nog laden.
+export async function revisieRijenGeladen(page, v, { ms = 15_000, stilMs = 2_000 } = {}) {
+  const cel = v.locator('[role="row"] [role="gridcell"]').first()
+  const tot = Date.now() + ms
+  let leegSinds = null
+  while (Date.now() < tot) {
+    if (await zichtbaar(cel)) return true
+    const status = pagingStatus(await v.locator('.paging-status').first().innerText({ timeout: 1_000 }).catch(() => null))
+    if (status?.totaal === 0) {
+      leegSinds ??= Date.now()
+      if (Date.now() - leegSinds >= stilMs) return false
+    } else leegSinds = null
+    await page.waitForTimeout(300)
+  }
+  throw new RvaFout('scherm', 'De revisielijst laadde niet')
+}
+
 // De revisielijst zoals in beeld: gemaakt op (tekst), door, actief. Laat het venster open.
+// Geen revisies: een lege lijst.
 export async function openRevisies(page, mendix) {
   const antwoorden = await mendix.actie(() => knop(page, SCHERM.revisies).click())
   const v = await wachtOpVenster(page, 'Revisies')
-  await v.locator('[role="row"] [role="gridcell"]').first().waitFor({ state: 'visible', timeout: 15_000 })
+  if (!(await revisieRijenGeladen(page, v))) return { antwoorden, rijen: [], venster: v }
   const rijen = await v.locator('[role="row"]').filter({ has: page.locator('[role="gridcell"]') }).evaluateAll(rs => rs.map(r => {
     const c = [...r.querySelectorAll('[role="gridcell"]')].map(x => (x.innerText || '').trim())
     return { gemaaktOp: c[0], door: c[1], actief: c[2] === 'Ja' }

@@ -43,6 +43,7 @@ Afgesproken volgorde:
 - Het kruisje van een Mendix-venster noemt Playwright "niet zichtbaar": geforceerd klikken, anders Escape.
 - Direct na Annuleer/Opslaan tekent Mendix bij een lange rit eerst lege regels: `leesRegels` wacht tot elke regel een straat heeft.
 - **Geen knoppen = geen ritverantwoordelijke, niet de bewerkstand** (matransport#589). Tot 04-11 miste `inBewerkstand()` een `await` op de Opslaan-check: een rit-dag zonder Wijzig-knop gold dan als bewerkstand. De worker klikte op een Annuleer die er niet is (`locator.click: Timeout 30000ms`, opdracht blijft op "Rit-dag openen 10%") en kwam nooit bij `zorgVoorRechten`. Zo mislukte op 04-11 elke opslag bij Waddinxveen (daar stond het account bij bijna geen rit als ritverantwoordelijke), en stonden die rit-dagen in `rva_regels` ten onrechte op slot, zonder revisies. Elke zichtbaarheidscheck dus met `await`; `test/scherm.test.mjs` bewaakt dit.
+- **Een rit-dag zonder revisies** (nooit opgeslagen in RVA, bij Waddinxveen 04-11 de meeste ritten): het venster Revisies toont "0 to 0 of 0" en er komt nooit een rij. `revisieRijenGeladen` ziet dat aan de paginastatus en geeft een lege lijst; `zorgVoorBasisRevisie` maakt dan eerst een basisrevisie van de stand van nu. Tot 04-11 wachtte `openRevisies` 15 s op een rij en mislukte zo elke eerste opslag (`locator.waitFor: Timeout 15000ms`, 15%), ook nadat de ritverantwoordelijke al was toegevoegd.
 
 **Publieke repo:** geen ritnamen, adressen of namen in code, tests of logs. De logs noemen alleen "regel N" en tellingen. De testritten staan in matransport#569.
 
