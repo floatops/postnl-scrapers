@@ -152,7 +152,11 @@ const PAGINA = {
   eerste: 'button[aria-label="Go to first page"]',
   status: '.paging-status',
 }
-const knopAan = async (loc) => (await zichtbaar(loc)) && !(await loc.isDisabled().catch(() => true))
+// De paginaknoppen gelden voor Playwright nooit als zichtbaar (trace 04-11: wel in de pagina, niet
+// uitgeschakeld, status "1 to 20 of 39", toch 10 s geen isVisible). Daarom: aanwezig en niet
+// uitgeschakeld = aan, en klikken met een DOM-klik in plaats van een muisklik.
+const knopAan = async (loc) => (await loc.count().catch(() => 0)) > 0 && !(await loc.isDisabled({ timeout: 2_000 }).catch(() => true))
+const klikPagina = (loc) => loc.dispatchEvent('click')
 
 // Het zoekveld van het overzicht vullen (leeg = alles). false = er is geen zoekveld.
 async function zoekInOverzicht(page, mendix, tekst) {
@@ -184,24 +188,27 @@ async function leesPagingStatus(page, ms = 10_000) {
 
 // Alle pagina's van het Rittenoverzicht: de rijen van het scherm en de Mendix-antwoorden. Zet het
 // zoekveld eerst leeg en laat het overzicht daarna weer op pagina 1 staan. Bladeren op de
-// paginastatus, niet op de knop: Mendix tekent de knoppen net ná de rijen, en een kale isVisible
-// zag ze dan nog niet (04-11: alleen pagina 1 gelezen, matransport#573).
+// paginastatus (04-11: alleen pagina 1 gelezen, matransport#573); schuift die na een klik niet
+// op, dan stoppen in plaats van dezelfde pagina steeds opnieuw te lezen.
 export async function leesAlleRitten(page, mendix, { maxPaginas = 25 } = {}) {
   const antwoorden = await naarRittenoverzicht(page, mendix)
   await zoekInOverzicht(page, mendix, '')
   const rijen = []
+  let vorigeTot = 0
   for (let i = 0; i < maxPaginas; i++) {
+    const status = await leesPagingStatus(page, i ? 3_000 : 10_000)
+    if (status && status.tot <= vorigeTot) break
     const hier = await leesRittenoverzicht(page)
     rijen.push(...hier)
-    const status = await leesPagingStatus(page, i ? 3_000 : 10_000)
     if (!status || status.tot >= status.totaal) break
+    vorigeTot = status.tot
     const volgende = page.locator(PAGINA.volgende).first()
-    if (!(await volgende.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false))) break
-    antwoorden.push(...await mendix.actie(() => volgende.click()))
+    if (!(await knopAan(volgende))) break
+    antwoorden.push(...await mendix.actie(() => klikPagina(volgende)))
     await wachtOpAndereRijen(page, hier[0]?.ritnaam)
   }
   const eerste = page.locator(PAGINA.eerste).first()
-  if (await knopAan(eerste)) await mendix.actie(() => eerste.click()).catch(() => {}) // bewust: alleen netjes achterlaten
+  if (await knopAan(eerste)) await mendix.actie(() => klikPagina(eerste)).catch(() => {}) // bewust: alleen netjes achterlaten
   return { antwoorden, rijen, status: await page.locator(PAGINA.status).first().innerText().catch(() => null) }
 }
 
@@ -222,13 +229,13 @@ async function overzichtRij(page, ritnaam, weekdag, mendix = null) {
   if (!rij && mendix) {
     await zoekInOverzicht(page, mendix, '')
     const eerste = page.locator(PAGINA.eerste).first()
-    if (await knopAan(eerste)) await mendix.actie(() => eerste.click())
+    if (await knopAan(eerste)) await mendix.actie(() => klikPagina(eerste))
     for (let i = 0; !rij && i < 25; i++) {
       rij = await vind(2_000)
       const volgende = page.locator(PAGINA.volgende).first()
       if (rij || !(await knopAan(volgende))) break
       const voor = (await leesRittenoverzicht(page).catch(() => []))[0]?.ritnaam
-      await mendix.actie(() => volgende.click())
+      await mendix.actie(() => klikPagina(volgende))
       await wachtOpAndereRijen(page, voor)
     }
   }
