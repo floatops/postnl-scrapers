@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, rittenUit,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, rittenUit,
   selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen,
 } from '../src/logica.js'
 
@@ -195,4 +195,11 @@ test('verschil: alleen wat anders is gaat naar de app (#562)', async () => {
   assert.equal(verschil([rit], [zelfdeRit], 'rit_id', RIT_VELDEN).gewijzigd.length, 0)
   assert.equal(verschil([rit], [{ ...zelfdeRit, stops: 11 }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
   assert.equal(verschil([rit], [{ ...zelfdeRit, chauffeur_opties: ['A'] }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
+})
+
+test('doorvoer leest alleen de shifts van de wijzigingen, of alles als er een shift ontbreekt (matransport#578)', () => {
+  assert.deepEqual(shiftsVan([{ shift: '07', naar_shift: '07' }, { shift: '02', naar_shift: null }]), ['02', '07'])
+  assert.deepEqual(shiftsVan([{ shift: '02', naar_shift: '03' }]), ['02', '03'], 'doelrit in een andere shift: ook lezen, dan volgt de nette weigering')
+  assert.equal(shiftsVan([{ shift: '07' }, { shift: null }]), null)
+  assert.deepEqual(shiftsVan([]), [])
 })

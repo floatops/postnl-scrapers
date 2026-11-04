@@ -37,7 +37,12 @@ export async function draaiDepot(deps) {
     const begin = klok.nu()
     let gemeld = false
     for (;;) {
-      if (await opslag.slotPak(sleutel, houder, cfg.slotLeaseSec)) return true
+      if (await opslag.slotPak(sleutel, houder, cfg.slotLeaseSec)) {
+        // Met het slot in de hand is niemand anders met dit depot bezig: een opdracht die nog op
+        // 'bezig' staat, is van een gecrasht proces (matransport#578).
+        await opslag.ruimVerweesdePlannerOp?.(depot.naam)
+        return true
+      }
       if (!gemeld) { log.log(`${label} Sessie-slot bezet door een ander proces — wachten`); gemeld = true }
       if (klok.nu() - begin > cfg.slotWachtMaxMin * MIN) {
         await melden({ soort: 'slot_lang_bezet', depot: depot.naam, detail: `Sessie-slot al ${cfg.slotWachtMaxMin} min bezet; de sessiehouder wacht verder` })

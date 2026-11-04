@@ -61,6 +61,7 @@ De tekst "Ritten kunnen tot HH:MM uur worden aangepast." op de pagina is de offi
 ## Veiligheid bij schrijven
 
 - **Geen sessie-slot = niet doorvoeren.** Lezen gaat na het wachten door zonder slot; schrijven stopt, en de concepten blijven staan.
+- **Lezen bij een doorvoer (matransport#578):** vooraf alleen de ritlijst van de shifts van de wijzigingen (`shiftsVan`; ontbreekt er een shift, dan alles). Na afloop alleen de ritlijst van de geraakte shifts (totalen, chauffeur) en de stops van de geraakte ritten (bron en doel), niet meer elke rit van de shift: dat was het grootste deel van de 1–2 min per opslag. De rest ververst de sessiehouder vanzelf (taak `plannen`). Zo'n deel-lezing zet `planning_versheid` niet.
 - **Vóór de dubbelklik:** opnieuw lezen of de stops nog in de bronrit zitten, doelrit niet geautoriseerd, deadline niet voorbij, en `aria-selected` staat op precies de bedoelde rijen.
 - **Rij zoeken op tijd + adres.** De rijen hebben geen id. Staat dezelfde sleutel dubbel in de tabel, dan weigert de worker.
 - **Selecteren vergrendelt stops bij PostNL** (`OperationalPlanning.Lock`). Aan het eind meldt de worker zich af.

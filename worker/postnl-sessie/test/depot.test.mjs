@@ -220,3 +220,15 @@ test('na 23:00: geen taken meer, sessie dicht met reden nacht en het proces stop
   assert.ok(o.log.includes('dicht:1:nacht'))
   assert.equal(o.log.at(-1), 'slot-los')
 })
+
+test('verweesde planner-opdracht (crash): opgeruimd zodra het slot van ons is, niet eerder (matransport#578)', async () => {
+  let vrijOm = null
+  const opgeruimd = []
+  const o = opzet({ duurMin: 3, slot: (nu) => { if (!vrijOm) vrijOm = nu.getTime() + 60_000; return nu.getTime() >= vrijOm },
+    handlers: { ritmonitor: async (ctx, dag) => ({ ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } }) } })
+  o.deps.opslag.ruimVerweesdePlannerOp = async (depot) => { opgeruimd.push({ depot, om: o.klok.nu().getTime() }); return 1 }
+  await draaiDepot(o.deps)
+  assert.equal(opgeruimd.length, 1, 'één keer, bij het pakken van het slot')
+  assert.equal(opgeruimd[0].depot, DEPOT.naam)
+  assert.ok(opgeruimd[0].om >= vrijOm, 'pas met het slot in de hand: daarvoor kan het vangnet-script er nog mee bezig zijn')
+})

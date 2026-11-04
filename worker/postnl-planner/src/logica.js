@@ -201,6 +201,13 @@ export function shiftReden(bron, doel) {
   return `Alleen verplaatsen binnen dezelfde shift: ${bron.ritnaam} zit in shift ${bron.shift}, ${doel.ritnaam} in shift ${doel.shift}.`
 }
 
+// Welke shifts een doorvoer moet lezen (matransport#578): die van de bron- en de doelritten. Null
+// (= alle shifts) als een wijziging geen shift heeft: dan liever te veel lezen dan een rit missen.
+export function shiftsVan(verplaatsingen) {
+  if (verplaatsingen.some(v => !v.shift)) return null
+  return [...new Set(verplaatsingen.flatMap(v => [v.shift, v.naar_shift]).filter(Boolean))].sort()
+}
+
 // Ritnummer zoals in de tabel ritten: zonder voorloopnullen ("0217 maasdijk" wordt "217").
 export function ritnummerVan(ritnaam) {
   const m = String(ritnaam ?? '').match(/^\s*(\d+)/)

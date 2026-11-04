@@ -1,7 +1,7 @@
 // Wat elke taak in de browser doet (floatops/matransport#562). Elke handler krijgt de open sessie
 // en de dagstatus, en geeft { dag, run } terug: de nieuwe dagstatus en wat er in worker_run_log
 // moet. Lukt iets niet, dan gooit hij: de depot-lus classificeert de fout en herstelt.
-import { openDagplanning, login } from '../../credentials-shared/src/postnl/login.js'
+import { openDagplanning, login, opStartpagina } from '../../credentials-shared/src/postnl/login.js'
 import { dagplanningRitten, hoortBijShift } from '../../credentials-shared/src/postnl/ritten.js'
 import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
@@ -12,6 +12,12 @@ import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, aanvra
 const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
 
 export class DagNietBeschikbaar extends Error {}
+
+// Komt er tijdens een verversronde een Plannen-opdracht binnen (VPS-wekker), dan houdt de ronde op
+// tussen twee ritten: de opdracht hoeft niet op de hele shift te wachten (matransport#578).
+export function stopBijPlannerOpdracht(ctx, begin = Date.now()) {
+  return () => (ctx.plannerSignaal?.() ?? 0) > begin
+}
 
 // Dagplanning openen op de dag van vandaag. Staat de dag er nog niet: DagNietBeschikbaar.
 // Geeft { geopend, vanaf } voor dagVenster: alleen de antwoorden en ritten van deze dag.
@@ -344,11 +350,18 @@ export const HANDLERS = {
     const { data: lopend, error } = await supabase.from('planning_taken').select('id')
       .eq('klant_id', ctx.klantId).in('status', ['wacht', 'bezig']).limit(1)
     if (error) throw Object.assign(new Error(`Plannen-opdrachten niet gelezen: ${error.message}`), { database: true, dag: verder })
-    if (lopend?.length) return { dag: verder, run: null }
+    if (lopend?.length) {
+      // Toch op de Dagplanning eindigen: na een verse login staat de sessie op de startpagina, en
+      // dat telt na de taak als eruit gegooid. Op 04-11 gaf een na een crash blijven hangende
+      // opdracht zo een uur lang logins en pauzes (matransport#578).
+      if (await opStartpagina(sessie.page).catch(() => false)) await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+      return { dag: verder, run: null }
+    }
+    const stoppen = stopBijPlannerOpdracht(ctx)
     try {
       await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
       const { verversPlanning } = await planner.laad()
-      const uit = await verversPlanning(sessie.page, volgMendix(sessie.page), { depot: sessie.depot.naam, datum: dag.datum, soort, shifts, nu })
+      const uit = await verversPlanning(sessie.page, volgMendix(sessie.page), { depot: sessie.depot.naam, datum: dag.datum, soort, shifts, nu, stoppen })
       sessie.lezingen++
       const tel = (t) => (t ? t.nieuw + t.gewijzigd + t.weg : 0)
       const tekst = (naam, t) => (tel(t) ? `${naam} ${t.nieuw} nieuw, ${t.gewijzigd} gewijzigd, ${t.weg} weg` : null)

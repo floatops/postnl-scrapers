@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -158,17 +158,23 @@ async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
 // Alleen verschillen (#562): per rit de gewijzigde of nieuwe stops, en na een volledige ronde de
 // stops die er niet meer zijn. Alleen van de ritten in `ritten`: de sessiehouder geeft geen ritten
 // mee die voorbij hun deadline zijn, en die blijven dus onaangeroerd.
-async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang = async () => {}) {
-  await kiesShift(page, mendix, shift)
+// `deel`: alleen een paar ritten van de shift (na een doorvoer, matransport#578); de shift telt dan
+// niet als helemaal gecontroleerd (planning_versheid). `stoppen()` true = ophouden vóór de volgende
+// rit (er wacht een Plannen-opdracht); wat al gelezen is, blijft gewoon staan.
+async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang = async () => {}, { deel = false, stoppen = () => false } = {}) {
   const eigen = ritten.filter(r => r.shift === shift)
+  if (deel && !eigen.length) return { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
+  await kiesShift(page, mendix, shift)
   const nu = new Date().toISOString()
   const bestaand = await db(supabase.from('planning_stops').select(['stop_id', ...STOP_VELDEN].join(', '))
     .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).eq('shift', shift), 'stops lezen')
-  const gelezenRitten = new Set(eigen.map(r => r.rit_id))
+  const gelezenRitten = new Set()
   const gezien = []
-  const telling = { nieuw: 0, gewijzigd: 0, weg: 0 }
+  const telling = { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
   let klaar = 0
   for (const rit of eigen) {
+    if (stoppen()) { telling.gestopt = true; break }
+    gelezenRitten.add(rit.rit_id)
     if (rit.stops > 0) {
       const stops = await openRit(page, mendix, rit.ritnaam)
       const eigenStops = stops
@@ -203,7 +209,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
     await db(supabase.from('planning_stops').delete().eq('klant_id', KLANT_ID).in('stop_id', weg), 'oude stops weghalen')
   }
   telling.weg = weg.length
-  await zetVersheid(taak, [shift], { stops_om: nu })
+  if (!deel && !telling.gestopt) await zetVersheid(taak, [shift], { stops_om: nu })
   return telling
 }
 
@@ -344,8 +350,10 @@ async function voerDoorvoerenUit(page, mendix, taak) {
   await zetStap(taak.id, 'Dag kiezen in PostNL', 6)
   await kiesDag(page, mendix, dagLabel(taak.datum))
   await zetStap(taak.id, 'Ritten lezen', 8)
-  const ritten = await leesRitten(page, mendix, taak)
+  // Alleen de shifts van deze wijzigingen (matransport#578): elke shift kiezen kost seconden.
+  const ritten = await leesRitten(page, mendix, taak, { shifts: shiftsVan(lijst) })
   const geraakt = new Set()
+  const geraakteRitten = new Set()
   let klaar = 0
   for (const v of lijst) {
     await zetVerplaatsing(v.id, { status: 'bezig' })
@@ -365,15 +373,21 @@ async function voerDoorvoerenUit(page, mendix, taak) {
     await zetVerplaatsing(v.id, uitkomst)
     tellingDoorvoer[uitkomst.status] = (tellingDoorvoer[uitkomst.status] ?? 0) + 1
     console.log(`Wijziging ${klaar + 1}/${lijst.length}: ${uitkomst.status}`)
-    if (uitkomst.status === 'gelukt') { geraakt.add(v.shift); if (v.naar_shift) geraakt.add(v.naar_shift) }
+    if (uitkomst.status === 'gelukt') {
+      geraakt.add(v.shift); if (v.naar_shift) geraakt.add(v.naar_shift)
+      geraakteRitten.add(v.van_rit_id); if (v.naar_rit_id) geraakteRitten.add(v.naar_rit_id)
+    }
     klaar++
   }
-  // De app moet de nieuwe stand zien.
+  // De app moet de nieuwe stand zien: de ritlijst van de geraakte shifts (totalen, chauffeur) en de
+  // stops van alleen de geraakte ritten (matransport#578). Tot dan elke rit van de shift: het
+  // grootste deel van de 1–2 min. De rest ververst de sessiehouder vanzelf (taak plannen).
   if (geraakt.size) {
     await zetStap(taak.id, 'Planning bijwerken', 88)
-    const nieuw = await leesRitten(page, mendix, taak)
-    for (const shift of geraakt) await leesStopsVanShift(page, mendix, taak, shift, nieuw)
-    await bewaarRitten(taak, nieuw)
+    const nieuw = await leesRitten(page, mendix, taak, { shifts: [...geraakt] })
+    const teLezen = nieuw.filter(r => geraakteRitten.has(r.rit_id))
+    for (const shift of geraakt) await leesStopsVanShift(page, mendix, taak, shift, teLezen, undefined, { deel: true })
+    await bewaarRitten(taak, nieuw, { inScope: r => geraakt.has(r.shift) })
   }
 }
 
@@ -450,17 +464,19 @@ let tellingDoorvoer = {}
 // Voor de sessiehouder (#562): de Plannen-tab bijwerken in zijn open sessie, alleen voor ritten die
 // nog vóór hun deadline zijn (daarna kan er niet meer gepland worden). soort 'ritten': de koppen van
 // de gegeven shifts; soort 'stops': ook de stops van die ritten. Geeft het aantal verschillen.
-export async function verversPlanning(page, mendix, { depot, datum, soort, shifts, nu = new Date() }) {
+// `stoppen()`: true = tussen twee ritten ophouden, want er wacht een Plannen-opdracht (matransport#578).
+export async function verversPlanning(page, mendix, { depot, datum, soort, shifts, nu = new Date(), stoppen = () => false }) {
   const taak = { id: null, depot, datum }
   const open = (r) => shifts.includes(r.shift) && (!r.deadline || new Date(r.deadline) > nu)
   await kiesDag(page, mendix, dagLabel(datum))
   const ritten = (await leesRitten(page, mendix, taak, { shifts })).filter(open)
-  const uit = { ritten: null, stops: null }
+  const uit = { ritten: null, stops: null, gestopt: false }
   if (soort === 'stops') {
     uit.stops = { nieuw: 0, gewijzigd: 0, weg: 0 }
     for (const shift of shifts) {
-      const t = await leesStopsVanShift(page, mendix, taak, shift, ritten)
+      const t = await leesStopsVanShift(page, mendix, taak, shift, ritten, undefined, { stoppen })
       for (const k of Object.keys(uit.stops)) uit.stops[k] += t[k]
+      if (t.gestopt) { uit.gestopt = true; break }
     }
   }
   // Na de stops: dan staan ook de chauffeurkeuze en de deadline per open rit erin.

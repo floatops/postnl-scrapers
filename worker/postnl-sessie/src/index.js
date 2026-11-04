@@ -114,6 +114,10 @@ async function main() {
     await opslag.runEinde(id, { ...velden, ...(trace ? { video_paths: [{ soort: 'trace', storage_path: trace }] } : {}) })
   }
 
+  // Wanneer de VPS het laatst een Plannen-opdracht meldde: een lopende verversronde (taak plannen)
+  // houdt dan op tussen twee ritten, zodat de opdracht niet hoeft te wachten (matransport#578).
+  let plannerSignaal = 0
+
   log.log(`Sessiehouder gestart voor ${depots.length} depot(s), houder ${houder}`)
   // Per depot één lus (één browser, één tabblad, één login), elk met een eigen stop-vlag.
   // Een PostNL-login toevoegen, wijzigen, uitzetten of verwijderen op Inloggegevens geeft een
@@ -130,7 +134,7 @@ async function main() {
         schatting: () => schattingen[depot.naam] ?? null,
         telRitmonitor: (d, r) => teller.tel(d, r),
         handlers: HANDLERS,
-        ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor },
+        ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor, plannerSignaal: () => plannerSignaal },
         maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),
       }).catch(async (err) => {
         exitCode = exitCode || 1
@@ -175,6 +179,7 @@ async function main() {
   // wachtende depot-lussen meteen wekken. Die lezen dan planning_taken (elke 15 s als vangnet).
   const plannerCheck = await volgWekker(process.env.POSTNL_PLANNER_WEKKER, 1_000, () => {
     log.log('Planner-opdracht: meteen oppakken')
+    plannerSignaal = Date.now()
     for (const w of [...wekkers]) w()
   })
   // RVA-opdracht uit de app (VPS /run/postnl-rva, matransport#569): idem, meteen oppakken. De lus

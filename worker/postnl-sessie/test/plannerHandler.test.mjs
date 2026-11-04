@@ -2,7 +2,7 @@
 // in de open sessie uitvoeren met de planner-logica van postnl-planner (hier vervangen door een nep).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { HANDLERS, planner } from '../src/handlers.js'
+import { HANDLERS, planner, stopBijPlannerOpdracht } from '../src/handlers.js'
 import { nieuweDag } from '../src/dagstatus.js'
 
 const dag = { ...nieuweDag('2026-11-03'), aanvragen: [{ id: 't1', soort: 'planner' }] }
@@ -67,4 +67,13 @@ test('plannen-handler: loopt er een Plannen-opdracht, dan niet ertussen, wel de 
   const uit = await HANDLERS.plannen({ sessie: sessie(), supabase, klantId: 'k', nu }, dag, { soort: 'stops', shifts: ['07'] })
   assert.equal(aangeroepen, false)
   assert.equal(uit.dag.plannen.stopsOm['07'], nu.toISOString())
+})
+
+test('verversronde houdt op zodra er na het begin een Plannen-opdracht binnenkomt (matransport#578)', () => {
+  let signaal = 1000
+  const stoppen = stopBijPlannerOpdracht({ plannerSignaal: () => signaal }, 2000)
+  assert.equal(stoppen(), false, 'signaal van vóór de ronde: doorlezen')
+  signaal = 2500
+  assert.equal(stoppen(), true, 'opdracht binnen tijdens de ronde: ophouden')
+  assert.equal(stopBijPlannerOpdracht({}, 2000)(), false, 'zonder signaal (losse scripts): nooit ophouden')
 })

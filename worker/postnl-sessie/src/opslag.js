@@ -89,6 +89,33 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       return data ?? []
     },
 
+    // Planner-opdrachten van dit depot die op 'bezig' bleven staan, bv. na een crash (matransport#578).
+    // Alleen aanroepen met het sessie-slot van dit depot in de hand: dan kan niemand anders ermee
+    // bezig zijn. Afbreken, nooit opnieuw uitvoeren: een verplaatsing kan al gelukt zijn. Tot dan
+    // hield de wachtdog ze 60 min vast, en zolang kon niemand van de klant iets opslaan (04-11).
+    // Mag de sessie niet stilleggen: bij een fout blijft de wachtdog in de database het vangnet.
+    async ruimVerweesdePlannerOp(depot) {
+      try {
+        const taken = await vereis(supabase.from('planning_taken').select('id')
+          .eq('klant_id', klantId).eq('depot', depot).eq('status', 'bezig'), 'verweesde planner-opdrachten lezen')
+        if (!taken.length) return 0
+        const ids = taken.map(t => t.id)
+        await vereis(supabase.from('planning_verplaatsingen').update({ status: 'mislukt', melding: 'Onderbroken tijdens deze wijziging (de verbinding met PostNL viel weg). Controleer dit in PostNL.' })
+          .in('taak_id', ids).eq('status', 'bezig'), 'onderbroken wijziging')
+        await vereis(supabase.from('planning_verplaatsingen').update({ status: 'overgeslagen', melding: 'Niet uitgevoerd: de verbinding met PostNL viel weg. Sla deze wijziging opnieuw op.' })
+          .in('taak_id', ids).eq('status', 'wacht'), 'niet uitgevoerde wijziging')
+        await vereis(supabase.from('planning_taken').update({
+          status: 'afgebroken', afgerond_at: new Date().toISOString(),
+          fout: 'Afgebroken: de verbinding met PostNL viel weg tijdens deze opdracht. Per wijziging staat erbij wat er gebeurde.',
+        }).in('id', ids).eq('status', 'bezig'), 'verweesde planner-opdracht afbreken')
+        log.warn(`[${depot}] ${ids.length} planner-opdracht(en) bleven op bezig staan (crash of herstart): afgebroken`)
+        return ids.length
+      } catch (err) {
+        log.warn(`[${depot}] Verweesde planner-opdrachten niet opgeruimd (wachtdog neemt het over): ${err.message}`)
+        return 0
+      }
+    },
+
     // Sessie-slot (#361): pakken of verlengen. true = van ons.
     async slotPak(sleutel, houder, seconden) {
       const { data, error } = await supabase.rpc('postnl_sessie_pak', { p_sleutel: sleutel, p_houder: houder, p_seconden: seconden })
