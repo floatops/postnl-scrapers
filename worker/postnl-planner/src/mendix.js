@@ -19,10 +19,22 @@ export const SCHERM = {
 
 const STIL_MS = 300
 
+// Eén volger per pagina. De sessiehouder houdt een pagina uren open en vraagt bij elke taak een
+// volger: een nieuwe per aanroep stapelde listeners op die elk antwoord voor altijd bewaarden, tot
+// de heap na een paar uur vol was (exit 134, matransport#573). Daarom ook: antwoorden alleen
+// bewaren zolang er een actie loopt.
+const volgers = new WeakMap()
+
 // Volgt het verkeer naar /xas/: wanneer is Mendix klaar, en wat stuurde het terug?
 export function volgMendix(page) {
+  if (!volgers.has(page)) volgers.set(page, maakVolger(page))
+  return volgers.get(page)
+}
+
+function maakVolger(page) {
   let open = 0
   let laatsteActiviteit = Date.now()
+  let acties = 0
   const antwoorden = []
   const lezen = new Set()
   const isXas = (url) => url.includes('/xas/')
@@ -32,8 +44,8 @@ export function volgMendix(page) {
   page.on('requestfinished', klaar)
   page.on('requestfailed', klaar)
   page.on('response', (res) => {
-    if (!isXas(res.url())) return
-    const taak = res.json().then(j => antwoorden.push(j)).catch(() => {})
+    if (!isXas(res.url()) || !acties) return
+    const taak = res.json().then(j => { if (acties) antwoorden.push(j) }).catch(() => {})
     lezen.add(taak)
     taak.finally(() => lezen.delete(taak))
   })
@@ -53,11 +65,16 @@ export function volgMendix(page) {
   // Voert een handeling uit en geeft alle antwoorden terug die daardoor binnenkwamen.
   async function actie(fn, maxMs) {
     await wacht(maxMs)
-    const vanaf = antwoorden.length
-    await fn()
-    await page.waitForTimeout(STIL_MS)
-    await wacht(maxMs)
-    return antwoorden.slice(vanaf)
+    acties++
+    try {
+      const vanaf = antwoorden.length
+      await fn()
+      await page.waitForTimeout(STIL_MS)
+      await wacht(maxMs)
+      return antwoorden.slice(vanaf)
+    } finally {
+      if (--acties === 0) antwoorden.length = 0
+    }
   }
 
   return { wacht, actie }

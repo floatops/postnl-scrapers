@@ -44,6 +44,7 @@ Mendix stuurt alles naar `/xas/`. Herken data aan `objectType`, **nooit aan `ope
 - De ritlijst is **genest**: `RideNumber` bevat in zijn attribuut de `Ride`, en die weer de `Driver`.
 - Sommige waarden staan alleen in **`changes[guid]`**, het object zelf heeft dan `null`.
 - De stoplijst heeft `amount: 500`; `hasMoreItems` is nog nooit waar gezien.
+- **`volgMendix(page)` geeft per pagina altijd dezelfde volger** en bewaart antwoorden alleen tijdens een `actie()`. Maak er nooit een tweede volger naast: in de sessiehouder (pagina uren open) stapelde een nieuwe volger per taak listeners op die elk antwoord voor altijd bewaarden. Op 04-11 liep de heap zo vol (exit 134, ~3,4 GB), en de auto-deploy rolde daardoor twee goede versies terug (matransport#573).
 
 ## Is alles gelezen?
 
