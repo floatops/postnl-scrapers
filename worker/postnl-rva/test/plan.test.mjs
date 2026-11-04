@@ -1,7 +1,7 @@
 // Verzonnen adressen: deze repo is publiek.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { regelSleutel, zetOpPlek, stappenVoorVolgorde, knipDelen, verschillen, vindRegel, revisieTijdTekst } from '../src/plan.js'
+import { regelSleutel, zetOpPlek, stappenVoorVolgorde, knipDelen, verschillen, vindRegel, revisieTijdTekst, pagingStatus } from '../src/plan.js'
 
 const r = (straat, van, tm, evenOneven = 'Oneven', richting = 'Oplopend') => ({ postcode: '1234AB', straat, van, tm, evenOneven, richting })
 const rit = [r('Appelstraat', 1, 9), r('Peerlaan', 2, 20, 'Even'), r('Kerslaan', 1, 1), r('Pruimweg', 3, 7), r('Bessenhof', 2, 2, 'Even')]
@@ -99,4 +99,12 @@ test('volgendeBijlezen: eerst wat ontbreekt, dan de oudste boven de grens; overs
   assert.deepEqual(volgendeBijlezen(ritten, [{ rit: 'A', weekdag: 'Ma', gelezen_at: null }, { rit: 'A', weekdag: 'Di', gelezen_at: vers }, { rit: 'B', weekdag: 'Za', gelezen_at: vers }], nu), { rit: 'A', weekdag: 'Ma' }, 'verouderd (null) telt als ontbrekend')
   assert.equal(volgendeBijlezen(ritten, [], nu, { overslaan: () => true }), null)
   assert.equal(volgendeBijlezen(ritten, ['Ma', 'Di'].map(d => ({ rit: 'A', weekdag: d, gelezen_at: vers })).concat({ rit: 'B', weekdag: 'Za', gelezen_at: vers }), nu), null)
+})
+
+test('pagingStatus: de status onder het Rittenoverzicht (matransport#573)', () => {
+  assert.deepEqual(pagingStatus('1 to 20 of 40'), { tot: 20, totaal: 40 })
+  assert.deepEqual(pagingStatus('21 to 40 of 40'), { tot: 40, totaal: 40 })
+  assert.deepEqual(pagingStatus(' 1 tot 7 van 7 '), { tot: 7, totaal: 7 })
+  assert.equal(pagingStatus(null), null)
+  assert.equal(pagingStatus('Geen resultaten'), null)
 })

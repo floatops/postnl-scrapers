@@ -6,7 +6,7 @@
 // teruggeven. Een venster sluiten we met Annuleren of het kruisje, nooit met de hoofdknop, tenzij
 // het de bevestiging is die we zelf bedoelen.
 import { WEEKDAGEN, revisiesUit } from './lezen.js'
-import { regelSleutel, regelLabel, vindRegel } from './plan.js'
+import { regelSleutel, regelLabel, vindRegel, pagingStatus } from './plan.js'
 
 export const RVA_URL = 'https://pnl-rva.p15.cldsvc.net/'
 
@@ -175,8 +175,17 @@ async function wachtOpAndereRijen(page, voor) {
   }
 }
 
+// De paginastatus, zodra Mendix hem getekend heeft. null = er is geen (pagina's van één).
+async function leesPagingStatus(page, ms = 10_000) {
+  const loc = page.locator(PAGINA.status).first()
+  const tekst = await loc.waitFor({ state: 'attached', timeout: ms }).then(() => loc.innerText(), () => null).catch(() => null)
+  return pagingStatus(tekst)
+}
+
 // Alle pagina's van het Rittenoverzicht: de rijen van het scherm en de Mendix-antwoorden. Zet het
-// zoekveld eerst leeg en laat het overzicht daarna weer op pagina 1 staan.
+// zoekveld eerst leeg en laat het overzicht daarna weer op pagina 1 staan. Bladeren op de
+// paginastatus, niet op de knop: Mendix tekent de knoppen net ná de rijen, en een kale isVisible
+// zag ze dan nog niet (04-11: alleen pagina 1 gelezen, matransport#573).
 export async function leesAlleRitten(page, mendix, { maxPaginas = 25 } = {}) {
   const antwoorden = await naarRittenoverzicht(page, mendix)
   await zoekInOverzicht(page, mendix, '')
@@ -184,8 +193,10 @@ export async function leesAlleRitten(page, mendix, { maxPaginas = 25 } = {}) {
   for (let i = 0; i < maxPaginas; i++) {
     const hier = await leesRittenoverzicht(page)
     rijen.push(...hier)
+    const status = await leesPagingStatus(page, i ? 3_000 : 10_000)
+    if (!status || status.tot >= status.totaal) break
     const volgende = page.locator(PAGINA.volgende).first()
-    if (!(await knopAan(volgende))) break
+    if (!(await volgende.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false))) break
     antwoorden.push(...await mendix.actie(() => volgende.click()))
     await wachtOpAndereRijen(page, hier[0]?.ritnaam)
   }

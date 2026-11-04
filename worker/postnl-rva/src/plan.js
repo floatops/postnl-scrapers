@@ -84,6 +84,12 @@ export function revisieTijdTekst(ms) {
 
 // ── Rittenoverzicht → rva_ritten in matransport (matransport#573) ─────────────
 
+// De paginastatus onder het overzicht ("1 to 20 of 40") → { tot, totaal }; null als hij anders luidt.
+export function pagingStatus(tekst) {
+  const m = String(tekst ?? '').match(/(\d+)\s*(?:to|tot|-)\s*(\d+)\s*(?:of|van)\s*(\d+)/i)
+  return m ? { tot: Number(m[2]), totaal: Number(m[3]) } : null
+}
+
 const ritnummerVan = (nummer) => (nummer ? (String(nummer).replace(/^0+/, '') || String(nummer)) : null)
 const namenUitTekst = (t) => String(t ?? '').split(/\s*[,\n]\s*/).map(s => s.trim()).filter(Boolean)
 
