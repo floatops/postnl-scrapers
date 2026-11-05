@@ -39,7 +39,7 @@ function nepSessies(log) {
   return () => {
     const s = {
       nr: ++n, id: `s${n}`, depotHost: 'depot-a.example', leeftijdMin: 1, segmentOm: Date.now(), lezingen: 0,
-      url: DEPOT.url, planning: true, herloginTaak: 0, herlogins: [],
+      url: DEPOT.url, planning: true, herloginTaak: 0, fouten460: [],
       get page() { return { url: () => s.url, locator: () => ({ first: () => ({ isVisible: async () => s.planning }) }) } },
       async openen() { log.push(`open:${s.nr}`) },
       async taakBegin() { s.herloginTaak = 0 },
@@ -318,7 +318,7 @@ test('een ander pakt het slot midden in een taak: taak breekt af, sessie dicht, 
 test('fout 460 midden in de ritmonitor: herlogin, taak opnieuw, geen "gegooid"-melding en geen nieuwe login (#598)', async () => {
   let n = 0
   const o = opzet({ duurMin: 3, handlers: { ritmonitor: async (ctx, dag) => {
-    if (++n === 1) { ctx.sessie.herloginTaak = 1; ctx.sessie.herlogins.push(Date.now()); throw new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation') }
+    if (++n === 1) { ctx.sessie.herloginTaak = 1; ctx.sessie.fouten460.push(Date.now()); throw new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation') }
     return okRitmonitor(ctx, dag)
   } } })
   await draaiDepot(o.deps)
@@ -331,7 +331,7 @@ test('fout 460 midden in de ritmonitor: herlogin, taak opnieuw, geen "gegooid"-m
 
 test('vaak 460 (iemand anders gebruikt de login): één melding sessie_ingetrokken per uur (#598)', async () => {
   const o = opzet({ duurMin: 20, handlers: { ritmonitor: async (ctx, dag) => {
-    ctx.sessie.herlogins.push(o.klok.nu().getTime())
+    ctx.sessie.fouten460.push(o.klok.nu().getTime())
     return okRitmonitor(ctx, dag)
   } } })
   await draaiDepot(o.deps)

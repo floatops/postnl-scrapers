@@ -57,7 +57,11 @@ export class Sessie {
     this.herlogins = 0
     this.huidigeTaak = null
     this.herloginTaak = 0    // fouten 460 tijdens de huidige taak (matransport#598)
-    this.herlogins = []      // tijdstippen (ms) van alle 460's in deze sessie
+    // Tijdstippen (ms) van alle 460's in deze sessie. Bewust een andere naam dan `herlogins` (het
+    // aantal logins in hetzelfde tabblad, een getal naar postnl_sessies.herlogins): in 33f0ae9 deelden
+    // ze één naam, waardoor het afsluiten van een sessie faalde en een 460 na een her-login het
+    // proces kon laten crashen (#599, gevonden door de worker-controleur).
+    this.fouten460 = []
     // Hoe lang blijft de sessie geldig, per tabblad (levensmeter.js)
     this.meters = { oompd: maakLevensmeter({ tab: 'oompd' }), rva: maakLevensmeter({ tab: 'rva' }) }
     this.incidentInSegment = false
@@ -107,7 +111,13 @@ export class Sessie {
       if (!res.url().includes('/xas/')) return
       // 460: PostNL trekt de Mendix-sessie in; de app logt daarna zelf stil opnieuw in (SSO).
       // Tellen per taak en voor het uurtotaal (matransport#598).
-      if (res.status() === 460) { this.herloginTaak++; this.herlogins.push(Date.now()); return }
+      if (res.status() === 460) {
+        this.herloginTaak++
+        this.fouten460.push(Date.now())
+        const uur = this.fouten460.filter(t => Date.now() - t <= 3600_000).length
+        this.log.warn(`[${this.depot.naam}] Fout 460: PostNL trok de sessie in tijdens ${this.huidigeTaak ?? 'geen taak'} (${uur} in het afgelopen uur)`)
+        return
+      }
       res.json().then(j => this.antwoorden.push(j)).catch(() => {})
     })
   }
@@ -155,7 +165,7 @@ export class Sessie {
     this.herlogins++
     this.log.log(`[${this.depot.naam}] Sessie verlopen (${tab}) na ${duurTekst(meting.duurMin)} (${duurTekst(meting.stilMin)} stil, tijdens ${meting.taak ?? 'geen taak'}), opnieuw ingelogd in hetzelfde tabblad`)
     // Fouten 460 in het uur ervoor: dan trok PostNL de sessie in, geen zuivere meting (#598).
-    const herlogins = this.herlogins.filter(t => Date.now() - t <= 3600_000).length
+    const herlogins = this.fouten460.filter(t => Date.now() - t <= 3600_000).length
     this.opslag.gebeurtenis(this.id, { soort: 'sessie_verlopen', ...meting, ...(herlogins ? { herlogins } : {}) }).catch?.(() => {})
   }
 

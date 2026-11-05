@@ -77,8 +77,16 @@ export const STANDAARD = Object.freeze({
   geheugenWaarschuwDeel: 0.35,
   geheugenHerstartDeel: 0.5,
   geheugenLogMin: 15,
-  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180 },
+  // Elke taak uit taken.js hoort hier (test/invarianten.test.mjs). gisteren ontbrak tot #599 en
+  // kreeg zo stil de standaard van 300 s, terwijl hij een hele dag leest zoals ochtend.
+  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180, gisteren: 900 },
 })
+
+// Hoe lang de waakhond (index.js) een lus zonder voortgang toelaat: de langste taak, plus een
+// login (tot 180 s), plus marge. Korter zou een gezonde lange taak afschieten (invarianten-test).
+export function waakhondMs(cfg) {
+  return (Math.max(...Object.values(cfg.taakLimietSec)) + 180 + 300) * 1000
+}
 
 function isObject(v) { return v && typeof v === 'object' && !Array.isArray(v) }
 

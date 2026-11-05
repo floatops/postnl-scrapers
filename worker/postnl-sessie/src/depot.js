@@ -176,8 +176,11 @@ export async function draaiDepot(deps) {
       // Slot verlengen bij elke ronde: de lus leeft. Kwijt (lease verlopen, bv. na een lange
       // hapering)? Dan eerst de sessie dicht en opnieuw wachten, nooit verder zonder slot.
       if (hartslag?.weg || !(await opslag.slotPak(sleutel, houder, cfg.slotLeaseSec))) {
+        // Wie heeft het nu? Op 05-11 was de melding leeg en moest dat uit proxy_gebruik_log (#599).
+        const ander = await opslag.slotHouder?.(sleutel).catch(() => null)
+        log.warn(`${label} Sessie-slot kwijt, nu van ${ander ?? 'niemand (verlopen)'}`)
         await sluit('slot_kwijt')
-        await melden({ soort: 'slot_kwijt', depot: depot.naam })
+        await melden({ soort: 'slot_kwijt', depot: depot.naam, detail: `nu van ${ander ?? 'niemand (verlopen)'}` })
         if (!(await slotHouden())) break
         continue
       }
@@ -259,9 +262,9 @@ export async function draaiDepot(deps) {
 
       // PostNL trekt de sessie vaak in (fout 460): iemand anders gebruikt waarschijnlijk deze login.
       // Hoogstens één melding per uur, met het aantal; de gebeurtenis telt mee voor de levensmeter.
-      if (sessie?.herlogins?.length) {
-        sessie.herlogins = herloginsLaatsteUur(sessie.herlogins, klok.nu().getTime())
-        const n = sessie.herlogins.length
+      if (sessie?.fouten460?.length) {
+        sessie.fouten460 = herloginsLaatsteUur(sessie.fouten460, klok.nu().getTime())
+        const n = sessie.fouten460.length
         if (n >= cfg.herloginMeldenPerUur && (!laatsteIngetrokkenMelding || klok.nu() - laatsteIngetrokkenMelding >= 60 * MIN)) {
           laatsteIngetrokkenMelding = klok.nu()
           await opslag.gebeurtenis(sessie.id, { soort: 'sessie_ingetrokken', aantal: n })
@@ -279,7 +282,7 @@ export async function draaiDepot(deps) {
       const tracePad = sessie ? await sessie.taakEinde(taak, { incident: incident || Boolean(uitkomst?.bewaren || fout?.bewaren), tab: k.taak.tab ?? 'oompd' }) : null
       if (incident) {
         log.warn(`${label} ${taak}: ${soort}${fout ? ` (${String(fout.message).split('\n')[0]})` : ''} → ${actie}`)
-        const herloginsUur = sessie?.herlogins?.length ?? 0
+        const herloginsUur = sessie?.fouten460?.length ?? 0
         await opslag.gebeurtenis(sessie?.id, { soort, taak, actie, fout: fout ? String(fout.message).slice(0, 300) : null, trace: tracePad, ...(herloginsUur ? { herlogins: herloginsUur } : {}) })
         // Er hoort niemand anders met deze login in te loggen: altijd melden.
         // Hoogstens eens per 30 min een melding (03-11: 69 meldingen op één dag); de gebeurtenis

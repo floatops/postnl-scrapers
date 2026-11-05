@@ -26,6 +26,7 @@ import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
 import { codeVersie, gewijzigdePaden, raaktSessiehouder } from './codeversie.js'
 import { beoordeelGeheugen, geheugenTekst } from './geheugen.js'
+import { waakhondMs } from './instellingen.js'
 import fs from 'node:fs/promises'
 
 function vereis(naam) {
@@ -38,6 +39,14 @@ const KLANT_ID = vereis('KLANT_ID')
 const supabase = createClient(vereis('SUPABASE_URL'), vereis('SUPABASE_SERVICE_ROLE_KEY'), { auth: { persistSession: false } })
 const headless = String(process.env.POSTNL_HEADLESS ?? 'true').toLowerCase() !== 'false'
 const log = console
+
+// Tijd (NL) voor elke regel in het VPS-log (#599): tot 05-11 had het proceslog geen tijden, en
+// moest een storing uit traces en bestandsnamen worden teruggerekend.
+const tijdNl = () => new Date().toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour12: false })
+for (const m of ['log', 'warn', 'error']) {
+  const orig = console[m].bind(console)
+  console[m] = (...args) => orig(tijdNl(), ...args)
+}
 
 let stop = false
 let exitCode = 0
@@ -110,7 +119,7 @@ async function main() {
   // Waakhond: als geen enkele depot-lus meer voortgang maakt, is er iets vastgelopen dat de
   // tijdslimiet niet ving. Dan hard stoppen; de bewaker start opnieuw, het slot verloopt vanzelf.
   let voortgang = Date.now()
-  const maxStil = (Math.max(...Object.values(cfg.taakLimietSec)) + 300) * 1000
+  const maxStil = waakhondMs(cfg)
   const waakhond = setInterval(async () => {
     if (Date.now() - voortgang > maxStil) {
       await melden({ soort: 'vastgelopen', detail: `${Math.round((Date.now() - voortgang) / 60000)} min geen voortgang; proces stopt` })

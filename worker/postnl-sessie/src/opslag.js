@@ -141,6 +141,13 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       if (error) throw Object.assign(new Error(`sessie-slot: ${error.message}`), { database: true })
       return data === true
     },
+    // Wie heeft het slot nu (of null)? Voor de melding slot_kwijt (#599).
+    async slotHouder(sleutel) {
+      const { data, error } = await supabase.rpc('postnl_sessie_info', { p_sleutel: sleutel })
+      if (error) return null
+      return data?.[0]?.houder ?? null
+    },
+
     async slotLos(sleutel, houder) {
       const { error } = await supabase.rpc('postnl_sessie_los', { p_sleutel: sleutel, p_houder: houder })
       if (error) log.warn(`Sessie-slot vrijgeven mislukt (verloopt vanzelf): ${error.message}`)

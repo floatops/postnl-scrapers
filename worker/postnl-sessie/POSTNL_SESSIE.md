@@ -64,6 +64,17 @@ Op de VPS met `scripts/meet.mjs --zonder-levensduur`, opnames in `/var/log/worke
 
 Eén tabblad per depot: bij een nieuw segment gaat eerst het oude tabblad dicht en dan pas het nieuwe open.
 
+## Werkregels (matransport#599)
+
+Na 05-11 bleek ongeveer een derde van de fixes van de eerste dagen vooraf te voorkomen. Deze regels gelden voor elke wijziging aan de sessiehouder en de workers die hij gebruikt (ook voor de skill `worker-robuust` en de subagent `worker-controleur` in matransport):
+
+- **Fix het soort fout, niet alleen de melding.** Na een fix zoeken naar hetzelfde patroon elders (#592 loste de teller in `volgMendix` op; twee regels verder stond hetzelfde soort fout, die pas na een nieuwe storing werd gevonden). In matransport eist een commit-hook bij een fix in worker-code een regel "Zelfde soort fout gezocht: …".
+- **Nooit wachten zonder grens.** Elke `Promise.all`/`allSettled` en elk uitlezen van een antwoord heeft een grens, of staat met reden in `test/invarianten.test.mjs`.
+- **Regels tússen onderdelen staan als test** in `test/invarianten.test.mjs`: elke taak een eigen limiet, het slot overleeft twee gemiste hartslagen, de waakhond schiet een gezonde lange taak niet af. Een nieuwe taak of instelling die zo'n regel breekt, maakt de test rood.
+- **Storingen worden nagebootst** in `scripts/proef-lokaal.mjs` (echte Chromium, nagemaakt portaal): een blok fouten 460 met herladen midden in een actie, PostNL die niet antwoordt, een crash midden in een taak.
+- **Niets gaat ongetest live:** `auto-deploy-scrapers.sh` (matransport) draait vóór elke update in een losse werkmap de tests van alle workers en de storingsproef. Rood = niet gedeployd, overgeslagen tot een nieuwere commit, en een melding.
+- **Log oorzaken, niet alleen gevolgen.** Elke regel in het VPS-log heeft een tijd (NL). `slot_kwijt` zegt wie het slot nu heeft. Elke fout 460 staat als regel in het log met de taak en het aantal in het afgelopen uur.
+
 ## Herstel (`src/gezondheid.js`)
 
 Na elke taak, geslaagd of niet, wordt de sessie beoordeeld:
