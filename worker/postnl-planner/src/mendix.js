@@ -31,29 +31,53 @@ export function volgMendix(page) {
   return volgers.get(page)
 }
 
+// Een /xas/-verzoek zonder antwoord telt na zo lang niet meer mee. Vangnet: lange acties van
+// Mendix zelf tonen de voortgangsbalk, en daar blijft wacht() gewoon op wachten.
+export const VERWEESD_MS = 20_000
+
 function maakVolger(page) {
-  let open = 0
+  // Open verzoeken met hun starttijd. Geen teller: een verzoek dat nooit een finished/failed krijgt,
+  // hield die teller voor altijd op 1 (matransport#592, zie hieronder).
+  const open = new Map()
   let laatsteActiviteit = Date.now()
   let acties = 0
   const antwoorden = []
   const lezen = new Set()
   const isXas = (url) => url.includes('/xas/')
 
-  page.on('request', (req) => { if (isXas(req.url())) { open++; laatsteActiviteit = Date.now() } })
-  const klaar = (req) => { if (isXas(req.url())) { open = Math.max(0, open - 1); laatsteActiviteit = Date.now() } }
+  page.on('request', (req) => { if (isXas(req.url())) { open.set(req, Date.now()); laatsteActiviteit = Date.now() } })
+  const klaar = (req) => { if (open.delete(req)) laatsteActiviteit = Date.now() }
   page.on('requestfinished', klaar)
   page.on('requestfailed', klaar)
   page.on('response', (res) => {
+    // Nieuw document in het hoofdframe (goto, herladen): verzoeken van het oude document komen
+    // nooit meer terug. Mendix stuurt bij het verlaten nog een fetch die in Playwright geen
+    // finished én geen failed krijgt; daardoor liep na elk opnieuw openen elke wachtstap af
+    // (05-11, matransport#592). Wat vóór het nieuwe document begon, hoort er niet bij.
+    if (isHoofdDocument(page, res)) {
+      open.clear()
+      return
+    }
     if (!isXas(res.url()) || !acties) return
     const taak = res.json().then(j => { if (acties) antwoorden.push(j) }).catch(() => {})
     lezen.add(taak)
     taak.finally(() => lezen.delete(taak))
   })
 
+  const nogOpen = () => {
+    const grens = Date.now() - VERWEESD_MS
+    let n = 0
+    for (const [req, om] of open) {
+      if (om < grens) open.delete(req)
+      else n++
+    }
+    return n
+  }
+
   async function wacht(maxMs = 30_000) {
     const start = Date.now()
     for (;;) {
-      const stil = open === 0 && Date.now() - laatsteActiviteit >= STIL_MS
+      const stil = nogOpen() === 0 && Date.now() - laatsteActiviteit >= STIL_MS
       const voortgang = await page.locator('.mx-progress, .mx-underlay.mx-progress-underlay').first().isVisible().catch(() => false)
       if (stil && !voortgang) break
       if (Date.now() - start > maxMs) throw new Error('PostNL reageerde niet binnen de wachttijd')
@@ -78,6 +102,13 @@ function maakVolger(page) {
   }
 
   return { wacht, actie }
+}
+
+function isHoofdDocument(page, res) {
+  try {
+    const req = res.request()
+    return req.isNavigationRequest() && req.resourceType() === 'document' && res.frame() === page.mainFrame()
+  } catch { return false }
 }
 
 const exact = (tekst) => new RegExp(`^\\s*${String(tekst).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`)

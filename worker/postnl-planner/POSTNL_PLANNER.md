@@ -46,6 +46,7 @@ Mendix stuurt alles naar `/xas/`. Herken data aan `objectType`, **nooit aan `ope
 - Sommige waarden staan alleen in **`changes[guid]`**, het object zelf heeft dan `null`.
 - De stoplijst heeft `amount: 500`; `hasMoreItems` is nog nooit waar gezien.
 - **`volgMendix(page)` geeft per pagina altijd dezelfde volger** en bewaart antwoorden alleen tijdens een `actie()`. Maak er nooit een tweede volger naast: in de sessiehouder (pagina uren open) stapelde een nieuwe volger per taak listeners op die elk antwoord voor altijd bewaarden. Op 04-11 liep de heap zo vol (exit 134, ~3,4 GB), en de auto-deploy rolde daardoor twee goede versies terug (matransport#573).
+- **De volger houdt open `/xas/`-verzoeken bij per verzoek, niet met een teller, en vergeet ze bij een nieuw document in het hoofdframe** (`goto`, herladen). Mendix stuurt bij het verlaten van de pagina nog een fetch die in Playwright nooit `requestfinished` of `requestfailed` krijgt. Met een teller die de hele levensduur van de pagina meegaat (sinds #573) bleef die dan op 1 staan, en liep elke wachtstap na 30 s af met "PostNL reageerde niet binnen de wachttijd". In de sessiehouder: na elke `opnieuw_openen` mislukte alles tot een nieuwe login, na 5 logins 10 min pauze, en een Plannen-opdracht wachtte zo 7–11 min (05-11, matransport#592). Vangnet: een verzoek zonder antwoord telt na `VERWEESD_MS` (20 s) niet meer mee; voor lange acties blijft de voortgangsbalk van Mendix het signaal.
 
 ## Is alles gelezen?
 
