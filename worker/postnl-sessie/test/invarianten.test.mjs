@@ -12,6 +12,7 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { TAKEN } from '../src/taken.js'
 import { STANDAARD, waakhondMs } from '../src/instellingen.js'
+import { LOGIN_MAX_SEC } from '../../credentials-shared/src/postnl/login.js'
 
 const WORKER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 
@@ -24,9 +25,9 @@ test('het slot overleeft twee gemiste hartslagen, en verloopt na een crash binne
   assert.ok(STANDAARD.slotLeaseSec <= 300, 'na een crash moet het vangnet binnen 5 min kunnen overnemen')
 })
 
-test('de waakhond schiet een gezonde lange taak (plus login) niet af', () => {
+test('de waakhond schiet een gezonde lange taak (plus twee logins) niet af', () => {
   const langste = Math.max(...Object.values(STANDAARD.taakLimietSec))
-  assert.ok(waakhondMs(STANDAARD) > (langste + 180) * 1000, 'waakhond korter dan langste taak + login')
+  assert.ok(waakhondMs(STANDAARD) > (langste + 2 * LOGIN_MAX_SEC) * 1000, 'waakhond korter dan langste taak + logins')
 })
 
 test('de pauze na te veel logins is korter dan een uur (anders telt het venster van maxLoginsPerUur niet meer)', () => {
@@ -48,7 +49,13 @@ const TOEGESTAAN = [
   { bestand: 'postnl-ritmonitor/src/index.js', regel: /Promise\.allSettled\(DEPOTS/, reden: 'los script: elk depot heeft eigen time-outs, de VPS stopt het proces na zijn timeout' },
   { bestand: 'postnl-ritmonitor/src/ritmonitor.js', regel: /Promise\.all\(\[/, reden: 'databaseschrijfacties; binnen de ritmonitor-taak met limiet' },
 ]
-const RISICO = [/Promise\.(all|allSettled)\(/, /await\s+[\w.]+\.(json|text|body)\(\)/]
+const RISICO = [
+  /Promise\.(all|allSettled|any)\(/,
+  /await\s+[\w.?]+\.(json|text|body)\(\)/,
+  /evaluate\(\s*\(?[^)]*\)?\s*=>\s*new Promise/,   // page.evaluate heeft geen time-out
+  /\btimeout:\s*0\b/,
+  /setDefault(Navigation)?Timeout\(\s*0\s*\)/,
+]
 
 function bestanden(map) {
   const uit = []

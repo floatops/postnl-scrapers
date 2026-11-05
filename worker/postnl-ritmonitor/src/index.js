@@ -31,6 +31,9 @@ import { login } from '../../credentials-shared/src/postnl/login.js'
 import { startRunLog as startRunLogGedeeld, eindeRunLog as eindeRunLogGedeeld } from '../../credentials-shared/src/runLog.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
+import { zetTijdInLog } from '../../credentials-shared/src/tijdLog.js'
+
+zetTijdInLog()   // datum en tijd op elke logregel (matransport#599)
 
 // Proxy per browsersessie: zie credentials-shared/src/proxyPool.js. Op de VPS
 // (PROXY_POOL=true) krijgt elke sessie het volgende IP uit de eigen pool en wordt

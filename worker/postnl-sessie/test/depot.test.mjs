@@ -393,3 +393,48 @@ test('startHartslag: verlengt alleen zolang de lus leeft; een ander met het slot
   h.stop()
   assert.equal(slag, null)
 })
+
+// ---- matransport#599: meldingen met oorzaak, en een taak over zijn limiet echt afbreken ----
+
+test('slot lang bezet: één melding per keer wachten, met wie het slot heeft (#599)', async () => {
+  const o = opzet({ duurMin: 16, slot: () => false, cfg: { slotWachtMaxMin: 1 }, handlers: { ritmonitor: okRitmonitor } })
+  o.deps.opslag.slotHouder = async () => 'postnl-ritmonitor:123:abc'
+  await draaiDepot(o.deps)
+  const m = o.meldingen.filter(x => x.soort === 'slot_lang_bezet')
+  assert.equal(m.length, 1, `${m.length} meldingen in 16 min (vroeger elke 5 s één)`)
+  assert.match(m[0].detail, /postnl-ritmonitor:123:abc/)
+})
+
+test('slot kwijt: de melding noemt de nieuwe houder (#599)', async () => {
+  let ronde = 0
+  const o = opzet({ duurMin: 3, slot: () => { ronde++; return ronde !== 3 }, handlers: { ritmonitor: okRitmonitor } })
+  o.deps.opslag.slotHouder = async () => 'postnl-dagplanning:9:x'
+  await draaiDepot(o.deps)
+  assert.match(o.meldingen.find(m => m.soort === 'slot_kwijt').detail, /postnl-dagplanning:9:x/)
+})
+
+test('te veel logins: de melding noemt het aantal in het laatste uur en wat er misging (#599)', async () => {
+  const o = opzet({ duurMin: 12, handlers: { ritmonitor: async () => { nepSessies.laatste.url = 'https://www.loginpostnl.net/login/'; throw new Error('weg') } } })
+  await draaiDepot(o.deps)
+  assert.match(o.meldingen.find(m => m.soort === 'te_veel_logins').detail, /4 logins in het laatste uur.*verlopen \d+x/)
+})
+
+test('`bezig` zegt de waakhond ook buiten de handler wat de lus doet: inloggen, taak, afhandeling (#599)', async () => {
+  const bezig = new Map()
+  const fases = []
+  const kijk = () => { const b = bezig.get(DEPOT.naam); if (b) fases.push(`${b.taak}:${b.fase}`) }
+  const o = opzet({ duurMin: 1, handlers: { ritmonitor: async (ctx, dag) => { kijk(); return okRitmonitor(ctx, dag) } } })
+  o.deps.bezig = bezig
+  const maak = o.deps.maakSessie
+  o.deps.maakSessie = (d) => {
+    const s = maak(d)
+    const open = s.openen
+    const einde = s.taakEinde
+    s.openen = async () => { kijk(); return open() }
+    s.taakEinde = async (...a) => { kijk(); return einde(...a) }
+    return s
+  }
+  await draaiDepot(o.deps)
+  assert.deepEqual(fases.slice(0, 3), ['ritmonitor:inloggen', 'ritmonitor:taak', 'ritmonitor:afhandeling'])
+  assert.equal(bezig.size, 0, 'na het stoppen leeg')
+})

@@ -1,6 +1,7 @@
 // Alles wat de sessiehouder in de database leest en schrijft (floatops/matransport#562). Een
 // databasefout gooit (nooit stil), behalve bij het loggen van gebeurtenissen: dat mag de sessie
 // niet stilleggen, maar komt wel in de console en in de volgende run-log.
+import { slotHouder } from '../../credentials-shared/src/sessieSlot.js'
 import { mergeInstellingen } from './instellingen.js'
 import { startRunLog, eindeRunLog } from '../../credentials-shared/src/runLog.js'
 
@@ -142,11 +143,7 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       return data === true
     },
     // Wie heeft het slot nu (of null)? Voor de melding slot_kwijt (#599).
-    async slotHouder(sleutel) {
-      const { data, error } = await supabase.rpc('postnl_sessie_info', { p_sleutel: sleutel })
-      if (error) return null
-      return data?.[0]?.houder ?? null
-    },
+    slotHouder: (sleutel) => slotHouder(supabase, sleutel),
 
     async slotLos(sleutel, houder) {
       const { error } = await supabase.rpc('postnl_sessie_los', { p_sleutel: sleutel, p_houder: houder })

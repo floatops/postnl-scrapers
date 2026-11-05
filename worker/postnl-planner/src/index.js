@@ -29,6 +29,9 @@ import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
   verplaatsNaar, volgMendix,
 } from './mendix.js'
+import { zetTijdInLog } from '../../credentials-shared/src/tijdLog.js'
+
+zetTijdInLog()   // datum en tijd op elke logregel (matransport#599)
 
 const WORKER = 'postnl-planner'
 const ECHT = process.env.PLANNER_ECHT === 'ja'

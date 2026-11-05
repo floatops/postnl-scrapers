@@ -1,6 +1,8 @@
 // Instellingen van de sessiehouder (floatops/matransport#562). Dit zijn de standaardwaarden; per
 // klant kan elke waarde overschreven worden in de tabel `postnl_instellingen` (kolom
 // `instellingen`, jsonb) zonder deploy. Tijden zijn NL-wandklok "HH:MM".
+import { LOGIN_MAX_SEC } from '../../credentials-shared/src/postnl/login.js'
+
 export const STANDAARD = Object.freeze({
   // Werktijden
   ochtendVanaf: '05:30',          // vanaf wanneer de nieuwe dag in PostNL staat
@@ -82,10 +84,10 @@ export const STANDAARD = Object.freeze({
   taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180, gisteren: 900 },
 })
 
-// Hoe lang de waakhond (index.js) een lus zonder voortgang toelaat: de langste taak, plus een
-// login (tot 180 s), plus marge. Korter zou een gezonde lange taak afschieten (invarianten-test).
+// Hoe lang de waakhond (index.js) een lus zonder voortgang toelaat: de langste taak, plus twee
+// logins (OOM PD en RVA-tabblad), plus marge. Korter zou een gezonde lange taak afschieten.
 export function waakhondMs(cfg) {
-  return (Math.max(...Object.values(cfg.taakLimietSec)) + 180 + 300) * 1000
+  return (Math.max(...Object.values(cfg.taakLimietSec)) + 2 * LOGIN_MAX_SEC + 300) * 1000
 }
 
 function isObject(v) { return v && typeof v === 'object' && !Array.isArray(v) }

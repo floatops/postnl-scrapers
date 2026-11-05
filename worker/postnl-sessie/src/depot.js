@@ -8,7 +8,7 @@ import { naTaak, remTaken } from './taakrem.js'
 import { voorDatum, voegAanvraagToe, aanvraagKlaar } from './dagstatus.js'
 import { moetVernieuwen } from './levensduur.js'
 import { vandaagNl } from '../../credentials-shared/src/postnl/tekst.js'
-import { SEL_PLANNING, opStartpagina } from '../../credentials-shared/src/postnl/login.js'
+import { SEL_PLANNING, opStartpagina, LOGIN_MAX_SEC } from '../../credentials-shared/src/postnl/login.js'
 
 const MIN = 60_000
 const POLL_MS = 15_000   // vangnet: zo vaak kijken of er een planner-opdracht is (de wekker is meteen)
@@ -100,6 +100,8 @@ export async function draaiDepot(deps) {
     hartslagUit()
     const begin = klok.nu()
     let gemeld = false
+    let langGemeldOm = null
+    const wie = async () => (await opslag.slotHouder?.(sleutel).catch(() => null)) ?? 'onbekend'
     for (;;) {
       if (await opslag.slotPak(sleutel, houder, cfg.slotLeaseSec)) {
         hartslagAan()
@@ -111,9 +113,11 @@ export async function draaiDepot(deps) {
         await opslag.sluitVerweesdeSessiesAf?.(depot.naam)
         return true
       }
-      if (!gemeld) { log.log(`${label} Sessie-slot bezet door een ander proces — wachten`); gemeld = true }
-      if (klok.nu() - begin > cfg.slotWachtMaxMin * MIN) {
-        await melden({ soort: 'slot_lang_bezet', depot: depot.naam, detail: `Sessie-slot al ${cfg.slotWachtMaxMin} min bezet; de sessiehouder wacht verder` })
+      if (!gemeld) { log.log(`${label} Sessie-slot bezet door ${await wie()} — wachten`); gemeld = true }
+      // Hoogstens één melding per uur: tot #599 kwam er na de wachttijd elke 5 s een nieuwe.
+      if (klok.nu() - begin > cfg.slotWachtMaxMin * MIN && (!langGemeldOm || klok.nu() - langGemeldOm >= 60 * MIN)) {
+        langGemeldOm = klok.nu()
+        await melden({ soort: 'slot_lang_bezet', depot: depot.naam, detail: `Sessie-slot al ${cfg.slotWachtMaxMin} min bezet door ${await wie()}; de sessiehouder wacht verder` })
       }
       if (stop()) return false
       await klok.slaap(5_000)
@@ -146,6 +150,7 @@ export async function draaiDepot(deps) {
     while (!stop()) {
       const nu = klok.nu()
       laatsteVoortgang = nu
+      deps.bezig?.delete(depot.naam)
       const datum = vandaagNl(nu)
       if (dag.datum !== datum) { dag = voorDatum(dag, datum); await bewaar() }
 
@@ -206,8 +211,12 @@ export async function draaiDepot(deps) {
       let uitkomst = null
       let fout = null
       try {
-        // Inloggen (tot 90 s naar het depot, plus de login zelf) valt ook binnen de hartslag.
-        levend(limietMs + 180_000)
+        // Inloggen valt ook binnen de hartslag: OOM PD en het RVA-tabblad, elk hooguit LOGIN_MAX_SEC.
+        // Stopt de hartslag tijdens een trage login, dan logt het vangnet ertussendoor in.
+        levend(limietMs + 2 * LOGIN_MAX_SEC * 1000)
+        // Wat de lus nu doet, voor de melding vastgelopen. Vooral buiten de begrensde handler: daar
+        // kan hij echt hangen (inloggen, trace of video opslaan, sluiten).
+        deps.bezig?.set(depot.naam, { taak, fase: 'inloggen', sinds: klok.nu() })
         if (!sessie) await nieuweSessie()
         // Vóór schrijvend werk: een verse sessie als de oude dicht bij haar gemeten einde zit.
         if (k.taak.schrijft && moetVernieuwen({ leeftijdMin: sessie.leeftijdMin, schattingMin: deps.schatting(), margeMin: cfg.levensduurMargeMin })) {
@@ -216,10 +225,13 @@ export async function draaiDepot(deps) {
         }
         await sessie.taakBegin(taak)
         levend(limietMs)
+        deps.bezig?.set(depot.naam, { taak, fase: 'taak', sinds: klok.nu() })
         uitkomst = await metLimiet(handlers[taak]({ ...deps.ctx, sessie, nu, cfg }, dag, k.args), limietMs, taak, hartslag?.kwijt)
       } catch (err) {
         fout = err
       }
+      deps.bezig?.set(depot.naam, { taak, fase: 'afhandeling', sinds: klok.nu() })
+      levend(120_000)   // de afhandeling hierna (trace opslaan) telt ook als leven
 
       // Slot kwijt tijdens de taak (een ander heeft het nu): niets beoordelen, meteen dicht en
       // opnieuw wachten. Bovenaan de lus gebeurt dat (sluit + melding slot_kwijt).
@@ -307,7 +319,7 @@ export async function draaiDepot(deps) {
         await bewaar()
         if (uitkomst.run) await naRun({ ...uitkomst.run, trace: tracePad })
         if (uitkomst.ritmonitor) telRitmonitor(depot.naam, { ok: true, ...uitkomst.ritmonitor })
-        if (uitkomst.melding === 'autorisatie_niet_gezien') await melden({ soort: 'autorisatie_niet_gezien', depot: depot.naam, detail: uitkomst.gebeurtenis?.shift })
+        if (uitkomst.melding === 'autorisatie_niet_gezien') await melden({ soort: 'autorisatie_niet_gezien', depot: depot.naam, detail: `shift ${uitkomst.gebeurtenis?.shift}: via het vangnet gelezen zonder autorisatie te zien; blijft kijken` })
       } else if (fout) {
         // Een taak die bij een fout zijn eigen volgende tijd meegeeft (plannen): niet meteen opnieuw.
         if (fout.dag) { dag = fout.dag; await bewaar() }
@@ -322,7 +334,10 @@ export async function draaiDepot(deps) {
         await sluit(soort, { fout, uitkomst: soort === 'blokkade' ? 'blokkade' : undefined })
       } else if (actie === 'pauze') {
         await sluit(soort, { fout })
-        await melden({ soort: 'te_veel_logins', depot: depot.naam, detail: `${logins.length} logins; ${cfg.pauzeMin} min pauze` })
+        // Met de oorzaak: hoeveel in het laatste uur, en wat er misging (#599).
+        const uur = logins.filter(t => klok.nu() - t <= 60 * MIN).length
+        const soorten = Object.entries(recent.reduce((a, r) => ({ ...a, [r.soort]: (a[r.soort] ?? 0) + 1 }), {})).filter(([s]) => s !== 'gezond').map(([s, n]) => `${s} ${n}x`).join(', ')
+        await melden({ soort: 'te_veel_logins', depot: depot.naam, detail: `${uur} logins in het laatste uur (${logins.length} sinds de start); recent: ${soorten || 'onbekend'}; ${cfg.pauzeMin} min pauze` })
         // Het slot blijft van ons tijdens de pauze: anders logt het vangnet-script juist in, en dat
         // is precies het hameren dat de pauze moet voorkomen (05-11 08:56 en 09:00, #598).
         levend(cfg.pauzeMin * MIN)
@@ -335,7 +350,8 @@ export async function draaiDepot(deps) {
 
       // Videosegment of browser vernieuwen (alleen tussen taken).
       if (sessie && cfg.contextWissel && Date.now() - sessie.segmentOm >= cfg.segmentMin * MIN) {
-        levend(180_000)
+        levend(180_000 + 2 * LOGIN_MAX_SEC * 1000)   // naarDepot en rvaOpenen kunnen elk inloggen
+        deps.bezig?.set(depot.naam, { taak: 'nieuw videosegment', fase: 'afhandeling', sinds: klok.nu() })
         const nogIngelogd = await sessie.nieuwSegment()
         if (!nogIngelogd) await opslag.gebeurtenis(sessie.id, { soort: 'contextwissel_nieuwe_login' })
       } else if (sessie && !cfg.contextWissel && sessie.leeftijdMin >= cfg.browserVernieuwenUur * 60) {
@@ -346,10 +362,12 @@ export async function draaiDepot(deps) {
     }
   } finally {
     levend(120_000)   // netjes sluiten (video opslaan) mag het slot niet kosten
+    deps.bezig?.set(depot.naam, { taak: 'sessie sluiten', fase: 'afhandeling', sinds: klok.nu() })
     await sluit(stop() ? 'herstart' : 'nacht')
     await bewaar()
     hartslagUit()
     await opslag.slotLos(sleutel, houder)
+    deps.bezig?.delete(depot.naam)
   }
   return { reden: 'stop', laatsteVoortgang }
 }

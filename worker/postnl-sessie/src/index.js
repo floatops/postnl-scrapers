@@ -27,6 +27,7 @@ import { maakDepotBeheer } from './depots.js'
 import { codeVersie, gewijzigdePaden, raaktSessiehouder } from './codeversie.js'
 import { beoordeelGeheugen, geheugenTekst } from './geheugen.js'
 import { waakhondMs } from './instellingen.js'
+import { zetTijdInLog, tijdStempel } from '../../credentials-shared/src/tijdLog.js'
 import fs from 'node:fs/promises'
 
 function vereis(naam) {
@@ -40,13 +41,7 @@ const supabase = createClient(vereis('SUPABASE_URL'), vereis('SUPABASE_SERVICE_R
 const headless = String(process.env.POSTNL_HEADLESS ?? 'true').toLowerCase() !== 'false'
 const log = console
 
-// Tijd (NL) voor elke regel in het VPS-log (#599): tot 05-11 had het proceslog geen tijden, en
-// moest een storing uit traces en bestandsnamen worden teruggerekend.
-const tijdNl = () => new Date().toLocaleTimeString('nl-NL', { timeZone: 'Europe/Amsterdam', hour12: false })
-for (const m of ['log', 'warn', 'error']) {
-  const orig = console[m].bind(console)
-  console[m] = (...args) => orig(tijdNl(), ...args)
-}
+zetTijdInLog()   // datum en tijd op elke logregel (#599)
 
 let stop = false
 let exitCode = 0
@@ -118,11 +113,23 @@ async function main() {
 
   // Waakhond: als geen enkele depot-lus meer voortgang maakt, is er iets vastgelopen dat de
   // tijdslimiet niet ving. Dan hard stoppen; de bewaker start opnieuw, het slot verloopt vanzelf.
+  // De melding zegt welke taak per depot liep (#599). Hoogstens 10 s op de melding wachten en één
+  // keer afgaan: een hangende database mag het stoppen niet tegenhouden, en elke tik van 30 s gaf
+  // anders opnieuw een melding. waakhondMs per tik: de limieten kunnen per klant wijzigen.
   let voortgang = Date.now()
-  const maxStil = waakhondMs(cfg)
+  let waakhondAf = false
+  const bezig = new Map()   // depot → { taak, sinds } (depot.js)
   const waakhond = setInterval(async () => {
-    if (Date.now() - voortgang > maxStil) {
-      await melden({ soort: 'vastgelopen', detail: `${Math.round((Date.now() - voortgang) / 60000)} min geen voortgang; proces stopt` })
+    if (waakhondAf || !(Date.now() - voortgang > waakhondMs(cfg))) return
+    waakhondAf = true
+    const wat = [...bezig].map(([d, b]) => `${d}: ${b.taak} (${b.fase}) sinds ${tijdStempel(b.sinds)}`).join('; ') || 'geen lopende taak'
+    // finally: ook als de melding mislukt stopt het proces. Dit is het laatste vangnet.
+    try {
+      await Promise.race([
+        melden({ soort: 'vastgelopen', detail: `${Math.round((Date.now() - voortgang) / 60000)} min geen voortgang (${wat}); proces stopt` }),
+        new Promise(r => setTimeout(r, 10_000)),
+      ])
+    } finally {
       process.exit(1)
     }
   }, 30_000)
@@ -161,7 +168,7 @@ async function main() {
     startLus: (depot, lus) => {
       teller.depot(depot.naam)
       return draaiDepot({
-        depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun,
+        depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun, bezig,
         stop: () => stop || lus.stop,
         schatting: () => schattingen[depot.naam] ?? null,
         telRitmonitor: (d, r) => teller.tel(d, r),

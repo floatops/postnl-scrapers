@@ -64,13 +64,14 @@ export async function pakSessieSlot(supabase, { klantId, depot, worker, seconden
         },
       }
     }
-    if (wijkVoorSessiehouder && isSessiehouder(await slotHouder(supabase, sleutel))) {
+    const huidig = await slotHouder(supabase, sleutel)
+    if (wijkVoorSessiehouder && isSessiehouder(huidig)) {
       console.log(`${label}De sessiehouder heeft deze login — niets te doen`)
       return geenSlot({ overgenomen: true })
     }
-    if (!gemeld) { console.log(`${label}Andere PostNL-sessie met deze login actief — wachten...`); gemeld = true }
+    if (!gemeld) { console.log(`${label}Andere PostNL-sessie met deze login actief (${huidig ?? 'onbekend'}) — wachten...`); gemeld = true }
     if (Date.now() - start + POLL_MS > maxWachtMs) {
-      console.warn(`${label}Sessie-slot na ${Math.round(maxWachtMs / 1000)}s nog bezet — overgeslagen (nooit tegelijk inloggen)`)
+      console.warn(`${label}Sessie-slot na ${Math.round(maxWachtMs / 1000)}s nog bezet door ${huidig ?? 'onbekend'} — overgeslagen (nooit tegelijk inloggen)`)
       return geenSlot({ bezet: true })
     }
     await new Promise(r => setTimeout(r, POLL_MS))
