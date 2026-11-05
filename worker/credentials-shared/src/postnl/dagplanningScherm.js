@@ -112,13 +112,20 @@ export async function shiftsOpScherm(page) {
 }
 
 // Kiest een shift en wacht tot de ritten (RideNumber) binnen zijn. Een al gekozen shift niet
-// opnieuw aanklikken (dat zet hem uit): zijn ritten kwamen al binnen met de dag.
+// opnieuw aanklikken (dat zet hem uit): zijn ritten komen mee met de dag, maar dan wel daarop
+// wachten. Op 05-11 08:30 (matransport#598) ging het lezen meteen door terwijl de Dagplanning nog
+// opbouwde: geen deadline, een onvolledige rittenlijst, en de controle daarna zag nog de
+// startpagina ("gegooid", twee onnodige logins).
 // Geeft 'ok', 'al_gekozen' of 'geen_ritten' (geen ritten-antwoord binnen `ms`: een lege shift).
 export async function kiesShift(page, shift, antwoorden, { ms = 12_000 } = {}) {
   const tekst = new RegExp(`^\\s*${String(shift).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*$`)
   const rij = page.locator(`${SEL_SHIFTS} tr`).filter({ has: page.locator('td', { hasText: tekst }) }).first()
   await rij.waitFor({ state: 'visible', timeout: ms })
-  if (await rij.evaluate(el => el.classList.contains('selected')).catch(() => false)) return 'al_gekozen'
+  if (await rij.evaluate(el => el.classList.contains('selected')).catch(() => false)) {
+    await wachtOpObject(antwoorden, 0, 'OperationalPlanning.RideNumber', ms)
+    await wachtTotStil(antwoorden, { stilMs: 1_000, ms })
+    return 'al_gekozen'
+  }
   const vanaf = antwoorden.length
   await rij.click()
   return (await wachtOpObject(antwoorden, vanaf, 'OperationalPlanning.RideNumber', ms)) ? 'ok' : 'geen_ritten'

@@ -17,6 +17,7 @@ import { SEL_PLANNING, opStartpagina } from '../../credentials-shared/src/postnl
 
 const sessies = new Set()
 let gegooid = false
+let intrekken = false   // fout 460 zoals PostNL op 05-11 (matransport#598)
 const server = http.createServer((req, res) => {
   const cookie = /sess=(\w+)/.exec(req.headers.cookie ?? '')?.[1]
   const geldig = cookie && sessies.has(cookie)
@@ -28,6 +29,10 @@ const server = http.createServer((req, res) => {
   if (req.url.startsWith('/login')) {
     res.writeHead(200, { 'Content-Type': 'text/html' })
     return res.end('<form method="post" action="/login"><input type="text"><input type="password"><button data-trn-key="login.butlogin">Inloggen</button></form>')
+  }
+  if (req.url.startsWith('/xas/')) {
+    if (intrekken) { res.writeHead(460); return res.end() }
+    res.writeHead(200, { 'Content-Type': 'application/json' }); return res.end('{"objects":[]}')
   }
   if (req.url.startsWith('/index.html')) {
     if (!geldig) { res.writeHead(302, { Location: '/login?goto=index' }); return res.end() }
@@ -80,6 +85,25 @@ try {
   assert.equal(classificeer({ url: s.page.url(), depotHost: s.depotHost, planningZichtbaar: planning, opStartpagina: await opStartpagina(s.page) }), 'gegooid')
   gegooid = false
   console.log('✔ eruit gegooid (startpagina met menu, zoals gemeten) herkend')
+
+  // Fout 460 midden in een taak (matransport#598): geteld per taak en per uur, en herkend als
+  // stille her-login in plaats van "gegooid".
+  await s.taakBegin('ritmonitor')
+  await s.page.evaluate(() => fetch('/xas/', { method: 'POST' }))
+  await s.page.waitForTimeout(300)
+  assert.equal(s.herloginTaak, 0, 'gewoon antwoord telt niet')
+  intrekken = true
+  await s.page.evaluate(() => fetch('/xas/', { method: 'POST' }).catch(() => {}))
+  await s.page.waitForTimeout(300)
+  intrekken = false
+  assert.equal(s.herloginTaak, 1, '460 geteld in deze taak')
+  assert.equal(s.herlogins.length, 1, 'en in het uurtotaal')
+  assert.equal(classificeer({ url: s.page.url(), depotHost: s.depotHost, fout: new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation'), herlogin: s.herloginTaak }), 'herlogin')
+  await s.taakEinde('ritmonitor')
+  await s.taakBegin('ritmonitor')
+  assert.equal(s.herloginTaak, 0, 'nieuwe taak: telling per taak weer 0')
+  await s.taakEinde('ritmonitor')
+  console.log('✔ fout 460 geteld (per taak en per uur) en herkend als stille her-login')
 
   sessies.clear()
   await s.page.goto(url)

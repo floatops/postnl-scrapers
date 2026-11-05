@@ -122,6 +122,7 @@ async function main() {
   const wekkers = new Set()
   const klok = {
     nu: () => { voortgang = Date.now(); return new Date() },
+    tijd: () => Date.now(),   // zonder bijwerking: voor de hartslag van het slot (depot.js, #598)
     slaap: (ms) => new Promise(r => setTimeout(r, ms)),
     wekbaar: (ms) => new Promise((r) => {
       const klaar = () => { clearTimeout(t); wekkers.delete(klaar); r() }

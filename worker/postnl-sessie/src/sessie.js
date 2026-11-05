@@ -56,6 +56,8 @@ export class Sessie {
     this.lezingen = 0
     this.herlogins = 0
     this.huidigeTaak = null
+    this.herloginTaak = 0    // fouten 460 tijdens de huidige taak (matransport#598)
+    this.herlogins = []      // tijdstippen (ms) van alle 460's in deze sessie
     // Hoe lang blijft de sessie geldig, per tabblad (levensmeter.js)
     this.meters = { oompd: maakLevensmeter({ tab: 'oompd' }), rva: maakLevensmeter({ tab: 'rva' }) }
     this.incidentInSegment = false
@@ -103,6 +105,9 @@ export class Sessie {
     this.mendix = volgMendix(this.page)
     this.page.on('response', (res) => {
       if (!res.url().includes('/xas/')) return
+      // 460: PostNL trekt de Mendix-sessie in; de app logt daarna zelf stil opnieuw in (SSO).
+      // Tellen per taak en voor het uurtotaal (matransport#598).
+      if (res.status() === 460) { this.herloginTaak++; this.herlogins.push(Date.now()); return }
       res.json().then(j => this.antwoorden.push(j)).catch(() => {})
     })
   }
@@ -149,12 +154,15 @@ export class Sessie {
     if (!meting) return
     this.herlogins++
     this.log.log(`[${this.depot.naam}] Sessie verlopen (${tab}) na ${duurTekst(meting.duurMin)} (${duurTekst(meting.stilMin)} stil, tijdens ${meting.taak ?? 'geen taak'}), opnieuw ingelogd in hetzelfde tabblad`)
-    this.opslag.gebeurtenis(this.id, { soort: 'sessie_verlopen', ...meting }).catch?.(() => {})
+    // Fouten 460 in het uur ervoor: dan trok PostNL de sessie in, geen zuivere meting (#598).
+    const herlogins = this.herlogins.filter(t => Date.now() - t <= 3600_000).length
+    this.opslag.gebeurtenis(this.id, { soort: 'sessie_verlopen', ...meting, ...(herlogins ? { herlogins } : {}) }).catch?.(() => {})
   }
 
   // Vóór elke taak: lege lijst Mendix-antwoorden en een nieuwe trace-chunk.
   async taakBegin(naam) {
     this.huidigeTaak = naam
+    this.herloginTaak = 0
     this.antwoorden = []
     await this.context?.tracing.startChunk({ title: naam }).catch(() => {})
   }

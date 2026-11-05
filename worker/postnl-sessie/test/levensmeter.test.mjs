@@ -35,8 +35,8 @@ test('duurTekst', () => {
 test('levensdurenUit: verlopen sessies plus elk verloop binnen een sessie (alleen OOM PD)', async () => {
   const { levensdurenUit } = await import('../src/opslag.js')
   const rijen = [
-    { ingelogd_at: '2026-11-04T05:00:00Z', einde_at: '2026-11-04T07:00:00Z', einde_reden: 'verlopen', gebeurtenissen: [] },
-    { ingelogd_at: '2026-11-04T07:00:00Z', einde_at: '2026-11-04T12:00:00Z', einde_reden: 'herstart', gebeurtenissen: [
+    { ingelogd_at: '2026-11-07T05:00:00Z', einde_at: '2026-11-07T07:00:00Z', einde_reden: 'verlopen', gebeurtenissen: [] },
+    { ingelogd_at: '2026-11-07T07:00:00Z', einde_at: '2026-11-07T12:00:00Z', einde_reden: 'herstart', gebeurtenissen: [
       { soort: 'sessie_verlopen', tab: 'oompd', duurMin: 185 }, { soort: 'sessie_verlopen', tab: 'rva', duurMin: 40 }, { soort: 'planner' }] },
   ]
   assert.deepEqual(levensdurenUit(rijen), [120, 185], 'herstart telt niet; RVA telt niet voor de OOM PD-schatting')

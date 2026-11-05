@@ -55,8 +55,16 @@ export const STANDAARD = Object.freeze({
   maxFoutenAchtereen: 3,          // zoveel gewone fouten achter elkaar = nieuwe login
   maxLoginsPerUur: 4,             // meer = pauze + melding (niet blijven hameren op PostNL)
   pauzeMin: 10,
+  // Per taak (taakrem.js, matransport#598): zoveel keer achter elkaar mislukt = steeds langer
+  // wachten (1, 2, 4 … tot taakRemMaxMin min) en één melding taak_faalt.
+  taakFoutenRem: 5,
+  taakRemMaxMin: 15,
+  // Fouten 460 (PostNL trekt de sessie in, de app logt stil opnieuw in): vanaf zoveel per uur één
+  // melding sessie_ingetrokken (hoogstens één per uur).
+  herloginMeldenPerUur: 3,
   // Sessie
-  slotLeaseSec: 180,              // lease van het sessie-slot; alleen verlengd na een geslaagde taak
+  slotLeaseSec: 180,              // lease van het sessie-slot; een crash geeft het na hooguit 180 s vrij
+  slotHartslagSec: 60,            // zo vaak verlengen, ook tijdens een taak of pauze (matransport#598)
   slotWachtMaxMin: 12,            // zo lang wachten op een ander (vangnet-script) dat het slot heeft
   contextWissel: true,            // nieuw videosegment met dezelfde cookies, geen login (gemeten 02-11: blijft ingelogd)
   segmentMin: 30,                 // videosegment

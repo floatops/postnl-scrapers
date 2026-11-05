@@ -76,3 +76,36 @@ test('volgMendix: een gewoon open verzoek houdt wacht() vast tot het antwoord er
   page.emit('requestfinished', req)
   await m.wacht(2_000)
 })
+
+// 05-11 09:53 (matransport#598): PostNL gaf een 460 en herlaadde de app midden in een actie. Het
+// antwoord van het oude document kreeg nooit een body; wacht() bleef daarop 4,5 min hangen.
+function antwoordZonderBody(page) {
+  const req = { url: () => 'https://x/xas/' }
+  page.emit('request', req)
+  page.emit('response', { url: () => 'https://x/xas/', json: () => new Promise(() => {}) })
+  page.emit('requestfinished', req)
+}
+
+test('volgMendix: een antwoord zonder body houdt actie() hooguit LEZEN_MS vast (matransport#598)', async () => {
+  const { LEZEN_MS } = await import('../src/mendix.js')
+  const page = nepPagina()
+  const m = volgMendix(page)
+  const begin = Date.now()
+  const a = await m.actie(async () => { page.antwoord({ n: 1 }); antwoordZonderBody(page) }, 30_000)
+  const duur = Date.now() - begin
+  assert.deepEqual(a, [{ n: 1 }], 'wat wel binnenkwam, telt')
+  assert.ok(duur < LEZEN_MS + 3_000, `actie duurde ${duur} ms`)
+})
+
+test('volgMendix: na een nieuw hoofddocument wordt niet meer op oude bodies gewacht (matransport#598)', async () => {
+  const page = nepPagina()
+  const m = volgMendix(page)
+  const begin = Date.now()
+  await m.actie(async () => {
+    antwoordZonderBody(page)
+    const frame = {}
+    page.mainFrame = () => frame
+    page.emit('response', { url: () => 'https://x/index.html', request: () => ({ isNavigationRequest: () => true, resourceType: () => 'document' }), frame: () => frame })
+  }, 30_000)
+  assert.ok(Date.now() - begin < 2_000, 'meteen klaar: het oude document is weg')
+})

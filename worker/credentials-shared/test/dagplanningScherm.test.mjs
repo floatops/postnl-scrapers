@@ -19,3 +19,18 @@ test('wachtOpObject: wacht tot het antwoord binnenkomt, of geeft na de tijd fals
   assert.equal(await wachtOpObject(lijst, 0, 'OperationalPlanning.RideNumber', 3000), true)
   assert.equal(await wachtOpObject(lijst, 1, 'OperationalPlanning.RideNumber', 400), false)
 })
+
+// matransport#598 (05-11 08:30): bij een al gekozen shift ging het lezen meteen door terwijl de
+// Dagplanning nog opbouwde. Nu wacht kiesShift ook dan tot de ritten binnen zijn.
+test('kiesShift: al gekozen shift wacht tot de ritten (RideNumber) binnen zijn en het stil is', async () => {
+  const { kiesShift } = await import('../src/postnl/dagplanningScherm.js')
+  let geklikt = false
+  const rij = { waitFor: async () => {}, evaluate: async () => true, click: async () => { geklikt = true } }
+  const page = { locator: () => ({ filter: () => ({ first: () => rij }) }) }
+  const antwoorden = []
+  setTimeout(() => antwoorden.push({ objects: [{ objectType: 'OperationalPlanning.RideNumber' }] }), 400)
+  const begin = Date.now()
+  assert.equal(await kiesShift(page, '04', antwoorden, { ms: 5_000 }), 'al_gekozen')
+  assert.ok(Date.now() - begin >= 1_300, `te vroeg klaar (${Date.now() - begin} ms): de ritten waren er nog niet of het was niet stil`)
+  assert.equal(geklikt, false, 'een gekozen shift niet opnieuw aanklikken (dat zet hem uit)')
+})

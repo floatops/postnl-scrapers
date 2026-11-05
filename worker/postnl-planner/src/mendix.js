@@ -35,6 +35,12 @@ export function volgMendix(page) {
 // Mendix zelf tonen de voortgangsbalk, en daar blijft wacht() gewoon op wachten.
 export const VERWEESD_MS = 20_000
 
+// Zo lang hooguit wachten op het uitlezen van antwoorden die al binnen zijn. Een antwoord van een
+// document dat intussen weg is (PostNL herlaadde de app na een fout 460) geeft in Playwright nooit
+// een body: zonder grens bleef Plannen daar 4,5 min op hangen tot de taaklimiet (05-11 09:53,
+// matransport#598).
+export const LEZEN_MS = 5_000
+
 function maakVolger(page) {
   // Open verzoeken met hun starttijd. Geen teller: een verzoek dat nooit een finished/failed krijgt,
   // hield die teller voor altijd op 1 (matransport#592, zie hieronder).
@@ -56,6 +62,7 @@ function maakVolger(page) {
     // (05-11, matransport#592). Wat vóór het nieuwe document begon, hoort er niet bij.
     if (isHoofdDocument(page, res)) {
       open.clear()
+      lezen.clear()   // hun body komt nooit meer (matransport#598)
       return
     }
     if (!isXas(res.url()) || !acties) return
@@ -83,7 +90,15 @@ function maakVolger(page) {
       if (Date.now() - start > maxMs) throw new Error('PostNL reageerde niet binnen de wachttijd')
       await page.waitForTimeout(100)
     }
-    await Promise.allSettled([...lezen])
+    await leesUit()
+  }
+
+  // Wacht op het uitlezen van de binnengekomen antwoorden, maar nooit langer dan LEZEN_MS.
+  async function leesUit() {
+    if (!lezen.size) return
+    let t
+    const grens = new Promise(r => { t = setTimeout(r, LEZEN_MS) })
+    try { await Promise.race([Promise.allSettled([...lezen]), grens]) } finally { clearTimeout(t) }
   }
 
   // Voert een handeling uit en geeft alle antwoorden terug die daardoor binnenkwamen.

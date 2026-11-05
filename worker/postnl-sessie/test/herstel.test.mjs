@@ -37,6 +37,17 @@ test('classificeer: de gevallen die we in sessievideo\'s hebben gezien', () => {
   assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, planningZichtbaar: true }), 'gezond')
 })
 
+test('classificeer: fout 460 tijdens de taak = herlogin, niet gegooid (05-11 Waddinxveen, #598)', () => {
+  const herladen = new Error('page.evaluate: Execution context was destroyed, most likely because of a navigation')
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, fout: herladen, herlogin: 1 }), 'herlogin')
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, planningZichtbaar: true, opStartpagina: true, herlogin: 2 }), 'herlogin', 'op de startpagina na de stille her-login')
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, fout: new Error('Taak plannen duurde langer dan 300 s'), herlogin: 1 }), 'herlogin')
+  assert.equal(classificeer({ url: `https://${DEPOT}/login.html`, depotHost: DEPOT, fout: new Error('Planning-menu niet zichtbaar'), herlogin: 3 }), 'verlopen', 'stille her-login mislukt: echt inloggen')
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, planningZichtbaar: true, herlogin: 1 }), 'gezond', 'taak gelukt ondanks een 460: niets aan de hand')
+  assert.equal(classificeer({ url: depotUrl, depotHost: DEPOT, fout: herladen }), 'gegooid', 'zonder 460 blijft het gegooid')
+  assert.equal(herstel('herlogin', { recent: [{ soort: 'herlogin', at: geleden(1) }], nu, cfg }), 'opnieuw_openen', 'nooit een nieuwe login')
+})
+
 test('isLoginUrl: login, authorize en login.html, maar niet een pad dat toevallig "login" bevat', () => {
   assert.ok(isLoginUrl('https://www.loginpostnl.net/login/'))
   assert.ok(isLoginUrl(`https://${DEPOT}/login.html`))
@@ -68,8 +79,9 @@ test('herstel: na 4 logins in een uur geen vijfde maar een pauze', () => {
   assert.equal(herstel('verlopen', { logins: [geleden(70), ...logins.slice(1)], nu, cfg }), 'nieuwe_login', 'login van 70 min geleden telt niet')
 })
 
-test('levensduur: pas een schatting vanaf 3 metingen, het 10e percentiel', () => {
+test('levensduur: pas een schatting vanaf 5 metingen (#598), het 10e percentiel', () => {
   assert.equal(schatLevensduur([120, 130]), null)
+  assert.equal(schatLevensduur([49, 150, 300]), null, 'de valse metingen van 04/05-11 plus één: nog geen schatting')
   assert.equal(schatLevensduur([600, 125, 480, 240, 130, 0, NaN]), 125)
   assert.equal(moetVernieuwen({ leeftijdMin: 100, schattingMin: null }), false, 'zonder meting nooit vooraf vernieuwen')
   assert.equal(moetVernieuwen({ leeftijdMin: 111, schattingMin: 125 }), true)

@@ -10,6 +10,10 @@
 //   blokkade    het IP is geblokkeerd (Akamai)
 //   browser_weg de browser of het tabblad is gesloten of gecrasht
 //   database    de taak faalde op de database, niet op PostNL: de sessie is in orde
+//   herlogin    PostNL trok tijdens de taak de Mendix-sessie in (fout 460) en de app logde zichzelf
+//               stil opnieuw in. De sessie zelf is in orde: de taak opnieuw, geen alarm, geen login.
+//               Gemeten op 05-11 (matransport#598): bij Waddinxveen in blokken elke 3–5 min, midden
+//               in een taak gaf dat "Execution context was destroyed" en telde het als gegooid.
 //   fout        iets anders
 // De herkenning van `gegooid` komt uit de meting van stap 0 (POSTNL_SESSIE.md § Meting).
 
@@ -18,12 +22,15 @@ export const isLoginUrl = (url) => /loginpostnl|\/login(?:\.html)?(?:[?#/]|$)|\/
 const BROWSER_WEG = /has been closed|Target closed|browser has disconnected|Browser closed|crash/i
 const HERLADEN = /Execution context was destroyed|frame was detached|Navigation.*interrupted|herlaadde|PageReload/i
 
-export function classificeer({ url = '', depotHost = null, fout = null, planningZichtbaar = null, opStartpagina = false, blokkade = false } = {}) {
+// `herlogin`: hoe vaak PostNL tijdens deze taak een 460 gaf (de app logde daarna zelf opnieuw in).
+export function classificeer({ url = '', depotHost = null, fout = null, planningZichtbaar = null, opStartpagina = false, blokkade = false, herlogin = 0 } = {}) {
   if (blokkade || fout?.name === 'ProxyBlokkadeError') return 'blokkade'
   if (fout?.database) return 'database'
   const tekst = String(fout?.message ?? '')
   if (BROWSER_WEG.test(tekst)) return 'browser_weg'
   if (isLoginUrl(url)) return 'verlopen'
+  // Na een 460 is alles wat misging (herladen, startpagina, time-out) daar het gevolg van.
+  if (herlogin > 0 && (fout || opStartpagina)) return 'herlogin'
   if (HERLADEN.test(tekst)) return 'gegooid'
   if (opStartpagina) return 'gegooid'
   let host = null
@@ -38,6 +45,7 @@ export function classificeer({ url = '', depotHost = null, fout = null, planning
 // logins: tijdstippen van nieuwe logins van dit depot (laatste uur telt).
 export function herstel(soort, { recent = [], logins = [], nu = new Date(), cfg }) {
   if (soort === 'gezond' || soort === 'database') return 'geen'
+  if (soort === 'herlogin') return 'opnieuw_openen'
   const binnen = (min) => (x) => nu - new Date(x.at ?? x) <= min * 60_000
   let actie
   if (soort === 'verlopen' || soort === 'blokkade' || soort === 'browser_weg') actie = 'nieuwe_login'

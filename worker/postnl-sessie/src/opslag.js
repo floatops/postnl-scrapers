@@ -173,12 +173,35 @@ export function verweesdeSessieEinde(rij) {
 }
 
 // Puur (getest): de levensduren uit rijen van postnl_sessies.
+// Alleen zuivere metingen (matransport#598):
+// - pas vanaf METING_VANAF: daarvoor werden fouten 460 niet vastgelegd, dus is niet te zien of een
+//   "verlopen" sessie eigenlijk door PostNL werd ingetrokken (05-11 15:08, na een uur fouten 460);
+// - niet als er in de STORING_MIN ervoor een storing was (fout 460, eruit gegooid, een andere fout);
+// - niet als het verlopen zelf uit een vastgelopen taak kwam (04-11: "duurde langer dan 150 s").
+export const METING_VANAF = '2026-11-06T00:00:00Z'
+const STORING_MIN = 30
+const STORING = new Set(['herlogin', 'sessie_ingetrokken', 'gegooid', 'fout', 'browser_weg', 'blokkade'])
+
+function zuiver(gebeurtenissen, om) {
+  const t = new Date(om).getTime()
+  return !(gebeurtenissen ?? []).some(g => {
+    if (!g?.at) return false
+    const at = new Date(g.at).getTime()
+    if (at > t || t - at > STORING_MIN * 60_000) return false
+    if (STORING.has(g.soort)) return true
+    // Het verlopen zelf: uit een vastgelopen taak, of met fouten 460 in het uur ervoor.
+    return g.soort === 'verlopen' && (g.herlogins > 0 || /duurde langer/.test(String(g.fout ?? '')))
+  })
+}
+
 export function levensdurenUit(rijen) {
   const uit = []
   for (const r of rijen) {
-    if (r.einde_reden === 'verlopen' && r.einde_at) uit.push((new Date(r.einde_at) - new Date(r.ingelogd_at)) / 60_000)
-    for (const g of r.gebeurtenissen ?? []) {
-      if (g?.soort === 'sessie_verlopen' && (g.tab ?? 'oompd') === 'oompd' && Number.isFinite(g.duurMin)) uit.push(g.duurMin)
+    if (!r.ingelogd_at || r.ingelogd_at < METING_VANAF) continue
+    const g = r.gebeurtenissen ?? []
+    if (r.einde_reden === 'verlopen' && r.einde_at && zuiver(g, r.einde_at)) uit.push((new Date(r.einde_at) - new Date(r.ingelogd_at)) / 60_000)
+    for (const x of g) {
+      if (x?.soort === 'sessie_verlopen' && (x.tab ?? 'oompd') === 'oompd' && Number.isFinite(x.duurMin) && !(x.herlogins > 0) && zuiver(g, x.at)) uit.push(x.duurMin)
     }
   }
   return uit
