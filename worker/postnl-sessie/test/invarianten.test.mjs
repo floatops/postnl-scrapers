@@ -85,3 +85,36 @@ test('nooit wachten zonder grens: Promise.all/allSettled en antwoord-uitlezen al
   }
   assert.deepEqual(fout, [], 'zet er een grens op (Promise.race met een timer), of zet de regel met reden in TOEGESTAAN')
 })
+
+// ---- Niets stapelt zich op zolang de browser open blijft (#600) ----
+test('de sessiehouder gebruikt geen trace-chunks en houdt zijn tijdelijke bestanden in de eigen werkmap', () => {
+  const code = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/sessie.js'), 'utf8').split('\n').filter(r => !/^\s*\/\//.test(r)).join('\n')
+  assert.ok(!/stopChunk|startChunk/.test(code), 'stopChunk kopieert het hele netwerklog en ruimt niets op tot de browser sluit: 6-7 GB per uur per depot')
+  assert.match(code, /tracesDir: this\.tracesDir/, 'zonder tracesDir komt alles in playwright-artifacts-*, tot de browser sluit')
+  assert.ok(!/os\.tmpdir\(\), 'postnl-sessie-'\)/.test(code), 'videomappen in de werkmap: die ruimt de volgende start op na een crash')
+})
+
+test('een taak over zijn limiet is binnen de slot-lease afgehandeld', () => {
+  assert.ok(STANDAARD.taakAfbouwSec * 2 < STANDAARD.slotLeaseSec)
+  assert.ok(STANDAARD.taakAfbouwSchrijfSec <= 120, 'tijdens de afbouw loopt de hartslag door, maar de waakhond wacht niet eindeloos')
+})
+
+test('de reservering per depot ligt boven wat er gemeten is, en herstarten ruim daarboven', () => {
+  assert.ok(STANDAARD.geheugenReserveBasisMb + STANDAARD.geheugenReserveMbPerDepot * 2 > 4303, 'piek M&A (2 depots) op 06-11')
+  assert.ok(STANDAARD.geheugenTotaalHerstartDeel >= 1.25)
+})
+
+test('browseraanroepen op het noodpad hebben een grens (#600)', () => {
+  const depot = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/depot.js'), 'utf8')
+  assert.match(depot, /metLimiet\(sessie\.nieuwSegment\(\)/, 'nieuwSegment alleen met een limiet')
+  assert.ok(!/await sessie\.nieuwSegment\(\)/.test(depot))
+  const code = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/sessie.js'), 'utf8')
+  assert.ok(!/await (this|oud)\.(context|browser)\??\.(close|tracing\.stop)\(/.test(code), 'sluiten en stoppen altijd via grens()')
+})
+
+test('losse scripts hebben een korte lease: het vangnet neemt na een crash binnen 5 min over (#600)', () => {
+  for (const f of ['postnl-dagplanning/src/index.js', 'postnl-ritmonitor/src/index.js', 'postnl-planner/src/index.js']) {
+    const m = /pakSessieSlot\(supabase, \{[\s\S]*?seconden: (\d+)/.exec(fs.readFileSync(path.join(WORKER, f), 'utf8'))
+    assert.ok(m && Number(m[1]) <= 300, `${f}: lease ${m?.[1]}; de hartslag houdt het slot vast`)
+  }
+})

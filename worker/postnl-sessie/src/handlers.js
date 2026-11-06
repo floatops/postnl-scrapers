@@ -16,7 +16,7 @@ export class DagNietBeschikbaar extends Error {}
 // Komt er tijdens een verversronde een Plannen-opdracht binnen (VPS-wekker), dan houdt de ronde op
 // tussen twee ritten: de opdracht hoeft niet op de hele shift te wachten (matransport#578).
 export function stopBijPlannerOpdracht(ctx, begin = Date.now()) {
-  return () => (ctx.plannerSignaal?.() ?? 0) > begin
+  return () => (ctx.plannerSignaal?.() ?? 0) > begin || Boolean(ctx.gestopt?.())
 }
 
 // Dagplanning openen op de dag van vandaag. Staat de dag er nog niet: DagNietBeschikbaar.
@@ -106,6 +106,13 @@ async function schrijfRitten(ctx, r, rijen) {
     .select('sleutel, naam, trip_nummer, ritnummer, dagen, verantwoordelijken, vergrendeld_dagen, gezien_at')
     .eq('klant_id', klantId).eq('depot', depot)
   if (error) throw Object.assign(new Error(`RVA-ritten lezen: ${error.message}`), { database: true })
+  // Staat een route-rij niet meer in RVA, dan meteen weg: de app biedt alleen aan wat in de portal staat (matransport#601).
+  const weg = r.rittenTeVerwijderen?.(bestaand ?? [], rijen, rijen.compleet) ?? []
+  if (weg.length) {
+    const { error: wegFout } = await supabase.from('rva_ritten').delete().eq('klant_id', klantId).eq('depot', depot).in('sleutel', weg)
+    if (wegFout) throw Object.assign(new Error(`RVA-ritten opruimen: ${wegFout.message}`), { database: true })
+    sessie.log.log(`[${depot}] RVA: ${weg.length} rij(en) staan niet meer in het Rittenoverzicht en zijn weggehaald`)
+  }
   const teSchrijven = r.rittenTeSchrijven(bestaand ?? [], rijen, ctx.nu)
   if (!teSchrijven.length) return 0
   const gezien = new Date().toISOString()
@@ -253,7 +260,7 @@ export const HANDLERS = {
 
       // wijzigen. Een regel kan als sleutel of als object (postcode, straat, van, tm, evenOneven) komen.
       const handelingen = (o.handelingen ?? []).map(h => ({ ...h, regel: typeof h.regel === 'string' ? h.regel : r.regelSleutel(h.regel ?? {}) }))
-      const uit = await r.voerUit(page, m, { rit: o.rit, dag: o.weekdag, handelingen }, { echt, log, opStap })
+      const uit = await r.voerUit(page, m, { rit: o.rit, dag: o.weekdag, handelingen }, { echt, log, opStap, gestopt: ctx.gestopt })
       const regels = echt ? await naLezen(page) : null
       const melding = (echt ? 'Opgeslagen in RVA' : 'Proefstand: alles gecontroleerd, niets opgeslagen (RVA_ECHT staat niet aan)')
         + (uit.rechtenToegevoegd ? '. Het account is eerst als ritverantwoordelijke toegevoegd.' : '')
@@ -266,7 +273,8 @@ export const HANDLERS = {
       // RVA-tabblad opnieuw laden en door met de volgende opdracht. Gooien zou de hele sessie (ook
       // OOM PD) sluiten en opnieuw inloggen; op 04-11 gaven 8 time-outs zo 4 logins en 10 min pauze.
       // Lukt het herladen niet (browser weg, database), dan wel gooien voor het herstel.
-      if (!err.database && r && await herstelRvaTab(sessie, r)) {
+      // Niet na het stopsein: dan is de context misschien al nieuw, en de lus handelt het af.
+      if (!err.database && r && !ctx.gestopt?.() && await herstelRvaTab(sessie, r)) {
         log.warn(`${soort} mislukt, RVA-tabblad herladen: ${reden.slice(0, 160)}`)
         return {
           dag: klaar, bewaren: true, melding: `${o.rit} ${o.weekdag}: ${soort} mislukt (${reden.slice(0, 120)})`,
@@ -306,7 +314,7 @@ export const HANDLERS = {
     } catch (err) {
       if (err.database) throw Object.assign(err, { dag: verder(false) })
       bijlezenMislukt.set(sleutel(`${o.rit}|${o.weekdag}`), nu.getTime() + 3_600_000)
-      if (await herstelRvaTab(sessie, r)) {
+      if (!ctx.gestopt?.() && await herstelRvaTab(sessie, r)) {
         sessie.log.warn(`[${depot}] RVA bijlezen ${o.rit} ${o.weekdag} mislukt (over een uur opnieuw): ${String(err.message).split('\n')[0].slice(0, 160)}`)
         return { dag: verder(false), run: null }
       }
@@ -400,7 +408,7 @@ export const HANDLERS = {
       await werk(sessie.page, volgMendix(sessie.page))
     }
     const { verwerk } = await planner.laad()
-    const uit = await verwerk(taak, { metSessie: inDezeSessie, stapStart: 'PostNL-sessie open' })
+    const uit = await verwerk(taak, { metSessie: inDezeSessie, stapStart: 'PostNL-sessie open', gestopt: ctx.gestopt })
     sessie.lezingen++
     const doorvoer = taak.soort === 'doorvoeren'
     const gebeurtenis = { soort: 'planner', taak_id: id, opdracht: taak.soort, uitkomst: uit.fout ? 'mislukt' : 'klaar', telling: uit.telling }

@@ -364,7 +364,7 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
   return { status: 'gelukt', melding: null }
 }
 
-async function voerDoorvoerenUit(page, mendix, taak) {
+async function voerDoorvoerenUit(page, mendix, taak, gestopt = () => false) {
   const lijst = await db(supabase.from('planning_verplaatsingen').select('*')
     .eq('taak_id', taak.id).eq('status', 'wacht').order('created_at'), 'verplaatsingen lezen')
   await zetStap(taak.id, 'Dag kiezen in PostNL', 6)
@@ -376,6 +376,9 @@ async function voerDoorvoerenUit(page, mendix, taak) {
   const geraakteRitten = new Set()
   let klaar = 0
   for (const v of lijst) {
+    // De sessiehouder gaf deze opdracht op (over de taaklimiet, matransport#600). Vóór de volgende
+    // wijziging ophouden: wat nog niet is aangeraakt wordt 'overgeslagen' (zetVerplaatsingenNaFout).
+    if (gestopt()) throw new Error('De opdracht duurde te lang en is gestopt.')
     await zetVerplaatsing(v.id, { status: 'bezig' })
     const nummer = klaar
     const opStap = (tekst, deel) => zetStap(taak.id, lijst.length > 1 ? `${nummer + 1} van ${lijst.length}: ${tekst}` : tekst, 10 + ((nummer + deel) / lijst.length) * 75)
@@ -414,7 +417,7 @@ async function voerDoorvoerenUit(page, mendix, taak) {
 async function metSessie(depot, doorvoeren, werk) {
   // Eén sessie per login (matransport#361). Lezen mag bij een bezet slot gewoon wachten en
   // doorgaan; schrijven nooit: een botsing kan een half uitgevoerde verplaatsing geven.
-  const slot = await pakSessieSlot(supabase, { klantId: KLANT_ID, depot: depot.naam, worker: WORKER, seconden: 25 * 60, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] ` })
+  const slot = await pakSessieSlot(supabase, { klantId: KLANT_ID, depot: depot.naam, worker: WORKER, seconden: 180, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] ` })
   if (doorvoeren && !slot.gekregen) {
     throw Object.assign(new Error('PostNL is bezet door een andere sessie. Probeer het over een paar minuten opnieuw.'), { nietGestart: true })
   }
@@ -507,7 +510,7 @@ export async function verversPlanning(page, mendix, { depot, datum, soort, shift
 // `metSessie(depot, doorvoeren, werk)` levert de PostNL-pagina: standaard een eigen browser met
 // login, slot en uitloggen; de sessiehouder geeft zijn open sessie. Geeft { fout, telling } terug
 // (de opdracht zelf staat dan al op klaar of mislukt in planning_taken).
-export async function verwerk(taak, { metSessie: sessie = metSessie, stapStart = 'Inloggen bij PostNL' } = {}) {
+export async function verwerk(taak, { metSessie: sessie = metSessie, stapStart = 'Inloggen bij PostNL', gestopt = () => false } = {}) {
   const doorvoeren = taak.soort === 'doorvoeren'
   // Alleen oppakken wat nog wacht: de edge function kan hem net hebben afgeblazen.
   const opgepakt = await db(supabase.from('planning_taken').update({ status: 'bezig', gestart_at: new Date().toISOString() })
@@ -526,7 +529,7 @@ export async function verwerk(taak, { metSessie: sessie = metSessie, stapStart =
     if (!depot) throw Object.assign(new Error(`Geen PostNL-inlog gevonden voor depot ${taak.depot}.`), { nietGestart: true })
     for (let poging = 1; ; poging++) {
       try {
-        await sessie(depot, doorvoeren, (page, mendix) => (doorvoeren ? voerDoorvoerenUit : voerOphalenUit)(page, mendix, taak))
+        await sessie(depot, doorvoeren, (page, mendix) => (doorvoeren ? voerDoorvoerenUit(page, mendix, taak, gestopt) : voerOphalenUit(page, mendix, taak)))
         break
       } catch (err) {
         if (!(err instanceof ProxyBlokkadeError) || poging >= MAX_BLOKKADES) throw err

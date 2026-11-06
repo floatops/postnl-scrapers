@@ -45,6 +45,7 @@ function nepSessies(log) {
       async taakBegin() { s.herloginTaak = 0 },
       async taakEinde(naam, { incident }) { return incident ? `trace/fout/${naam}` : null },
       async sluiten(reden) { log.push(`dicht:${s.nr}:${reden}`) },
+      async nieuwSegment() { log.push(`segment:${s.nr}`); if (nepSessies.segmentFaalt) throw new Error('browser reageert niet'); return true },
     }
     nepSessies.laatste = s
     return s
@@ -437,4 +438,47 @@ test('`bezig` zegt de waakhond ook buiten de handler wat de lus doet: inloggen, 
   await draaiDepot(o.deps)
   assert.deepEqual(fases.slice(0, 3), ['ritmonitor:inloggen', 'ritmonitor:taak', 'ritmonitor:afhandeling'])
   assert.equal(bezig.size, 0, 'na het stoppen leeg')
+})
+
+test('taak over limiet die op het stopsein reageert: geen contextwissel, volgende taak gaat door (#600)', async () => {
+  let n = 0
+  let gezienGestopt = false
+  const o = opzet({ duurMin: 3, cfg: { taakLimietSec: { ...mergeInstellingenEcht({}).taakLimietSec, ritmonitor: 1 }, taakAfbouwSec: 1 }, handlers: {
+    ritmonitor: async (ctx, dag) => {
+      if (++n > 1) return okRitmonitor(ctx, dag)
+      // Werkt door tot het stopsein komt, zoals de lussen in de handlers.
+      await new Promise(r => { const t = setInterval(() => { if (ctx.gestopt()) { gezienGestopt = true; clearInterval(t); r() } }, 5) })
+      throw new Error('gestopt')
+    },
+  } })
+  // De afbouwtijd echt laten lopen: de nep-klok slaapt anders in nul tijd.
+  const nep = o.klok.slaap
+  o.klok.slaap = (ms) => (ms === 1000 ? new Promise(r => setTimeout(r, 200)) : nep(ms))
+  await draaiDepot(o.deps)
+  assert.equal(gezienGestopt, true, 'de handler zag het stopsein')
+  assert.equal(o.log.filter(r => String(r).startsWith('segment')).length, 0)
+})
+
+test('taak over limiet die niet stopt: de context gaat dicht, zonder nieuwe login (#600)', async () => {
+  let n = 0
+  const o = opzet({ duurMin: 3, cfg: { taakLimietSec: { ...mergeInstellingenEcht({}).taakLimietSec, ritmonitor: 1 }, taakAfbouwSec: 1 }, handlers: {
+    ritmonitor: async (ctx, dag) => (++n === 1 ? new Promise(() => {}) : okRitmonitor(ctx, dag)),
+  } })
+  await draaiDepot(o.deps)
+  assert.ok(n >= 2, 'de lus gaat door met de volgende taak')
+  assert.equal(o.log.filter(r => String(r).startsWith('segment')).length, 1, 'één keer de context dicht')
+  assert.equal(o.log.filter(r => String(r).startsWith('open')).length, 1, 'geen nieuwe login')
+})
+
+test('nieuw videosegment mislukt: sessie dicht en de lus gaat door, geen crash van het depot (#600)', async () => {
+  let n = 0
+  const o = opzet({ duurMin: 3, cfg: { taakLimietSec: { ...mergeInstellingenEcht({}).taakLimietSec, ritmonitor: 1 }, taakAfbouwSec: 1 }, handlers: {
+    ritmonitor: async (ctx, dag) => (++n === 1 ? new Promise(() => {}) : okRitmonitor(ctx, dag)),
+  } })
+  nepSessies.segmentFaalt = true
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.segmentFaalt = false }
+  assert.ok(o.log.includes('dicht:1:fout'), 'sessie dicht met reden fout')
+  assert.ok(o.log.some(r => String(r).startsWith('open:2')), 'de volgende taak logt opnieuw in')
 })

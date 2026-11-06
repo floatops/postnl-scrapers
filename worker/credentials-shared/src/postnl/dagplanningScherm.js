@@ -106,9 +106,19 @@ export async function kiesDag(page, label, antwoorden, { ms = 20_000 } = {}) {
 }
 
 // De shifts zoals het scherm ze toont ("01", "03", …), niet een vaste lijst.
-export async function shiftsOpScherm(page) {
-  return (await page.locator(`${SEL_SHIFTS} tbody tr td`).allInnerTexts())
+// Twee keer hetzelfde lezen, want de tabel vult rij voor rij: er is alleen op de eerste cel gewacht.
+export async function shiftsOpScherm(page, { stilMs = 400, ms = 3_000 } = {}) {
+  const lees = async () => (await page.locator(`${SEL_SHIFTS} tbody tr td`).allInnerTexts())
     .map(t => t.trim()).filter(t => /^\d{1,2}$/.test(t))
+  const eind = Date.now() + ms
+  let vorig = await lees()
+  while (Date.now() < eind) {
+    await new Promise(r => setTimeout(r, stilMs))
+    const nu = await lees()
+    if (nu.length === vorig.length) return nu
+    vorig = nu
+  }
+  return vorig
 }
 
 // Kiest een shift en wacht tot de ritten (RideNumber) binnen zijn. Een al gekozen shift niet

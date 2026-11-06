@@ -60,7 +60,7 @@ export async function zorgVoorBasisRevisie(page, mendix, { echt = false, log = c
 // Voert de opdracht uit in de open RVA-pagina. Geeft per handeling wat er gebeurde. Een fout
 // midden in een handeling: geen herhaling, wel Annuleer (terug naar de basisrevisie), en dan gooien.
 // opStap({ stap, voortgang }) meldt elke stap (voor de voortgangsbalk in de app); mag niet gooien.
-export async function voerUit(page, mendix, opdracht, { echt = false, log = console, opStap = async () => {} } = {}) {
+export async function voerUit(page, mendix, opdracht, { echt = false, log = console, opStap = async () => {}, gestopt = () => false } = {}) {
   const totaal = opdracht.handelingen.length
   const meld = (stap, voortgang) => Promise.resolve().then(() => opStap({ stap, voortgang })).catch(() => {})
   await meld('Rit-dag openen', 10)
@@ -77,6 +77,8 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
   const stappen = []
   try {
     for (const [i, h] of opdracht.handelingen.entries()) {
+      // De sessiehouder gaf de opdracht op (over de taaklimiet, matransport#600): de catch hieronder doet Annuleer.
+      if (gestopt()) throw new rva.RvaFout('controle', 'De opdracht duurde te lang en is gestopt; de wijzigingen zijn niet opgeslagen')
       await meld(`Wijziging ${i + 1} van ${totaal}`, 20 + Math.round((i / totaal) * 65))
       const fn = UITVOEREN[h.soort]
       if (!fn) throw new rva.RvaFout('opdracht', `Onbekende handeling: ${h.soort}`)
@@ -90,6 +92,8 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
       log.log(`  ${i + 1}. ${h.soort}: ${afwijking.length ? `AFWIJKING (${afwijking.join('; ')})` : 'ok'}${meldingen.length ? ` — PostNL: ${meldingen.join(' / ')}` : ''}`)
       if (afwijking.length) throw new rva.RvaFout('controle', `${h.soort}: ${afwijking.join('; ')}`)
     }
+    // Ook hier: een opgegeven opdracht niet alsnog opslaan terwijl de lus al verder is.
+    if (gestopt()) throw new rva.RvaFout('controle', 'De opdracht duurde te lang en is gestopt; de wijzigingen zijn niet opgeslagen')
   } catch (err) {
     await rva.annuleer(page, mendix).catch(() => {})
     err.stappen = stappen
@@ -198,10 +202,10 @@ export async function zetVerantwoordelijkenVeilig(page, mendix, rit, dag, namen,
 // Het Rittenoverzicht als rijen voor rva_ritten (plan.ritRijen).
 // Alle pagina's (20 rijen per pagina, matransport#573).
 export async function leesRitten(page, mendix) {
-  const { antwoorden, rijen } = await rva.leesAlleRitten(page, mendix)
-  return ritRijen(rittenUit(antwoorden), rijen)
+  const { antwoorden, rijen, compleet } = await rva.leesAlleRitten(page, mendix)
+  return Object.assign(ritRijen(rittenUit(antwoorden), rijen), { compleet })
 }
 
 export * from './scherm.js'
-export { regelSleutel, stappenVoorVolgorde, knipDelen, verschillen, revisieTijdTekst, ritRijen, rittenTeSchrijven, volgendeBijlezen } from './plan.js'
+export { regelSleutel, stappenVoorVolgorde, knipDelen, verschillen, revisieTijdTekst, ritRijen, rittenTeSchrijven, rittenTeVerwijderen, volgendeBijlezen } from './plan.js'
 export { regelsUit, ritDagUit, rittenUit, revisiesUit, onderbrekingenUit, regelGuidsUit } from './lezen.js'

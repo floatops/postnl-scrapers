@@ -18,14 +18,15 @@ import { login } from '../../credentials-shared/src/postnl/login.js'
 import { beschikbareKolommen } from '../../credentials-shared/src/postnl/schrijver.js'
 import { maakRitmonitor } from '../../postnl-ritmonitor/src/ritmonitor.js'
 import { maakOpslag } from './opslag.js'
-import { Sessie, WORKER } from './sessie.js'
+import path from 'node:path'
+import { Sessie, WORKER, WERK_ROOT } from './sessie.js'
 import { draaiDepot } from './depot.js'
 import { HANDLERS } from './handlers.js'
 import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
 import { codeVersie, gewijzigdePaden, raaktSessiehouder } from './codeversie.js'
-import { beoordeelGeheugen, geheugenTekst } from './geheugen.js'
+import { beoordeelGeheugen, beoordeelTotaal, geheugenTekst, meetTotaal, mapMb, vrijGb } from './geheugen.js'
 import { waakhondMs } from './instellingen.js'
 import { zetTijdInLog, tijdStempel } from '../../credentials-shared/src/tijdLog.js'
 import fs from 'node:fs/promises'
@@ -85,23 +86,45 @@ async function main() {
     log.log(`Nieuwe code (${nu.slice(0, 7)}): herstart na de lopende taak`); stop = true; exitCode = 42
   }, cfg.codeCheckMin * 60_000)
 
-  // Geheugenwacht (geheugen.js, matransport#578): elke minuut de heap; elk kwartier in het log. Te
-  // vol: melding en netjes herstarten na de lopende taak, nooit een crash midden in een opdracht.
+  // Geheugenwacht (geheugen.js, matransport#578, #600): elke minuut de heap en het totaal met
+  // browsers; elk kwartier in het log, met de werkmap en de vrije schijf. Te vol: melding en netjes
+  // herstarten na de lopende taak, nooit een crash midden in een opdracht.
   const limietMb = getHeapStatistics().heap_size_limit / 1048576
+  const werkMap = path.join(WERK_ROOT, KLANT_ID)
   let gewaarschuwd = false
+  let totaalGewaarschuwd = false
   let geheugenGelogd = 0
+  let schijfGemeld = 0
+  let hoogste = 0
   const geheugenCheck = setInterval(async () => {
-    const m = process.memoryUsage()
-    const meting = { heapMb: m.heapUsed / 1048576, limietMb, rssMb: m.rss / 1048576 }
-    if (Date.now() - geheugenGelogd >= cfg.geheugenLogMin * 60_000) { log.log(`Geheugen: ${geheugenTekst(meting)}`); geheugenGelogd = Date.now() }
-    const oordeel = beoordeelGeheugen({ ...meting, cfg, gewaarschuwd })
-    if (oordeel === 'waarschuwen') {
-      gewaarschuwd = true
-      await melden({ soort: 'geheugen_hoog', detail: geheugenTekst(meting) })
-    } else if (oordeel === 'herstarten' && !stop) {
-      log.log(`Geheugen te vol (${geheugenTekst(meting)}): herstart na de lopende taak`)
-      await melden({ soort: 'geheugen_herstart', detail: `${geheugenTekst(meting)}; herstart na de lopende taak` })
-      stop = true; exitCode = 42
+    try {
+      const m = process.memoryUsage()
+      const meting = { heapMb: m.heapUsed / 1048576, limietMb, rssMb: m.rss / 1048576, totaal: await meetTotaal() }
+      hoogste = Math.max(hoogste, meting.totaal?.totaalMb ?? 0)
+      if (Date.now() - geheugenGelogd >= cfg.geheugenLogMin * 60_000) {
+        geheugenGelogd = Date.now()
+        const volledig = { ...meting, werkMapMb: await mapMb(werkMap), vrijGb: await vrijGb() }
+        log.log(`Geheugen: ${geheugenTekst(volledig)}, hoogste sinds start ${hoogste} MB`)
+        const schijfTe = volledig.vrijGb != null && volledig.vrijGb < cfg.schijfVrijMinGb
+        if ((schijfTe || volledig.werkMapMb > cfg.werkMapMaxMb) && Date.now() - schijfGemeld >= 3600_000) {
+          schijfGemeld = Date.now()
+          await melden({ soort: 'schijf_hoog', detail: `werkmap ${volledig.werkMapMb} MB, schijf vrij ${volledig.vrijGb ?? '?'} GB` })
+        }
+      }
+      const oordeel = beoordeelGeheugen({ ...meting, cfg, gewaarschuwd })
+      const oordeelTotaal = beoordeelTotaal({ totaalMb: meting.totaal?.totaalMb, depots: depots.length, cfg, gewaarschuwd: totaalGewaarschuwd })
+      if (oordeel === 'waarschuwen' || oordeelTotaal === 'waarschuwen') {
+        if (oordeel === 'waarschuwen') gewaarschuwd = true
+        if (oordeelTotaal === 'waarschuwen') totaalGewaarschuwd = true
+        await melden({ soort: 'geheugen_hoog', detail: geheugenTekst(meting) })
+      }
+      if ((oordeel === 'herstarten' || oordeelTotaal === 'herstarten') && !stop) {
+        log.log(`Geheugen te vol (${geheugenTekst(meting)}): herstart na de lopende taak`)
+        stop = true; exitCode = 42   // eerst dit: een mislukte melding mag de herstart niet tegenhouden
+        await melden({ soort: 'geheugen_herstart', detail: `${geheugenTekst(meting)}; herstart na de lopende taak` })
+      }
+    } catch (e) {
+      log.warn(`Geheugenmeting mislukt (volgende minuut opnieuw): ${e.message}`)
     }
   }, 60_000)
 

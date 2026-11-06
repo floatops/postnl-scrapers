@@ -25,13 +25,37 @@ export const isLoginPagina = (url) => /loginpostnl|\/login|\/authorize/.test(Str
 const bijLogin = new WeakMap()
 export function volgLogins(page, fn) { bijLogin.set(page, fn) }
 
+// Wie een trace heeft lopen (de sessiehouder), zet die stil rond het wachtwoord: Playwright schrijft
+// de waarde van elke fill() en het POST-verkeer leesbaar in de trace (matransport#600). Per context.
+const rondWachtwoord = new WeakMap()
+export function volgWachtwoord(context, haak) { rondWachtwoord.set(context, haak) }
+
+// Wachten op het loginveld, maar stoppen als de pagina intussen van de loginpagina af is: PostNL
+// hoeft geen wachtwoord, de SSO logde stil opnieuw in. 'veld', 'weg' of 'niets' (tijd om).
+export async function wachtOpLoginVeld(page, ms = 45_000) {
+  const veld = page.locator(SEL_LOGIN_VELD).first()
+  const eind = Date.now() + ms
+  while (Date.now() < eind) {
+    if (await veld.isVisible().catch(() => false)) return 'veld'
+    if (!isLoginPagina(page.url())) return 'weg'
+    await page.waitForTimeout(500)
+  }
+  return 'niets'
+}
+
+// Geeft true als er echt met het wachtwoord is ingelogd, false als PostNL er niet om vroeg.
 export async function login(page, depot, { log = console } = {}) {
-  try { bijLogin.get(page)?.() } catch { /* meten mag inloggen nooit tegenhouden */ }
   // Het invoerveld staat soms al in de DOM terwijl het nog verborgen is (de PCI-loginpagina
   // hydrateert traag). Langer wachten en anders één keer herladen.
-  try {
-    await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
-  } catch {
+  const stand = await wachtOpLoginVeld(page)
+  if (stand === 'weg') {
+    // Stille SSO. Komt die uit op een fout van PostNL (06-11 15:43: 500 op /oauth/v2/callback), dan
+    // zou hier niets meer gebeuren: één keer opnieuw naar het depot. Tot #600 telde dit als een
+    // verlopen login, wachtte het 90 s op een loginveld dat nooit kwam en werd het 'gegooid'.
+    if (/\/oauth\/|error-page/.test(page.url())) await page.goto(depot.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
+    return false
+  }
+  if (stand === 'niets') {
     const blok = await detecteerBlok(page)
     log.warn(`[${depot.naam}] Loginveld niet zichtbaar na 45 s${blok.isBlok ? ' — mogelijke IP-blokkering' : ''} (titel: "${blok.title}")`)
     // Met de pool helpt herladen niet: dit IP is geblokkeerd.
@@ -39,18 +63,27 @@ export async function login(page, depot, { log = console } = {}) {
     await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
     await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
   }
-  await page.locator(SEL_LOGIN_VELD).first().fill(depot.username)
-  await page.locator('input[type="password"]').first().fill(depot.password)
-  await page.locator('button[data-trn-key="login.butlogin"]').click()
-  // Wachten tot we van de loginpagina af zijn. NIET op de depot-URL wachten: de login-URL bevat
-  // die zelf in de redirect-parameter.
-  await page.waitForFunction(() => !window.location.hostname.includes('loginpostnl'), { timeout: 90000 }).catch(() => {})
-  await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {})
+  // Pas hier is het zeker een echte login, en pas dit telt als een verlopen sessie.
+  try { bijLogin.get(page)?.() } catch { /* meten mag inloggen nooit tegenhouden */ }
+  const haak = rondWachtwoord.get(page.context?.())
+  await haak?.voor()
+  try {
+    await page.locator(SEL_LOGIN_VELD).first().fill(depot.username)
+    await page.locator('input[type="password"]').first().fill(depot.password)
+    await page.locator('button[data-trn-key="login.butlogin"]').click()
+    // Wachten tot we van de loginpagina af zijn. NIET op de depot-URL wachten: de login-URL bevat
+    // die zelf in de redirect-parameter.
+    await page.waitForFunction(() => !window.location.hostname.includes('loginpostnl'), { timeout: 90000 }).catch(() => {})
+    await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => {})
+  } finally {
+    await haak?.na()
+  }
   if (page.url().includes('loginpostnl')) {
     // "Er klopt iets niet. Controleer je e-mailadres en wachtwoord." staat dan op de pagina.
     const melding = await page.locator('[role="alert"], .alert, .error').first().innerText({ timeout: 2000 }).catch(() => '')
     throw Object.assign(new Error(`Login mislukt${melding ? `: ${melding.trim().slice(0, 120)}` : ''}`), { loginGeweigerd: true })
   }
+  return true
 }
 
 // Naar het depot-portaal tot het Planning-menu zichtbaar is; logt in als PostNL daarom vraagt.
@@ -60,11 +93,12 @@ export async function naarDepot(page, depot, { log = console, maxMs = 90000 } = 
   if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
   const deadline = Date.now() + maxMs
   let logins = 0
+  let stil = 0
   while (Date.now() < deadline) {
     if (isLoginPagina(page.url())) {
       if (logins >= 2) throw new Error(`Planning-menu niet bereikbaar na ${logins} keer inloggen`)
-      logins++
-      await login(page, depot, { log })
+      if (await login(page, depot, { log })) logins++
+      else if (++stil > 3) throw new Error(`Planning-menu niet bereikbaar: ${stil} keer stille SSO`)
       continue
     }
     if (await page.locator(SEL_PLANNING).first().isVisible().catch(() => false)) {

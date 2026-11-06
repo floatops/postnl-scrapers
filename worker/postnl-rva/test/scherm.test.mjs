@@ -1,7 +1,7 @@
 // De knop-checks van de rit-dag, met een nagemaakte pagina: welke knoppen staan in beeld.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { inBewerkstand, magWijzigen, revisieRijenGeladen } from '../src/scherm.js'
+import { inBewerkstand, magWijzigen, revisieRijenGeladen, wachtOpVolleLijst } from '../src/scherm.js'
 
 // Een pagina waarop alleen de knoppen met deze teksten zichtbaar zijn. knop() zoekt op
 // data-button-id óf op de knoptekst; de nep-locator kijkt alleen naar de tekst.
@@ -57,4 +57,23 @@ test('revisieRijenGeladen: eerst nog laden, dan rijen', async () => {
 test('revisieRijenGeladen: niets en geen status = fout na de tijdslimiet', async () => {
   const { v, page } = revisieVenster([{ status: '', rij: false }])
   await assert.rejects(revisieRijenGeladen(page, v, { ms: 50 }), /revisielijst laadde niet/)
+})
+
+test('wachtOpVolleLijst: wacht tot de dagen er staan en het aantal stil blijft (#601: 06-11 07:02)', async () => {
+  const stand = [0, 0, 0, 2, 2, 5]
+  let i = 0
+  const rijen = { count: async () => stand[Math.min(i++, stand.length - 1)] }
+  assert.equal(await wachtOpVolleLijst(rijen, { ms: 2000, stilMs: 40, stapMs: 5 }), 5, 'niet stoppen bij de eerste rijen')
+})
+
+test('wachtOpVolleLijst: komt er niets, dan 0 binnen de grens', async () => {
+  const begin = Date.now()
+  assert.equal(await wachtOpVolleLijst({ count: async () => 0 }, { ms: 60, stilMs: 20, stapMs: 5 }), 0)
+  assert.ok(Date.now() - begin < 1000)
+})
+
+test('wachtOpVolleLijst: met een verwacht aantal meteen klaar, zonder op stilte te wachten', async () => {
+  const begin = Date.now()
+  assert.equal(await wachtOpVolleLijst({ count: async () => 5 }, { verwacht: 5, stilMs: 5000 }), 5)
+  assert.ok(Date.now() - begin < 1000)
 })

@@ -1,7 +1,7 @@
 // node --test — wachten op en vrijgeven van het PostNL-sessieslot (floatops/matransport#361).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { pakSessieSlot, slotSleutel, sessiehouderHeeftAlles, isSessiehouder } from '../src/sessieSlot.js'
+import { pakSessieSlot, slotSleutel, sessiehouderHeeftAlles, isSessiehouder, verlengZolangBezig } from '../src/sessieSlot.js'
 
 function nepSupabase(antwoorden, houder = null) {
   const aanroepen = []
@@ -72,4 +72,36 @@ test('sessiehouderHeeftAlles: alleen als elk depot van de sessiehouder is; de me
   assert.equal(await sessiehouderHeeftAlles(nepSupabase([], null), 'k1', ['A']), false)
   assert.equal(await sessiehouderHeeftAlles(nepSupabase([], 'postnl-sessie:1:a'), 'k1', []), false)
   assert.equal(isSessiehouder('postnl-sessie-meting:1:a'), false)
+})
+
+test('hartslag: verlengt zolang hij loopt, stopt bij los, overleeft een fout (#600)', async () => {
+  const slagen = []
+  let n = 0
+  const uit = verlengZolangBezig({
+    ms: 1000,
+    elke: (ms, fn) => { slagen.push(fn); return () => slagen.push('gestopt') },
+    verleng: async () => { if (++n === 1) throw new Error('database weg'); return true },
+  })
+  await slagen[0]()          // fout: geen crash
+  await slagen[0]()
+  assert.equal(n, 2)
+  uit()
+  assert.equal(slagen.at(-1), 'gestopt')
+})
+
+test('pakSessieSlot verlengt tot `los` en laat het proces niet openstaan (#600)', async () => {
+  const sb = nepSupabase([{ data: true, error: null }])
+  const slot = await pakSessieSlot(sb, { klantId: 'k', depot: 'd', worker: 'w', seconden: 600, maxWachtMs: 1000 })
+  assert.equal(slot.gekregen, true)
+  await slot.los()
+  assert.ok(sb.aanroepen.some(a => a.naam === 'postnl_sessie_los'))
+})
+
+test('hartslag: stoppen wacht op een lopende slag, zodat die het slot niet terugzet na `los` (#600)', async () => {
+  let slag
+  let klaar = false
+  const uit = verlengZolangBezig({ ms: 1000, elke: (ms, fn) => { slag = fn; return () => {} }, verleng: async () => { await new Promise(r => setTimeout(r, 30)); klaar = true; return true } })
+  slag()
+  await uit()
+  assert.equal(klaar, true)
 })

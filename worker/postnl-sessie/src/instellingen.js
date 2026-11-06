@@ -74,11 +74,25 @@ export const STANDAARD = Object.freeze({
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
   // Geheugenwacht (geheugen.js, matransport#578): deel van de V8-heapgrens (~4 GB op de VPS).
-  // Normaal ~650 MB rss; de crashes van 04-11 kwamen bij ~3,3 GB. Herstarten gebeurt ná de lopende
-  // taak (tot 15 min bij RVA), dus ruim op tijd.
+  // De crashes van 04-11 kwamen bij ~3,3 GB. Herstarten gebeurt ná de lopende taak (tot 15 min bij
+  // RVA), dus ruim op tijd.
   geheugenWaarschuwDeel: 0.35,
   geheugenHerstartDeel: 0.5,
   geheugenLogMin: 15,
+  // Totaal van proces plus browsers (matransport#600). Reservering: basis + per depot. Op 06-11 was
+  // de piek bij M&A (2 depots) 4,3 GB: proces ±1,9 GB, browsers ±1,3 GB per depot, nog met de grote
+  // traces. Waarschuwen bij de reservering, herstarten ruim erboven: dat kost een login.
+  geheugenReserveBasisMb: 2000,
+  geheugenReserveMbPerDepot: 1500,
+  geheugenTotaalHerstartDeel: 1.5,
+  // Schijf: melden als er te weinig vrij is of de werkmap toch groeit (hoogstens één keer per uur).
+  schijfVrijMinGb: 40,
+  werkMapMaxMb: 2048,
+  // Een taak over zijn limiet (matransport#600): zo lang krijgt de handler om bij zijn volgende
+  // stap zelf te stoppen, daarna gaat de context dicht. Schrijvend werk meer: één handeling plus
+  // Annuleer. Breekt de context midden in Annuleer, dan blijft de bewerkstand staan.
+  taakAfbouwSec: 20,
+  taakAfbouwSchrijfSec: 90,
   // Elke taak uit taken.js hoort hier (test/invarianten.test.mjs). gisteren ontbrak tot #599 en
   // kreeg zo stil de standaard van 300 s, terwijl hij een hele dag leest zoals ochtend.
   taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180, gisteren: 900 },

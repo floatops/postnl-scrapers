@@ -10,12 +10,16 @@ import fs from 'node:fs/promises'
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
 process.env.OPNAME_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'opnames-'))
+// Eigen werkmap, en de playwright-mappen van een draaiende sessiehouder tellen niet mee: de proef
+// draait op de VPS naast de echte (matransport#600).
+process.env.SESSIE_WERK_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'proef-werk-'))
+const artifactsVooraf = new Set((await fs.readdir(os.tmpdir())).filter(n => n.startsWith('playwright-artifacts-')))
 const { Sessie } = await import('../src/sessie.js')
 import { classificeer } from '../src/gezondheid.js'
 import { mergeInstellingen } from '../src/instellingen.js'
 import { SEL_PLANNING, opStartpagina, login } from '../../credentials-shared/src/postnl/login.js'
 import { volgMendix, LEZEN_MS } from '../../postnl-planner/src/mendix.js'
-import { metLimiet } from '../src/depot.js'
+import { metLimiet, handlerKlaar } from '../src/depot.js'
 
 const sessies = new Set()
 let gegooid = false
@@ -83,12 +87,52 @@ try {
   await s.page.reload()
   const pad2 = await s.taakEinde('ritmonitor', { incident: true })
   assert.match(pad2.split(path.sep).join('/'),/proefdepot\/fout\/trace-ritmonitor-/)
-  console.log('✔ trace-chunk per taak: geslaagd → latest, incident → fout/')
+  console.log('✔ trace per taak: geslaagd → latest, incident → fout/')
+
+  // Twintig taken achter elkaar: de werkmap groeit niet, en elke trace blijft even klein. Met
+  // chunks kwam er per taak een volledige kopie van het netwerklog bij (06-11, matransport#600).
+  const rest = async () => (await fs.readdir(s.tracesDir)).filter(n => n !== 'resources')
+  const groottes = []
+  for (let i = 0; i < 20; i++) {
+    await s.taakBegin('ritmonitor')
+    await s.page.reload()
+    const p = await s.taakEinde('ritmonitor')
+    groottes.push((await fs.stat(p)).size)
+    assert.deepEqual(await rest(), [], 'na elke taak staat er niets meer los in de trace-map')
+  }
+  assert.ok(groottes.at(-1) < groottes[0] * 2, `trace groeit niet mee: ${groottes[0]} → ${groottes.at(-1)} bytes`)
+  const uitTrace = await fs.readdir(os.tmpdir()).then(n => n.filter(x => x.startsWith('playwright-artifacts-') && !artifactsVooraf.has(x)))
+  for (const n of uitTrace) {
+    const inhoud = await fs.readdir(path.join(os.tmpdir(), n)).catch(() => [])
+    assert.ok(!inhoud.some(f => /-pwnetcopy-|\.trace$/.test(f)), 'niets meer in playwright-artifacts')
+  }
+  console.log(`✔ 20 taken: trace-map leeg na elke taak, trace blijft klein (${groottes[0]} → ${groottes.at(-1)} bytes)`)
+
+  // Een trace die bleef lopen (bv. stoppen mislukte) mag de volgende taak niet blokkeren.
+  await s.taakBegin('ritmonitor')
+  s.traceLoopt = false
+  await s.taakBegin('ritmonitor')
+  assert.equal(s.traceLoopt, true, 'opnieuw gestart na een achtergebleven trace')
+  assert.ok(await s.taakEinde('ritmonitor'))
+  console.log('✔ achtergebleven trace: gestopt en opnieuw gestart')
 
   const nogIngelogd = await s.nieuwSegment()
   assert.equal(nogIngelogd, true, 'contextwissel met dezelfde cookies blijft ingelogd')
   assert.ok((await opnames()).some(u => /video-/.test(u.pad) && u.pad.endsWith('.webm')), 'video van het vorige segment opgeslagen')
-  console.log('✔ nieuw videosegment zonder nieuwe login, vorige video opgeslagen')
+  assert.deepEqual(await fs.readdir(s.tracesDir), [], 'na de contextwissel is de trace-map helemaal leeg')
+  await s.taakBegin('ritmonitor')
+  await s.page.reload()
+  assert.ok(await s.taakEinde('ritmonitor'), 'trace werkt ook in de nieuwe context')
+  console.log('✔ nieuw videosegment zonder nieuwe login, vorige video opgeslagen, trace-map leeg')
+
+  // Over de limiet: een handler die op een Playwright-aanroep hangt, stopt zodra de context dichtgaat.
+  {
+    const hangend = s.page.waitForSelector('#bestaat-nooit', { timeout: 0 }).then(() => 'klaar', () => 'gestopt')
+    assert.equal(await handlerKlaar(hangend, ms => new Promise(r => setTimeout(r, ms)), 200), false, 'hij hangt echt')
+    assert.equal(await s.nieuwSegment(), true)
+    assert.equal(await handlerKlaar(hangend, ms => new Promise(r => setTimeout(r, ms)), 5000), true, 'context dicht: de aanroep faalt meteen')
+    console.log('✔ storing: taak over de limiet stopt zodra de context dichtgaat, geen nieuwe login')
+  }
 
   gegooid = true
   await s.page.reload()
@@ -174,7 +218,8 @@ try {
   assert.equal(opslag.laatst.herlogins, 1, 'aantal her-logins als getal naar de database')
   assert.equal(opslag.laatst.einde_reden, 'verlopen')
   assert.ok((await opnames()).some(u => /\/fout\/video-/.test(u.pad)), 'video van een incident naar fout/')
-  console.log('✔ sluiten: reden vastgelegd, video naar fout/')
+  await assert.rejects(fs.stat(s.werkMap), 'werkmap weg na sluiten')
+  console.log('✔ sluiten: reden vastgelegd, video naar fout/, werkmap weg')
   // 3. Crash midden in een taak: de browser valt weg terwijl de taak loopt.
   {
     const s2 = new Sessie({ depot, klantId: 'k', supabase, chromium, opslag, cfg: mergeInstellingen({}), log: { log() {}, warn() {}, error: console.error } })

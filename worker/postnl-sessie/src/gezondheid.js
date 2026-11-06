@@ -15,7 +15,8 @@
 //               Gemeten op 05-11 (matransport#598): bij Waddinxveen in blokken elke 3–5 min, midden
 //               in een taak gaf dat "Execution context was destroyed" en telde het als gegooid.
 //   fout        iets anders
-// De herkenning van `gegooid` komt uit de meting van stap 0 (POSTNL_SESSIE.md § Meting).
+// De herkenning van `gegooid` komt uit de meting van stap 0 (POSTNL_SESSIE.md § Meting): dat is
+// dezelfde fout 460, alleen dan niet gezien (06-11, matransport#600).
 
 export const isLoginUrl = (url) => /loginpostnl|\/login(?:\.html)?(?:[?#/]|$)|\/authorize/i.test(String(url ?? ''))
 

@@ -24,6 +24,14 @@ export async function metLimiet(belofte, ms, naam, afbreken = null) {
   try { return await Promise.race([belofte, limiet, ...(afbreken ? [afbreken] : [])]) } finally { clearTimeout(t) }
 }
 
+// Wacht hooguit `ms` tot de handler klaar is. true = klaar (geslaagd of gefaald), false = hij loopt nog.
+export async function handlerKlaar(lopend, slaap, ms) {
+  let klaar = false
+  const einde = Promise.resolve(lopend).then(() => { klaar = true }, () => { klaar = true })
+  await Promise.race([einde, slaap(ms)])
+  return klaar
+}
+
 // Hartslag van het sessie-slot (matransport#598). Het slot is een lease van `slotLeaseSec` (180 s).
 // Tot 05-11 werd het alleen tussen twee taken verlengd, terwijl een taak 300–1500 s mag duren en de
 // pauze na te veel logins 10 min is: het slot verliep dan, en de losse scripts logden zelf in
@@ -39,20 +47,25 @@ export function startHartslag({ elke, ms, verleng, levend, log = console }) {
   kwijt.catch(() => {})
   let bezig = false
   let weg = false
+  let lopend = null
   const stop = elke(ms, async () => {
     if (bezig || weg || !levend()) return
     bezig = true
-    try {
-      if (!(await verleng())) {
-        weg = true
-        nee(Object.assign(new Error('Sessie-slot kwijt tijdens de taak'), { slotKwijt: true }))
-      }
-    } catch (e) {
-      // Databasehapering: de volgende slag probeert opnieuw; de lease geeft twee kansen.
-      log.warn?.(`Sessie-slot verlengen mislukt (volgende slag opnieuw): ${e.message}`)
-    } finally { bezig = false }
+    lopend = (async () => {
+      try {
+        if (!(await verleng())) {
+          weg = true
+          nee(Object.assign(new Error('Sessie-slot kwijt tijdens de taak'), { slotKwijt: true }))
+        }
+      } catch (e) {
+        // Databasehapering: de volgende slag probeert opnieuw; de lease geeft twee kansen.
+        log.warn?.(`Sessie-slot verlengen mislukt (volgende slag opnieuw): ${e.message}`)
+      } finally { bezig = false; lopend = null }
+    })()
+    await lopend
   })
-  return { stop, kwijt, get weg() { return weg } }
+  // `klaar`: wacht op een lopende slag, zodat die het slot niet terugzet ná het vrijgeven.
+  return { stop, kwijt, klaar: () => lopend ?? Promise.resolve(), get weg() { return weg } }
 }
 
 // Een `elke` met echte timers (de productieklok geeft er zelf een mee).
@@ -210,6 +223,8 @@ export async function draaiDepot(deps) {
       const limietMs = (cfg.taakLimietSec[taak] ?? 300) * 1000
       let uitkomst = null
       let fout = null
+      let lopend = null                       // de handler, ook als metLimiet al is teruggekomen
+      const stopsein = { gestopt: false }     // ctx.gestopt(): de handler moet ophouden (over de limiet)
       try {
         // Inloggen valt ook binnen de hartslag: OOM PD en het RVA-tabblad, elk hooguit LOGIN_MAX_SEC.
         // Stopt de hartslag tijdens een trage login, dan logt het vangnet ertussendoor in.
@@ -226,12 +241,32 @@ export async function draaiDepot(deps) {
         await sessie.taakBegin(taak)
         levend(limietMs)
         deps.bezig?.set(depot.naam, { taak, fase: 'taak', sinds: klok.nu() })
-        uitkomst = await metLimiet(handlers[taak]({ ...deps.ctx, sessie, nu, cfg }, dag, k.args), limietMs, taak, hartslag?.kwijt)
+        lopend = handlers[taak]({ ...deps.ctx, sessie, nu, cfg, gestopt: () => stopsein.gestopt }, dag, k.args)
+        uitkomst = await metLimiet(lopend, limietMs, taak, hartslag?.kwijt)
       } catch (err) {
         fout = err
       }
       deps.bezig?.set(depot.naam, { taak, fase: 'afhandeling', sinds: klok.nu() })
       levend(120_000)   // de afhandeling hierna (trace opslaan) telt ook als leven
+
+      // Slot kwijt of over de limiet: de handler moet ophouden. Bij slot kwijt sluit de sessie
+      // hieronder; dankzij het sein wordt de rest van een doorvoer 'overgeslagen', niet 'mislukt'.
+      if (fout?.slotKwijt || fout?.limiet) stopsein.gestopt = true
+
+      // Over de limiet: metLimiet geeft de lus terug, maar de handler werkt door op dezelfde pagina
+      // terwijl de volgende taak begint (matransport#600). Eerst het stopsein: de lussen in de
+      // handlers (doorvoeren, RVA, verversen) houden er bij hun volgende stap mee op. Loopt hij dan
+      // nog (hij hangt op een Playwright-aanroep), dan sluit de context hieronder, na het opslaan
+      // van de trace: dan faalt elke aanroep van de oude handler meteen.
+      let handlerLooptNog = false
+      if (fout?.limiet && lopend) {
+        // Schrijvend werk krijgt meer tijd: na het sein loopt één handeling door, plus Annuleer.
+        const afbouwSec = k.taak.schrijft ? cfg.taakAfbouwSchrijfSec : cfg.taakAfbouwSec
+        levend(afbouwSec * 1000 + 120_000)
+        handlerLooptNog = !(await handlerKlaar(lopend, klok.slaap, afbouwSec * 1000))
+        log.warn(`${label} ${taak}: over de limiet; ${handlerLooptNog ? 'handler reageert niet op het stopsein, context gaat dicht' : 'handler gestopt'}`)
+        await opslag.gebeurtenis(sessie?.id, { soort: 'taak_limiet', taak, handlerGestopt: !handlerLooptNog })
+      }
 
       // Slot kwijt tijdens de taak (een ander heeft het nu): niets beoordelen, meteen dicht en
       // opnieuw wachten. Bovenaan de lus gebeurt dat (sluit + melding slot_kwijt).
@@ -348,16 +383,29 @@ export async function draaiDepot(deps) {
         await klok.slaap(10_000)
       }
 
-      // Videosegment of browser vernieuwen (alleen tussen taken).
-      if (sessie && cfg.contextWissel && Date.now() - sessie.segmentOm >= cfg.segmentMin * MIN) {
-        levend(180_000 + 2 * LOGIN_MAX_SEC * 1000)   // naarDepot en rvaOpenen kunnen elk inloggen
+      // Videosegment of browser vernieuwen (alleen tussen taken). Ook als een handler over zijn
+      // limiet niet stopte: met de context dicht faalt hij meteen, zonder nieuwe login.
+      if (sessie && cfg.contextWissel && (handlerLooptNog || Date.now() - sessie.segmentOm >= cfg.segmentMin * MIN)) {
+        const segmentMs = 180_000 + 2 * LOGIN_MAX_SEC * 1000   // naarDepot en rvaOpenen kunnen elk inloggen
+        levend(segmentMs)
         deps.bezig?.set(depot.naam, { taak: 'nieuw videosegment', fase: 'afhandeling', sinds: klok.nu() })
-        const nogIngelogd = await sessie.nieuwSegment()
-        if (!nogIngelogd) await opslag.gebeurtenis(sessie.id, { soort: 'contextwissel_nieuwe_login' })
-      } else if (sessie && !cfg.contextWissel && sessie.leeftijdMin >= cfg.browserVernieuwenUur * 60) {
+        try {
+          const nogIngelogd = await metLimiet(sessie.nieuwSegment(), segmentMs, 'nieuw videosegment')
+          if (!nogIngelogd) await opslag.gebeurtenis(sessie.id, { soort: 'contextwissel_nieuwe_login' })
+        } catch (err) {
+          // De browser reageert niet of de schijf is vol: dicht, de volgende taak logt opnieuw in.
+          // Niet doorgooien: dat zou de hele lus van dit depot stoppen.
+          log.warn(`${label} Nieuw videosegment mislukt, sessie dicht: ${String(err.message).split('\n')[0]}`)
+          levend(120_000)
+          await sluit('fout', { fout: err })
+        }
+      } else if (sessie && !cfg.contextWissel && (handlerLooptNog || sessie.leeftijdMin >= cfg.browserVernieuwenUur * 60)) {
         // Alleen zonder contextwissel: met contextwissel is elk videosegment al kort, en een nieuwe
         // login om de 4 uur is dan onnodig (03-11 12:17: beide depots opnieuw ingelogd).
         await sluit('vernieuwd')
+      }
+      if (handlerLooptNog && !(await handlerKlaar(lopend, klok.slaap, cfg.taakAfbouwSec * 1000))) {
+        await melden({ soort: 'taak_loopt_door', depot: depot.naam, detail: `${taak} loopt nog na het sluiten van de context` })
       }
     }
   } finally {
@@ -365,7 +413,9 @@ export async function draaiDepot(deps) {
     deps.bezig?.set(depot.naam, { taak: 'sessie sluiten', fase: 'afhandeling', sinds: klok.nu() })
     await sluit(stop() ? 'herstart' : 'nacht')
     await bewaar()
+    const laatste = hartslag
     hartslagUit()
+    await Promise.race([laatste?.klaar?.(), new Promise(r => { const t = setTimeout(r, 5_000); t.unref?.() })])
     await opslag.slotLos(sleutel, houder)
     deps.bezig?.delete(depot.naam)
   }

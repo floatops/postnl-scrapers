@@ -120,7 +120,7 @@ async function syncDepotEenmaal(depot, markeerGereden = false, allesDatums = fal
   // de sessie terug naar de startpagina en gaf stil "0 ritten".
   const slot = await pakSessieSlot(supabase, {
     klantId: KLANT_ID, depot: depot.naam, worker: 'postnl-dagplanning',
-    seconden: 600, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] `, wijkVoorSessiehouder: true,
+    seconden: 180, maxWachtMs: 6 * 60_000, label: `[${depot.naam}] `, wijkVoorSessiehouder: true,
   })
   // De sessiehouder (#562) leest deze login al; bezet door een ander = overslaan, nooit tegelijk.
   if (slot.overgenomen) { console.log(`[${depot.naam}] Sessiehouder actief: niets te doen`); return 0 }

@@ -195,11 +195,13 @@ export async function leesAlleRitten(page, mendix, { maxPaginas = 25 } = {}) {
   await zoekInOverzicht(page, mendix, '')
   const rijen = []
   let vorigeTot = 0
+  let compleet = false   // alle rijen die PostNL noemt ("1 to 20 of N") zijn er, zonder dubbele
   for (let i = 0; i < maxPaginas; i++) {
     const status = await leesPagingStatus(page, i ? 3_000 : 10_000)
     if (status && status.tot <= vorigeTot) break
     const hier = await leesRittenoverzicht(page)
     rijen.push(...hier)
+    if (status && status.tot >= status.totaal) compleet = new Set(rijen.map(r => `${r.ritnaam}|${r.dagen.join()}`)).size >= status.totaal
     if (!status || status.tot >= status.totaal) break
     vorigeTot = status.tot
     const volgende = page.locator(PAGINA.volgende).first()
@@ -209,7 +211,7 @@ export async function leesAlleRitten(page, mendix, { maxPaginas = 25 } = {}) {
   }
   const eerste = page.locator(PAGINA.eerste).first()
   if (await knopAan(eerste)) await mendix.actie(() => klikPagina(eerste)).catch(() => {}) // bewust: alleen netjes achterlaten
-  return { antwoorden, rijen, status: await page.locator(PAGINA.status).first().innerText().catch(() => null) }
+  return { antwoorden, rijen, compleet, status: await page.locator(PAGINA.status).first().innerText().catch(() => null) }
 }
 
 // Vlak na het laden vult Mendix de rijen nog: even blijven kijken. Staat de rit niet op deze
@@ -491,15 +493,38 @@ export async function verwijderOnderbreking(page, mendix, sleutel) {
 
 // ── Buiten de bewerkstand ────────────────────────────────────────────────────
 
+// Wacht tot een lijst in een venster compleet is: `verwacht` rijen als dat aantal bekend is, en
+// anders minstens één rij die `stilMs` lang hetzelfde aantal blijft. Geeft het aantal, of 0 als er
+// binnen `ms` niets kwam.
+export async function wachtOpVolleLijst(rijen, { verwacht = Infinity, ms = 15_000, stilMs = 700, stapMs = 100 } = {}) {
+  const begin = Date.now()
+  let aantal = 0
+  let sinds = Date.now()
+  while (Date.now() - begin < ms) {
+    const nu = await rijen.count().catch(() => 0)
+    if (nu !== aantal) { aantal = nu; sinds = Date.now() }
+    if (aantal >= verwacht || (aantal > 0 && Date.now() - sinds >= stilMs)) return aantal
+    await new Promise(r => setTimeout(r, stapMs))
+  }
+  return aantal
+}
+
 // Kopieer weekdag: precies de dagen in `naar` aan, de rest uit. Slaat direct op bij PostNL.
+// Het venster staat er eerder dan de dagen: die haalt PostNL daarna pas op (nanoflow
+// DS_TripWeekday_ByCopyHelper). Op 06-11 07:02 keek de worker 170 ms vóór dat ophalen begon en
+// meldde hij "Maandag staat niet in het kopieer-venster" (matransport#601). Een dag die uit moest
+// en nog niet geladen was, werd zo bovendien stil overgeslagen.
 export async function kopieerWeekdag(page, mendix, naar) {
   const antwoorden = await mendix.actie(() => knop(page, SCHERM.kopieerWeekdag).click())
   const v = await wachtOpVenster(page, 'kopiëren naar een andere dag')
   const namen = naar.map(dagnaam)
+  const dagRijen = v.locator('.mx-name-WeekdaySwitch')
+  // Alle zes de dagen behalve de eigen: dan niet wachten op stilte.
+  if (!(await wachtOpVolleLijst(dagRijen, { verwacht: Object.keys(DAGNAAM).length - 1 }))) throw new RvaFout('controle', 'De dagen in het kopieer-venster kwamen niet binnen')
   for (const naam of Object.values(DAGNAAM)) {
-    const rij = v.locator('.mx-name-WeekdaySwitch').filter({ hasText: new RegExp(`^\\s*${naam}\\s*$`) }).first()
+    const rij = dagRijen.filter({ hasText: new RegExp(`^\\s*${naam}\\s*$`) }).first()
     if (!(await rij.count())) {
-      if (namen.includes(naam)) throw new RvaFout('controle', `${naam} staat niet in het kopieer-venster`)
+      if (namen.includes(naam)) throw new RvaFout('controle', `${naam} staat niet in het kopieer-venster (wel: ${(await dagRijen.allInnerTexts().catch(() => [])).map(t => t.trim()).join(', ')})`)
       continue
     }
     // De checkbox is een verborgen hulpvak (sr-only); klikken op de zichtbare schakelaar.
@@ -593,7 +618,9 @@ async function openVerantwoordelijken(page, mendix, ritnaam, weekdag) {
   const widget = loc.locator('.mx-name-comboBox3').first()
   const antwoorden = await mendix.actie(async () => (await inBeeld(widget.locator('input[role="combobox"]').first())).click())
   const opties = page.locator('[role="option"]').filter({ visible: true })
-  await opties.first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {})
+  // Hele lijst afwachten: `gekozen` uit een half gevulde lijst kan via zorgVoorRechten bij PostNL
+  // een ritverantwoordelijke weghalen (zelfde soort fout als matransport#601).
+  await wachtOpVolleLijst(opties, { ms: 10_000 })
   const lijst = await opties.evaluateAll(os => os.map(o => ({ naam: (o.innerText || '').trim(), aan: o.getAttribute('aria-selected') === 'true' })))
   return { antwoorden, opties, lijst }
 }

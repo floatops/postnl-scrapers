@@ -4,8 +4,13 @@
 // - Elke nieuwe login krijgt een nieuw IP uit de proxy-pool (kiesProxy) en een rij in postnl_sessies.
 // - Video: per context (recordVideo). Een segment eindigt bij een contextwissel (zelfde cookies,
 //   geen nieuwe login, alleen als `cfg.contextWissel` aan staat: gemeten in stap 0) of bij het sluiten.
-// - Trace: na het inloggen één keer gestart, daarna een chunk per taak. Wachtwoorden komen zo
-//   nooit in de trace.
+// - Trace: per taak gestart en gestopt. Logt een taak onderweg echt opnieuw in, dan staat de trace
+//   stil zolang het wachtwoord getypt wordt: Playwright zet de waarde van elke fill() anders leesbaar
+//   in de trace (matransport#600). Bewust geen chunks: Playwright kopieert bij elke stopChunk het hele netwerklog en
+//   ruimt niets op tot de browser sluit. Bij een browser die de hele dag open blijft was dat
+//   6-7 GB schijf per uur per depot (06-11, matransport#600).
+// - Tijdelijke bestanden (trace, video) staan in één werkmap per depot, die de sessie zelf leegt:
+//   na elke taak, na elke contextwissel, bij sluiten, en bij openen (restjes van een crash).
 // - Alle Mendix-antwoorden van de huidige taak worden bewaard (`antwoorden`) voor de lezers.
 // - Opnames (trace, video) gaan naar de schijf van de VPS, niet naar de database-opslag (duur):
 //   $OPNAME_ROOT/{klant}/{depot}/…-latest.* en …/fout/…-{tijd}.* (30 dagen, zelf opgeruimd).
@@ -13,7 +18,7 @@ import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
 import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
-import { naarDepot, login, volgLogins } from '../../credentials-shared/src/postnl/login.js'
+import { naarDepot, login, volgLogins, volgWachtwoord } from '../../credentials-shared/src/postnl/login.js'
 import { maakLevensmeter, duurTekst } from './levensmeter.js'
 import { volgMendix } from '../../postnl-planner/src/mendix.js'
 import { openRva } from '../../postnl-rva/src/scherm.js'
@@ -21,6 +26,17 @@ import { depotSlug, nlTijdstempel, BEWAAR_DAGEN } from '../../credentials-shared
 
 export const WORKER = 'postnl-sessie'
 export const OPNAME_ROOT = process.env.OPNAME_ROOT || '/var/log/workers/postnl/opnames'
+// Per gebruiker: /tmp is gedeeld, Stack A draait als root en Stack B als floatops-b, en een klant-uuid
+// kan op beide stacks bestaan (Stack B is een kloon).
+export const WERK_ROOT = process.env.SESSIE_WERK_ROOT || path.join(os.tmpdir(), `postnl-sessie-werk-${process.getuid?.() ?? 'lokaal'}`)
+const TRACE_MS = 60_000   // grens op tracing.start/stop: een trace mag een taak nooit laten hangen
+const SLUIT_MS = 30_000   // grens op browseraanroepen bij het sluiten: dit is juist het noodpad
+
+function grens(belofte, ms, wat) {
+  let t
+  const klok = new Promise((_, nee) => { t = setTimeout(() => nee(new Error(`${wat} duurde langer dan ${Math.round(ms / 1000)} s`)), ms) })
+  return Promise.race([belofte, klok]).finally(() => clearTimeout(t))
+}
 
 // Kopieert een opname naar de VPS-map. Geslaagd: …-latest (overschreven); incident: fout/ met tijd.
 export async function bewaarOpname(map, bron, naam, ext, incident) {
@@ -67,6 +83,9 @@ export class Sessie {
     this.incidentInSegment = false
     this.depotHost = new URL(depot.url).hostname
     this.opnameMap = path.join(OPNAME_ROOT, klantId, depotSlug(depot.naam))
+    this.werkMap = path.join(WERK_ROOT, klantId, depotSlug(depot.naam))
+    this.tracesDir = path.join(this.werkMap, 'traces')
+    this.traceLoopt = false
   }
 
   get open() { return Boolean(this.page && !this.page.isClosed()) }
@@ -74,16 +93,18 @@ export class Sessie {
 
   async openen() {
     this.proxy = await kiesProxy(this.supabase, { worker: WORKER, depot: this.depot })
-    const opties = { headless: this.headless, args: ['--disable-dev-shm-usage'] }
+    // tracesDir: anders in de eigen playwright-artifacts-map van de browser, die pas bij sluiten weggaat.
+    const opties = { headless: this.headless, args: ['--disable-dev-shm-usage'], tracesDir: this.tracesDir }
     if (process.env.CHROMIUM_EXECUTABLE_PATH) opties.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
     if (this.proxy) opties.proxy = this.proxy.proxy
     try {
       await ruimOpnamesOp(this.opnameMap).catch(() => {})
+      // Eén sessie per depot (slot), dus wat hier nog staat is van een crash.
+      await this.#legeTraces(true)
       this.browser = await this.chromium.launch(opties)
       await this.#nieuweContext()
       await naarDepot(this.page, this.depot, { log: this.log })
       await this.rvaOpenen()
-      await this.#traceAan()
       this.ingelogdOm = Date.now()
       this.segmentOm = Date.now()
       this.meters.oompd.start()
@@ -98,12 +119,13 @@ export class Sessie {
   }
 
   async #nieuweContext(storageState = null) {
-    this.videoDir = await fs.mkdtemp(path.join(os.tmpdir(), 'postnl-sessie-'))
+    this.videoDir = await fs.mkdtemp(path.join(this.werkMap, 'video-'))
     this.context = await this.browser.newContext({
       serviceWorkers: 'block', timezoneId: 'Europe/Amsterdam', viewport: { width: 1440, height: 900 },
       recordVideo: { dir: this.videoDir, size: VIDEO },
       ...(storageState ? { storageState } : {}),
     })
+    volgWachtwoord(this.context, { voor: () => this.#tracePauze(), na: () => this.#traceHervat() })
     this.page = await this.context.newPage()
     volgLogins(this.page, () => this.#verlopen('oompd'))
     this.mendix = volgMendix(this.page)
@@ -146,14 +168,19 @@ export class Sessie {
     }
   }
 
-  // tracing.start() begint zelf al een chunk; die meteen weggooien, zodat elke taak een eigen
-  // chunk krijgt (startChunk/stopChunk) en het inloggen er nooit in staat.
-  async #traceAan() {
+  // Tijdelijke trace-bestanden weg. Tussen taken alles behalve resources/: Playwright onthoudt per
+  // context welke resources het al schreef en schrijft die niet opnieuw, dus die horen bij de
+  // context. `alles`: de hele werkmap opnieuw (bij openen, restjes van een crash).
+  async #legeTraces(alles = false) {
+    if (this.traceLoopt) return
     try {
-      await this.context.tracing.start({ screenshots: true, snapshots: true })
-      await this.context.tracing.stopChunk()
+      if (alles) await fs.rm(this.werkMap, { recursive: true, force: true })
+      await fs.mkdir(this.tracesDir, { recursive: true })
+      for (const n of await fs.readdir(this.tracesDir)) {
+        if (n !== 'resources') await fs.rm(path.join(this.tracesDir, n), { recursive: true, force: true })
+      }
     } catch (e) {
-      this.log.warn(`[${this.depot.naam}] Trace starten mislukt (gaat door zonder): ${e.message}`)
+      this.log.warn(`[${this.depot.naam}] Trace-map opruimen mislukt (volgende keer opnieuw): ${e.message}`)
     }
   }
 
@@ -169,44 +196,94 @@ export class Sessie {
     this.opslag.gebeurtenis(this.id, { soort: 'sessie_verlopen', ...meting, ...(herlogins ? { herlogins } : {}) }).catch?.(() => {})
   }
 
-  // Vóór elke taak: lege lijst Mendix-antwoorden en een nieuwe trace-chunk.
+  // Vóór het typen van het wachtwoord: wat er tot nu toe is opslaan (een her-login midden in een
+  // taak is altijd de moeite waard) en de trace stilzetten. `na` start hem weer.
+  async #tracePauze() {
+    if (!this.traceLoopt) return
+    const naam = this.huidigeTaak ?? 'taak'
+    const lokaal = path.join(this.videoDir ?? os.tmpdir(), `trace-${naam}-${Date.now()}.zip`)
+    try {
+      await grens(this.context.tracing.stop({ path: lokaal }), TRACE_MS, 'Trace opslaan')
+      await bewaarOpname(this.opnameMap, lokaal, `trace-${naam}-voor-login`, 'zip', true)
+    } catch (e) {
+      this.log.warn(`[${this.depot.naam}] Trace vóór de login opslaan mislukt: ${e.message}`)
+      await grens(this.context.tracing.stop(), TRACE_MS, 'Trace stoppen').catch(() => {})
+    } finally {
+      this.traceLoopt = false
+      this.tracePauzeVan = naam
+      await fs.rm(lokaal, { force: true }).catch(() => {})
+      await this.#legeTraces()
+    }
+  }
+
+  async #traceHervat() {
+    const naam = this.tracePauzeVan
+    this.tracePauzeVan = null
+    if (naam && this.context) await this.#startTrace(naam)
+  }
+
+  // Vóór elke taak: lege lijst Mendix-antwoorden en een nieuwe trace.
   async taakBegin(naam) {
     this.huidigeTaak = naam
     this.herloginTaak = 0
     this.antwoorden = []
-    await this.context?.tracing.startChunk({ title: naam }).catch(() => {})
+    this.tracePauzeVan = null
+    if (this.context) await this.#startTrace(naam)
   }
 
-  // Na elke taak: trace-chunk opslaan. Met een incident naar fout/ (30 dagen), anders alleen
-  // de laatste per taak. Geeft het opslagpad of null.
+  async #startTrace(naam) {
+    const start = () => grens(this.context.tracing.start({ title: naam, screenshots: true, snapshots: true }), TRACE_MS, 'Trace starten')
+    try {
+      // Een trace die nog loopt (stoppen mislukte eerder) eerst weg, anders weigert start().
+      await start().catch(async () => {
+        await grens(this.context.tracing.stop(), TRACE_MS, 'Trace stoppen')
+        await start()
+      })
+      this.traceLoopt = true
+    } catch (e) {
+      this.log.warn(`[${this.depot.naam}] Trace starten mislukt (taak gaat door zonder): ${e.message}`)
+    }
+  }
+
+  // Na elke taak: trace opslaan en de tijdelijke bestanden weg. Met een incident naar fout/
+  // (30 dagen), anders alleen de laatste per taak. Geeft het opslagpad of null.
   async taakEinde(naam, { incident = false, tab = 'oompd' } = {}) {
     this.huidigeTaak = null
     this.meters[tab]?.taakKlaar()
     if (tab === 'rva') this.meters.rva.start()   // eerste geslaagde RVA-taak: vanaf nu meten
     if (!this.context) return null
     if (incident) this.incidentInSegment = true
+    if (!this.traceLoopt) return null
     const lokaal = path.join(this.videoDir ?? os.tmpdir(), `trace-${naam}-${Date.now()}.zip`)
     try {
-      await this.context.tracing.stopChunk({ path: lokaal })
+      await grens(this.context.tracing.stop({ path: lokaal }), TRACE_MS, 'Trace opslaan')
       return await bewaarOpname(this.opnameMap, lokaal, `trace-${naam}`, 'zip', incident)
     } catch (err) {
       this.log.warn(`[${this.depot.naam}] Trace opslaan mislukt (gaat door): ${err.message}`)
+      // Mislukt het inpakken, dan draait de trace nog: stoppen, anders weigert de volgende start.
+      await grens(this.context.tracing.stop(), TRACE_MS, 'Trace stoppen').catch(() => {})
       return null
     } finally {
+      this.traceLoopt = false
       await fs.rm(lokaal, { force: true }).catch(() => {})
+      await this.#legeTraces()
     }
   }
 
   // Nieuw videosegment zonder nieuwe login: zelfde browser en IP, cookies meegenomen.
   // Geeft false als de sessie daarna niet meer ingelogd is (dan is dat zelf een meting).
   async nieuwSegment() {
-    const state = await this.context.storageState()
+    // Grenzen: dit is ook het noodpad voor een handler die hangt, dan kan de browser zelf vastzitten.
+    const state = await grens(this.context.storageState(), SLUIT_MS, 'Cookies lezen')
     const oud = { context: this.context, page: this.page, rvaPage: this.rvaPage, dir: this.videoDir }
     // Altijd één tabblad per app: eerst het oude sluiten, dan pas het nieuwe openen (zelfde cookies).
     // Het RVA-tabblad gaat mee dicht; de volgende RVA-taak opent het opnieuw.
-    await oud.context.tracing.stop().catch(() => {})
-    await oud.context.close().catch(() => {})
+    await grens(oud.context.tracing.stop(), SLUIT_MS, 'Trace stoppen').catch(() => {})
+    this.traceLoopt = false
+    await grens(oud.context.close(), SLUIT_MS, 'Context sluiten')
     this.rvaPage = null
+    await fs.rm(this.tracesDir, { recursive: true, force: true }).catch(() => {})   // resources/ hoort bij de oude context
+    await this.#legeTraces()
     await this.#nieuweContext(state)
     await this.#bewaarVideo(oud.page, oud.dir, this.incidentInSegment, oud.rvaPage)
     this.incidentInSegment = false
@@ -214,7 +291,6 @@ export class Sessie {
     try {
       const { ingelogd } = await naarDepot(this.page, this.depot, { log: this.log })
       await this.rvaOpenen()
-      await this.#traceAan()
       if (ingelogd) return false   // telt de levensmeter (login in dit tabblad)
       return true
     } catch (err) {
@@ -253,13 +329,15 @@ export class Sessie {
     this.page = null
     this.rvaPage = null
     if (this.context) {
-      await this.context.tracing.stop().catch(() => {})
-      await this.context.close().catch(() => {})
+      await grens(this.context.tracing.stop(), SLUIT_MS, 'Trace stoppen').catch(() => {})
+      await grens(this.context.close(), SLUIT_MS, 'Context sluiten').catch(() => {})
     }
-    await this.browser?.close().catch(() => {})
+    if (this.browser) await grens(this.browser.close(), SLUIT_MS, 'Browser sluiten').catch(e => this.log.warn(`[${this.depot.naam}] ${e.message}`))
     this.context = null
     this.browser = null
+    this.traceLoopt = false
     const video = await this.#bewaarVideo(page, dir, incident, rvaPage)
+    await fs.rm(this.werkMap, { recursive: true, force: true }).catch(() => {})
     if (this.proxy) {
       await sluitProxyAf(this.supabase, this.proxy, uitkomst ?? (reden === 'blokkade' ? 'blokkade' : fout ? 'fout' : 'ok'),
         `${reden}${fout ? `: ${String(fout.message).split('\n')[0]}` : ''} (${this.lezingen} lezingen)`)

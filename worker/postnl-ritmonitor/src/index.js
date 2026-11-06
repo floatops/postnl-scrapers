@@ -224,7 +224,7 @@ async function syncMonitorDepot(depot) {
   const wachtStart = Date.now()
   const slot = await pakSessieSlot(supabase, {
     klantId: KLANT_ID, depot: depot.naam, worker: 'postnl-ritmonitor',
-    seconden: CONFIG.vensterSec + 180, maxWachtMs: 240_000, label: `[${depot.naam}] `, wijkVoorSessiehouder: true,
+    seconden: 180, maxWachtMs: 240_000, label: `[${depot.naam}] `, wijkVoorSessiehouder: true,
   })
   const gewacht = Date.now() - wachtStart
   // De sessiehouder (#562) leest deze login al: niets doen. Bezet door een ander: overslaan,

@@ -42,6 +42,30 @@ export async function sessiehouderHeeftAlles(supabase, klantId, depotNamen) {
 
 const geenSlot = (extra = {}) => ({ gekregen: false, los: async () => {}, ...extra })
 
+// Hartslag: een los script (dagplanning, ritmonitor, planner) kan langer duren dan zijn lease, en
+// dan logt een ander ertussendoor in (matransport#600). Daarom verlengen zolang het proces leeft;
+// crasht het, dan stopt de hartslag vanzelf en verloopt de lease zoals bedoeld. Geeft een stopfunctie
+// die wacht op een lopende slag (hooguit 5 s): een verlenging die ná het vrijgeven aankomt, zou het
+// slot terugzetten voor een proces dat klaar is.
+export function verlengZolangBezig({ verleng, ms, label = '', elke = (t, fn) => { const i = setInterval(fn, t); i.unref?.(); return () => clearInterval(i) } }) {
+  let lopend = null
+  const stop = elke(ms, () => {
+    if (lopend) return lopend
+    lopend = (async () => {
+      try {
+        if (!(await verleng())) console.warn(`${label}Sessie-slot kwijt: een ander heeft het nu`)
+      } catch (e) {
+        console.warn(`${label}Sessie-slot verlengen mislukt (volgende slag opnieuw): ${e.message}`)
+      } finally { lopend = null }
+    })()
+    return lopend
+  })
+  return async () => {
+    stop()
+    if (lopend) await Promise.race([lopend, new Promise(r => { const t = setTimeout(r, 5_000); t.unref?.() })])
+  }
+}
+
 // Wacht tot het slot vrij is (hooguit maxWachtMs) en geeft { gekregen, los, overgenomen?, bezet? }.
 export async function pakSessieSlot(supabase, { klantId, depot, worker, seconden, maxWachtMs, label = '', wijkVoorSessiehouder = false }) {
   const sleutel = slotSleutel(klantId, depot)
@@ -56,9 +80,18 @@ export async function pakSessieSlot(supabase, { klantId, depot, worker, seconden
     }
     if (data === true) {
       if (gemeld) console.log(`${label}Sessie-slot gekregen na ${Math.round((Date.now() - start) / 1000)}s wachten`)
+      const hartslagUit = verlengZolangBezig({
+        ms: Math.max(30, Math.floor(seconden / 3)) * 1000, label,
+        verleng: async () => {
+          const { data: ok, error: e } = await supabase.rpc('postnl_sessie_pak', { p_sleutel: sleutel, p_houder: houder, p_seconden: seconden })
+          if (e) throw new Error(e.message)
+          return ok === true
+        },
+      })
       return {
         gekregen: true,
         los: async () => {
+          await hartslagUit()
           const { error: e } = await supabase.rpc('postnl_sessie_los', { p_sleutel: sleutel, p_houder: houder })
           if (e) console.warn(`${label}Sessie-slot vrijgeven mislukt (verloopt vanzelf): ${e.message}`)
         },

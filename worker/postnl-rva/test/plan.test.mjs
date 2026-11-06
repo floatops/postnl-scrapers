@@ -1,7 +1,7 @@
 // Verzonnen adressen: deze repo is publiek.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { regelSleutel, zetOpPlek, stappenVoorVolgorde, knipDelen, verschillen, vindRegel, revisieTijdTekst, pagingStatus } from '../src/plan.js'
+import { rittenTeVerwijderen, regelSleutel, zetOpPlek, stappenVoorVolgorde, knipDelen, verschillen, vindRegel, revisieTijdTekst, pagingStatus } from '../src/plan.js'
 
 const r = (straat, van, tm, evenOneven = 'Oneven', richting = 'Oplopend') => ({ postcode: '1234AB', straat, van, tm, evenOneven, richting })
 const rit = [r('Appelstraat', 1, 9), r('Peerlaan', 2, 20, 'Even'), r('Kerslaan', 1, 1), r('Pruimweg', 3, 7), r('Bessenhof', 2, 2, 'Even')]
@@ -107,4 +107,15 @@ test('pagingStatus: de status onder het Rittenoverzicht (matransport#573)', () =
   assert.deepEqual(pagingStatus(' 1 tot 7 van 7 '), { tot: 7, totaal: 7 })
   assert.equal(pagingStatus(null), null)
   assert.equal(pagingStatus('Geen resultaten'), null)
+})
+
+test('rittenTeVerwijderen: alleen wat echt uit het Rittenoverzicht is, nooit na een verdachte lezing (#601)', () => {
+  const bestaand = ['a', 'b', 'c', 'd', 'e'].map(sleutel => ({ sleutel }))
+  const vier = ['a', 'b', 'c', 'd'].map(sleutel => ({ sleutel }))
+  assert.deepEqual(rittenTeVerwijderen(bestaand, vier, true), ['e'])
+  assert.deepEqual(rittenTeVerwijderen(bestaand, vier, false), [], 'niet alle pagina\'s gelezen: niets weg')
+  assert.deepEqual(rittenTeVerwijderen(bestaand, vier, undefined), [])
+  assert.deepEqual(rittenTeVerwijderen(bestaand, [...vier, { sleutel: 'e' }], true), [])
+  assert.deepEqual(rittenTeVerwijderen(bestaand, [], true), [], 'lege lezing: niets weg')
+  assert.deepEqual(rittenTeVerwijderen(bestaand, [{ sleutel: 'a' }], true), [], 'veel kleiner: verdacht, niets weg')
 })

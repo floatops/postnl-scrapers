@@ -128,6 +128,16 @@ export function rittenTeSchrijven(bestaand, gelezen, nu = new Date(), verversUur
   })
 }
 
+// Rijen die niet meer in het Rittenoverzicht staan: weg, zodat de app geen rit of dag aanbiedt die
+// RVA niet meer heeft (matransport#601). Tot dan bleven ze 30 dagen staan. Alleen als alle pagina's
+// aantoonbaar gelezen zijn (`compleet`: evenveel rijen als "1 to 20 of N" zegt): anders verliest een
+// chauffeur door een halve lezing zijn rit. Een veel kleiner resultaat blijft daarnaast verdacht.
+export function rittenTeVerwijderen(bestaand, gelezen, compleet, minDeel = 0.8) {
+  if (compleet !== true || !gelezen.length || gelezen.length < bestaand.length * minDeel) return []
+  const er = new Set(gelezen.map(r => r.sleutel))
+  return bestaand.filter(b => !er.has(b.sleutel)).map(b => b.sleutel)
+}
+
 // Welke rit-dag de sessiehouder als volgende uit RVA leest (taak rvaBijlezen, matransport#573):
 // eerst wat nog nooit gelezen is (of als verouderd gemarkeerd), dan de oudste lezing die ouder is
 // dan `uur`. `overslaan(rit|dag)`: bv. een rit-dag die net mislukte. null = alles is vers.
