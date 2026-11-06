@@ -78,40 +78,78 @@ function tekst(waarde) {
   return t || null
 }
 
-// De toevoeging zoals een adres hem nodig heeft. In PostNL is dit een vrij veld: op 06-11 stonden er
-// losse tekens ("-", "_-", ",", "`"), hele postcodes, en zelfs COA-nummers van bewoners in
-// (matransport#600). Een plaatsnaam zonder postcode (een losse plaatsnaam) is niet te herkennen en blijft staan. Alleen voor het opslaan: het terugvinden op het scherm gebruikt de ruwe
-// waarde van PostNL (stopSleutel, adresSleutel).
 const regexVeilig = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+// Een toevoeging is kort: een letter of nummer, of een letter met nummer ("A", "22", "K101", "BU3",
+// "1E"). Het adresregister kent niets anders. Daarom een witte lijst: wat niet zo oogt gaat weg, want
+// een vrij veld bevat ook namen van mensen ("T.A.V. ..."), bedrijven en plaatsen.
+// Letters alleen tot twee ("A", "BG"); met cijfers in de vorm van het register ("BU3", "K101",
+// "DC3A", "1E"). "PBA" is de enige uitzondering. "BV", "NV" zijn bedrijfsvormen, geen toevoeging.
+const isToevoeging = (t) => t === 'PBA' || (!['BV', 'NV'].includes(t) && /^([A-Z]{1,2}|[A-Z]{1,3}\d{1,4}[A-Z]?|\d{1,4}[A-Z]{0,2})$/.test(t))
+const zonderNullen = (t) => (/^\d+$/.test(t) ? t.replace(/^0+(?=\d)/, '') : t)
+
+// De toevoeging zoals een adres hem nodig heeft. In PostNL is dit een vrij veld (matransport#600): op
+// 06-11 stonden er losse tekens, hele postcodes, COA-nummers van bewoners, namen, bedrijven en
+// plaatsen in. "APP 8" wordt "8", "BU 3" wordt "BU3", "55 PLAATSNAAM" wordt "55". Een dubbele letter
+// ("AA", "B B") bestaat niet in het register: bij elk nagekeken adres stond daar "A" of "B". "PBA"
+// blijft: zo geeft PostNL een PostNL-punt aan. Alleen voor het opslaan: het terugvinden op het scherm
+// gebruikt de ruwe waarde van PostNL (stopSleutel, adresSleutel).
 export function schoonToevoeging(waarde, huisnummer = null) {
   let t = String(waarde ?? '').trim().replace(/\s+/g, ' ')
-  t = t.replace(/\(?\s*COA[\s:-]*(nummer|nr\.?)?[\s:-]*[\d\s-]*\)?/gi, '')   // een persoonsnummer: nooit bewaren
+  t = t.replace(/\(?\s*\bCOA(?![A-Za-z])[\s:-]*(nummer|nr\.?)?[\s:-]*[\d\s-]*\)?/gi, '')   // een persoonsnummer: nooit bewaren
   if (/\d{7,}/.test(t)) return null   // zo'n lang nummer is nooit een toevoeging
   if (huisnummer && new RegExp(`(^|\\s)${regexVeilig(huisnummer)}$`).test(t)) return null   // "PLAATS 182" bij nummer 182
   if (/\b[1-9]\d{3}\s?[A-Za-z]{2}\b/.test(t) || /\d{4}[A-Z]{2}[A-Z]/.test(t)) return null   // een postcode (soms met plaats eraan): die hebben we al
-  t = t.replace(/[()]/g, '').replace(/^[\s\-_/,.`'"]+|[\s\-_/,.`'"]+$/g, '')
-  return t ? t.toUpperCase() : null
+  t = t.replace(/[()]/g, '').replace(/^[\s\-–_/,.`'"]+|[\s\-–_/,.`'"]+$/g, '').toUpperCase()
+  t = t.replace(/^(APPARTEMENT|APP|AP|KAMER|UNIT)[\s.:-]*(?=[A-Z0-9])/, '')
+  // Samenvoegen alleen tussen letter en cijfer ("BU 3"): "1-2" wordt anders "12", een ander adres.
+  const samen = /\d[\s\-–/.]+\d/.test(t) ? t : t.replace(/[\s\-–/.]/g, '')
+  if (/^([A-Z])\1$/.test(samen)) return samen[0]
+  if (isToevoeging(samen)) return zonderNullen(samen)
+  // Eerst de echte toevoeging, daarna een plaats of straat ("C PLAATSNAAM", "1E ETAGE").
+  const eerste = t.split(/[\s,]+/)[0]
+  return /^([A-Z]|\d{1,3}[A-Z]?)$/.test(eerste) ? zonderNullen(eerste) : null
 }
 
 const KLEIN = new Set(['van', 'de', 'der', 'den', 'het', 'ter', 'ten', 'te', 'op', 'aan', 'in', 'bij', 'en'])
-const woordTitel = (w) => w.split('-').map(d => (/^IJ/.test(d) ? `IJ${d.slice(2).toLowerCase()}` : d.charAt(0) + d.slice(1).toLowerCase())).join('-')
+const woordTitel = (w) => w.split('-').map(d => (/^ij/i.test(d) ? `IJ${d.slice(2).toLowerCase()}` : d.charAt(0).toUpperCase() + d.slice(1).toLowerCase())).join('-')
+const MAAND = /^(januari|februari|maart|april|mei|juni|juli|augustus|september|oktober|november|december)/i
+const KORT = [[/str$/i, 'straat'], [/sngl$/i, 'singel'], [/pln$/i, 'plein'], [/ln$/i, 'laan'], [/wg$/i, 'weg'], [/gr$/i, 'gracht']]
+function voluit(straat) {
+  const woorden = straat.split(' ')
+  const laatste = woorden.at(-1)
+  const k = laatste.length > 4 && KORT.find(([r]) => r.test(laatste))   // niet "Köln" -> "Kölaan\"
+  if (k) woorden[woorden.length - 1] = laatste.replace(k[0], k[1])
+  return woorden.join(' ')
+}
 
 // De straat zonder wat er niet bij hoort. Ook dit is een vrij veld: op 06-11 stond er soms het
-// huisnummer in ("Teststraat 54"), een postcode met plaats, losse tekens of alles in hoofdletters
-// (86 stops). "Plein 1957" blijft staan: 1957 is daar geen huisnummer. Geeft { straat, letter },
-// met `letter` als de toevoeging achter het nummer in de straat stond ("Teststraat 112 B").
+// huisnummer in ("Teststraat 54"), een postcode, plaats of provincie achter een komma, losse tekens,
+// alles in hoofdletters of kleine letters, een afkorting ("Teststr") of "Onbekend". "Plein 1957"
+// blijft staan: 1957 is daar geen huisnummer. Geeft { straat, letter }, met `letter` als de
+// toevoeging in de straat stond ("Teststraat 112 B"). De officiële naam gaat hier nog boven, zie
+// straatUitRegister: dit is wat overblijft voor een adres dat daar (nog) niet in staat.
 export function schoonStraat(waarde, huisnummer = null) {
-  const ruw = String(waarde ?? '').trim().replace(/\s+/g, ' ')
-  let s = ruw.replace(/\s*\d{4}\s?[A-Z]{2}\b.*$/, '').replace(/[\s,;]+$/, '')
+  const ruw = String(waarde ?? '').trim().replace(/\s+/g, ' ').replace(/\\'/g, "'").replace(/[’`´]/g, "'")
+  let s = ruw.replace(/\s*\d{4}\s?[A-Z]{2}\b.*$/, '').split(/\s*[,;]/).find(d => d.trim()) ?? ''
+  const rand = (t) => t.replace(/^[\s_.:/-]+|[\s_.:/-]+$/g, '')
+  s = rand(s)
   let letter = null
   if (huisnummer) {
-    const m = new RegExp(`^(.+?)\\s+${regexVeilig(huisnummer)}(?:\\s?([A-Za-z]))?[\\s/\\d,]*$`).exec(s)
-    if (m) { s = m[1]; letter = m[2]?.toUpperCase() ?? null }
+    const nr = regexVeilig(huisnummer)
+    const m = new RegExp(`^(.+?)\\s+${nr}(?:\\s+(\\S.*)|\\s?([A-Za-z])?[\\s/\\d,-]*)$`).exec(s)
+    if (m) { s = m[1]; letter = m[3]?.toUpperCase() ?? (m[2] ? schoonToevoeging(m[2], huisnummer) : null) }
+    const v = new RegExp(`^${nr}\\s+(\\D.*)$`).exec(s)   // "54 Teststraat", maar niet "18 Septemberplein"
+    if (v && !MAAND.test(v[1])) s = v[1]
   }
-  if (s && s === s.toUpperCase() && /[A-Z]{2}/.test(s)) {
+  const l = /^(.{3,}?(?:weg|straat|laan|plein|singel|gracht|kade|dijk|pad|hof|dreef|steeg|erf|park))\s-?([A-Za-z])$/i.exec(s)   // "Teststraat B", maar niet "Wijk A"
+  if (l) { s = l[1]; letter ??= l[2].toUpperCase() }
+  s = rand(s)
+  if (/^\(?onbekend\)?$/i.test(s)) return { straat: null, letter }
+  if (s && (s === s.toUpperCase() || s === s.toLowerCase()) && /[A-Za-z]{2}/.test(s)) {
     s = s.split(' ').map((w, i) => (i > 0 && KLEIN.has(w.toLowerCase()) ? w.toLowerCase() : woordTitel(w))).join(' ')
   }
-  return { straat: s || ruw || null, letter }
+  return { straat: voluit(s) || null, letter }
 }
 
 // Straat, huisnummer en toevoeging zoals we ze bewaren. Het terugvinden op het scherm gebruikt de
@@ -120,6 +158,39 @@ export function schoonAdres(stop) {
   const huisnummer = tekst(stop.BuildingNumber)
   const { straat, letter } = schoonStraat(stop.Street, huisnummer)
   return { straat: straat ?? '(onbekend)', huisnummer, toevoeging: schoonToevoeging(stop.BuildingNumberExtension, huisnummer) ?? letter }
+}
+
+// Alleen een echte Nederlandse postcode. Niet alles wat in het veld staat is dat ("0000FF").
+export function schoonPostcode(waarde) {
+  const p = String(waarde ?? '').replace(/\s+/g, '').toUpperCase()
+  return /^[1-9]\d{3}[A-Z]{2}$/.test(p) && !/(SA|SD|SS)$/.test(p) ? p : null
+}
+
+// Postcode + huisnummer wijzen één adres aan; de straat is wat de afzender typte. De officiële naam
+// staat in geocode_cache (PDOK, het adresregister). Gemeten op 06-11: bij 8998 van de 8999 adressen
+// één straat, en 300 van de 300 adressen zonder cache-rij bestonden wel in het register.
+export const adresPaar = (postcode, huisnummer) => (postcode && huisnummer ? `${postcode}|${huisnummer}` : null)
+
+// "Teststraat 12A, 1234AB Testplaats" -> "Teststraat". Staat er een andere postcode of een ander
+// nummer, dan is het niet dit adres.
+export function straatUitWeergave(weergave, postcode, huisnummer) {
+  const m = /^(.+?),\s*(\d{4}[A-Z]{2})\b/.exec(String(weergave ?? ''))
+  if (!m || m[2] !== postcode) return null
+  const straat = new RegExp(`^(.+)\\s${regexVeilig(huisnummer)}(?:[A-Za-z]|[\\s-]\\S+)?(?:-\\S+)?$`).exec(m[1])?.[1]
+  return straat ? voluit(straat) : null   // het register kort lange namen zelf ook af
+}
+
+// Per adres de officiële straat, uit de rijen van geocode_cache. Twee namen: niet kiezen.
+export function straatUitRegister(rijen) {
+  const namen = new Map()
+  for (const r of rijen) {
+    const paar = adresPaar(r.postcode, r.huisnummer)
+    const straat = paar && straatUitWeergave(r.weergavenaam, r.postcode, r.huisnummer)
+    if (!straat) continue
+    if (!namen.has(paar)) namen.set(paar, new Set())
+    namen.get(paar).add(straat)
+  }
+  return new Map([...namen].filter(([, s]) => s.size === 1).map(([p, s]) => [p, [...s][0]]))
 }
 
 // Welke van de gevraagde stops staan er nog? `nietMeer`: hoeveel niet, de rest kan gewoon door.
@@ -131,13 +202,16 @@ export function kiesGewenst(stops, stopIds) {
 // Voor de app: alleen wat daar nodig is. Verder niets, het zijn adressen. De postcode
 // (matransport#587) is voor de stops op de kaart van een rit: met huisnummer + toevoeging het adres.
 // De stoplijst bevat geen StopID en RideID: de guid is het vaste kenmerk, en de rit is die we open hebben.
-export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt }) {
+export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt, straten = null }) {
+  const adres = schoonAdres(stop)
+  const postcode = schoonPostcode(stop.PostalCode)
   return {
     klant_id: klantId, depot, datum, shift,
     rit_id: ritId,
     stop_id: stop.guid,
-    ...schoonAdres(stop),
-    postcode: tekst(String(stop.PostalCode ?? '').replace(/\s+/g, '').toUpperCase()),
+    ...adres,
+    straat: straten?.get(adresPaar(postcode, adres.huisnummer)) ?? adres.straat,
+    postcode,
     stuks: Math.round(getal(stop.Pieces)),
     volume: getal(stop.Volume),
     opgehaald_at: opgehaaldAt,

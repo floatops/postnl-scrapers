@@ -220,7 +220,7 @@ test('doorvoer leest alleen de shifts van de wijzigingen, of alles als er een sh
 
 test('schoonToevoeging: alleen wat bij het adres hoort (#600, voorbeelden uit planning_stops 06-11, verzonnen)', async () => {
   const { schoonToevoeging: t } = await import('../src/logica.js')
-  for (const [in_, uit] of [['A', 'A'], ['a', 'A'], [' 2 ', '2'], ['-A', 'A'], ['/C', 'C'], ['114-', '114'], ['-APP8', 'APP8'], ['(DC3A)', 'DC3A'], ['1EETAGE', '1EETAGE']]) assert.equal(t(in_), uit, in_)
+  for (const [in_, uit] of [['A', 'A'], ['a', 'A'], [' 2 ', '2'], ['-A', 'A'], ['/C', 'C'], ['114-', '114'], ['-APP8', '8'], ['(DC3A)', 'DC3A']]) assert.equal(t(in_), uit, in_)
   for (const leeg of ['-', '_-', ',', '.', '`', '', null, undefined, '(COA:1234567890)', '1234AB', ',1234ABPROEFDORP,']) assert.equal(t(leeg), null, String(leeg))
 })
 
@@ -244,8 +244,8 @@ test('schoonAdres: straat zonder nummer, postcode of hoofdletters; "Plein 1957" 
 test('schoonToevoeging: geen enkel lang nummer, en een postcode alleen als het er echt een is (#600)', async () => {
   const { schoonToevoeging: t } = await import('../src/logica.js')
   for (const leeg of ['1234567890', 'COA-nummer 1234567890', 'COA 123 456 7890', 'coa:123']) assert.equal(t(leeg), null, leeg)
-  assert.equal(t('1234 APP'), '1234 APP')
-  assert.equal(t('12345AB'), '12345AB')
+  assert.equal(t('1234 APP'), null)
+  assert.equal(t('12345AB'), null)
 })
 
 test('kiesGewenst: wat er nog staat gaat door, de rest wordt geteld (#600)', async () => {
@@ -264,4 +264,85 @@ test('een fout in de stoptabel noemt de schone waarden, nooit het vrije veld (#6
 test('schoonAdres: een vreemd huisnummer laat de lezing nooit crashen (#600)', async () => {
   const { schoonAdres: a } = await import('../src/logica.js')
   for (const nr of ['12)', '12(', '[12', '12\\', '*', '+']) assert.equal(a({ Street: `Teststraat ${nr}`, BuildingNumber: nr }).straat, 'Teststraat', nr)
+})
+
+test('schoonToevoeging: een witte lijst, want het veld bevat ook namen en plaatsen (#600, verzonnen)', async () => {
+  const { schoonToevoeging: t } = await import('../src/logica.js')
+  const goed = [['A', 'A'], ['22', '22'], ['K101', 'K101'], ['BU 3', 'BU3'], ['A- 2', 'A2'], ['A 39', 'A39'], ['APP 8', '8'], ['AP-03', '3'], ['APP 022', '22'], ['KAMER 321', '321'], ['UNIT C1243', 'C1243'], ['PBA', 'PBA'], ['BU2', 'BU2']]
+  for (const [in_, uit] of goed) assert.equal(t(in_), uit, in_)
+  // Een dubbele letter bestaat niet in het adresregister.
+  for (const [in_, uit] of [['AA', 'A'], ['B B', 'B'], ['dd', 'D']]) assert.equal(t(in_), uit, in_)
+  for (const [in_, uit] of [['DC3A', 'DC3A'], ['BU10', 'BU10'], ['KAR28', 'KAR28'], ['A13A', 'A13A'], ['BG', 'BG'], ['COA 123 B', 'B']]) assert.equal(t(in_), uit, in_)
+  // Eerst de toevoeging, daarna een plaats of straat.
+  for (const [in_, uit] of [['C PROEFDORP', 'C'], ['55 TESTLAAN', '55'], ['2 PROEF EN TEST', '2'], ['A DEUR 5', 'A'], ['1E ETAGE', '1E'], ['– 18', '18']]) assert.equal(t(in_), uit, in_)
+  // Namen van mensen, bedrijven, plaatsen en omschrijvingen horen hier nooit in.
+  for (const weg of ['T.A.V. JAN TEST', 'T.A.V. J VAN DE PROEF', 'C/O NV', 'POSTBUS 10', 'PROEFDORP', 'DEN TEST', 'S-PROEFDORP', 'WOONHUIS', 'APPARTEMENT', 'EERSTE VERDIEPING', 'TEST BV', 'TESTWINKEL POSTNL PAKKETP', 'PROEFLAND60', 'HUISJE15', 'HUIS1', '1HOOG', 'JAN', 'BV', 'COACH', 'VAN DO', 'OP´T', 'DR.X,Y,Z', '1234, 2F', 'TEST HUIS 34TEST HUIS', '1-2', '12/3']) assert.equal(t(weg), null, weg)
+})
+
+test('schoonStraat: plaats, tekens, afkorting en "Onbekend" gaan weg (#600, verzonnen)', async () => {
+  const { schoonAdres: a } = await import('../src/logica.js')
+  const straat = (s, nr = '3', extra = null) => a({ Street: s, BuildingNumber: nr, BuildingNumberExtension: extra }).straat
+  for (const [in_, uit] of [
+    ['Teststraat , Proefdorp', 'Teststraat'], ['Teststraat, ,\'S-PROEFDORP', 'Teststraat'], ['Teststraat , ZUID HOLLAND', 'Teststraat'], ['Teststraat , 1234567890', 'Teststraat'],
+    ['Teststraat _', 'Teststraat'], ['Teststraat_', 'Teststraat'], ['Teststraat /', 'Teststraat'], ['Teststraat.', 'Teststraat'],
+    ['teststraat', 'Teststraat'], ['de oude testlaan', 'De Oude Testlaan'], ['laan van de test', 'Laan van de Test'],
+    ['Pieter Teststr', 'Pieter Teststraat'], ['Oude Testln', 'Oude Testlaan'], ['R Testsngl', 'R Testsingel'], ['Proefwg', 'Proefweg'], ['Testpln', 'Testplein'], ['Oude Testgr', 'Oude Testgracht'], ['Teststraat -C', 'Teststraat'],
+    ["\\'s-Testweg", "'s-Testweg"], ['Theo d’Testsingel', "Theo d'Testsingel"],
+    ['Onbekend', '(onbekend)'], ['onbekend', '(onbekend)'], ['(onbekend)', '(onbekend)'],
+    ['Nes', 'Nes'], ['Laan', 'Laan'], ['Plein 1957', 'Plein 1957'], ['Köln', 'Köln'], ['Wijk A', 'Wijk A'],
+  ]) assert.equal(straat(in_), uit, in_)
+  assert.deepEqual(a({ Street: 'Teststraat 7 Teststraat', BuildingNumber: '7' }), { straat: 'Teststraat', huisnummer: '7', toevoeging: null })
+  assert.deepEqual(a({ Street: 'Teststraat 10 BU2', BuildingNumber: '10' }), { straat: 'Teststraat', huisnummer: '10', toevoeging: 'BU2' })
+  assert.deepEqual(a({ Street: '5 Lange Test', BuildingNumber: '5' }), { straat: 'Lange Test', huisnummer: '5', toevoeging: null })
+  assert.equal(a({ Street: '18 Septemberplein', BuildingNumber: '18' }).straat, '18 Septemberplein', 'een datum in de straatnaam blijft')
+  assert.deepEqual(a({ Street: 'Teststraat 5--', BuildingNumber: '5' }), { straat: 'Teststraat', huisnummer: '5', toevoeging: null })
+  assert.deepEqual(a({ Street: 'Teststraat 71-', BuildingNumber: '71' }), { straat: 'Teststraat', huisnummer: '71', toevoeging: null })
+  assert.deepEqual(a({ Street: 'Teststraat A, Proefdorp', BuildingNumber: '9' }), { straat: 'Teststraat', huisnummer: '9', toevoeging: 'A' })
+  assert.deepEqual(a({ Street: 'Teststraat b', BuildingNumber: '9', BuildingNumberExtension: 'C' }), { straat: 'Teststraat', huisnummer: '9', toevoeging: 'C' })
+})
+
+test('schoonPostcode: alleen een echte Nederlandse postcode (#600)', async () => {
+  const { schoonPostcode: p } = await import('../src/logica.js')
+  for (const [in_, uit] of [['1234AB', '1234AB'], ['1234 ab', '1234AB'], [' 1234  AB ', '1234AB']]) assert.equal(p(in_), uit, in_)
+  for (const weg of ['0000FF', '0123AB', '1234SS', '1234SA', '1234SD', '1234', '12345', '', null, undefined]) assert.equal(p(weg), null, String(weg))
+})
+
+test('straatUitWeergave: de naam uit het register, alleen als het dit adres is (#600)', async () => {
+  const { straatUitWeergave: s } = await import('../src/logica.js')
+  assert.equal(s('Teststraat 24, 1234AB Proefdorp', '1234AB', '24'), 'Teststraat')
+  assert.equal(s('Teststraat 24A, 1234AB Proefdorp', '1234AB', '24'), 'Teststraat')
+  assert.equal(s('Teststraat 24-2, 1234AB Proefdorp', '1234AB', '24'), 'Teststraat')
+  assert.equal(s('Teststraat 24e-1, 1234AB Proefdorp', '1234AB', '24'), 'Teststraat')
+  assert.equal(s('Plein 1957 37, 1234AB Proefdorp', '1234AB', '37'), 'Plein 1957')
+  assert.equal(s("'s-Testweg 3, 1234AB Proefdorp", '1234AB', '3'), "'s-Testweg")
+  assert.equal(s('Dr. J. Teststraat 3, 1234AB Proefdorp', '1234AB', '3'), 'Dr. J. Teststraat')
+  assert.equal(s('G.J. Teststr 3, 1234AB Proefdorp', '1234AB', '3'), 'G.J. Teststraat', 'het register kort zelf ook af')
+  assert.equal(s('Teststraat 24, 1234AC Proefdorp', '1234AB', '24'), null, 'andere postcode')
+  assert.equal(s('Teststraat 25, 1234AB Proefdorp', '1234AB', '24'), null, 'ander nummer')
+  assert.equal(s('Teststraat 245, 1234AB Proefdorp', '1234AB', '24'), null, 'ander nummer')
+  assert.equal(s('Teststraat, 1234AB Proefdorp', '1234AB', '24'), null, 'alleen de straat')
+  assert.equal(s(null, '1234AB', '24'), null)
+})
+
+test('straatUitRegister: twee namen voor één adres = niet kiezen (#600)', async () => {
+  const { straatUitRegister: r } = await import('../src/logica.js')
+  const m = r([
+    { postcode: '1234AB', huisnummer: '1', weergavenaam: 'Teststraat 1, 1234AB Proefdorp' },
+    { postcode: '1234AB', huisnummer: '1', weergavenaam: 'Teststraat 1A, 1234AB Proefdorp' },
+    { postcode: '1234AC', huisnummer: '2', weergavenaam: 'Teststraat 2, 1234AC Proefdorp' },
+    { postcode: '1234AC', huisnummer: '2', weergavenaam: 'Proefweg 2, 1234AC Proefdorp' },
+    { postcode: '1234AD', huisnummer: '3', weergavenaam: 'Teststraat 4, 1234AD Proefdorp' },
+  ])
+  assert.deepEqual([...m], [['1234AB|1', 'Teststraat']])
+})
+
+test('stopNaarRij: de officiële straat gaat voor wat de afzender typte (#600)', async () => {
+  const { stopNaarRij } = await import('../src/logica.js')
+  const stop = { guid: 'g', Street: 'T Proefweg', BuildingNumber: '1', BuildingNumberExtension: 'A', PostalCode: '1234 ab' }
+  const ctx = { klantId: 'k', depot: 'd', datum: '2026-11-06', shift: '07', ritId: 'r', opgehaaldAt: 'nu' }
+  const rij = stopNaarRij(stop, { ...ctx, straten: new Map([['1234AB|1', 'Teststraat']]) })
+  assert.deepEqual([rij.straat, rij.huisnummer, rij.toevoeging, rij.postcode], ['Teststraat', '1', 'A', '1234AB'])
+  assert.equal(stopNaarRij(stop, ctx).straat, 'T Proefweg', 'zonder register blijft de opgeschoonde staan')
+  assert.equal(stopNaarRij({ ...stop, Street: 'Onbekend', PostalCode: '0000FF' }, ctx).straat, '(onbekend)')
+  assert.equal(stopNaarRij({ ...stop, PostalCode: '0000FF' }, ctx).postcode, null)
 })
