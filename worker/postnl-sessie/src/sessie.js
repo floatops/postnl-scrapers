@@ -32,6 +32,9 @@ export const OPNAME_ROOT = process.env.OPNAME_ROOT || path.join(process.env.LOG_
 export const WERK_ROOT = process.env.SESSIE_WERK_ROOT || path.join(os.tmpdir(), `postnl-sessie-werk-${process.getuid?.() ?? 'lokaal'}`)
 const TRACE_MS = 60_000   // grens op tracing.start/stop: een trace mag een taak nooit laten hangen
 const SLUIT_MS = 30_000   // grens op browseraanroepen bij het sluiten: dit is juist het noodpad
+// context.close() maakt de video's van 30 min af (twee tabbladen). Op 06-11 duurde dat langer dan
+// 30 s, en toen gaf elk videosegment een nieuwe login op beide depots (matransport#600).
+export const CONTEXT_SLUIT_MS = 150_000
 
 function grens(belofte, ms, wat) {
   let t
@@ -281,7 +284,9 @@ export class Sessie {
     // Het RVA-tabblad gaat mee dicht; de volgende RVA-taak opent het opnieuw.
     await grens(oud.context.tracing.stop(), SLUIT_MS, 'Trace stoppen').catch(() => {})
     this.traceLoopt = false
-    await grens(oud.context.close(), SLUIT_MS, 'Context sluiten')
+    const sluitBegin = Date.now()
+    await grens(oud.context.close(), CONTEXT_SLUIT_MS, 'Context sluiten')
+    this.log.log(`[${this.depot.naam}] Videosegment: context dicht in ${Math.round((Date.now() - sluitBegin) / 1000)} s`)
     this.rvaPage = null
     await fs.rm(this.tracesDir, { recursive: true, force: true }).catch(() => {})   // resources/ hoort bij de oude context
     await this.#legeTraces()
@@ -331,7 +336,7 @@ export class Sessie {
     this.rvaPage = null
     if (this.context) {
       await grens(this.context.tracing.stop(), SLUIT_MS, 'Trace stoppen').catch(() => {})
-      await grens(this.context.close(), SLUIT_MS, 'Context sluiten').catch(() => {})
+      await grens(this.context.close(), CONTEXT_SLUIT_MS, 'Context sluiten').catch(() => {})
     }
     if (this.browser) await grens(this.browser.close(), SLUIT_MS, 'Browser sluiten').catch(e => this.log.warn(`[${this.depot.naam}] ${e.message}`))
     this.context = null

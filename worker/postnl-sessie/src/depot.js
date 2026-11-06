@@ -247,7 +247,7 @@ export async function draaiDepot(deps) {
         fout = err
       }
       deps.bezig?.set(depot.naam, { taak, fase: 'afhandeling', sinds: klok.nu() })
-      levend(120_000)   // de afhandeling hierna (trace opslaan) telt ook als leven
+      levend(240_000)   // de afhandeling hierna (trace opslaan, sluiten met video) telt ook als leven
 
       // Slot kwijt of over de limiet: de handler moet ophouden. Bij slot kwijt sluit de sessie
       // hieronder; dankzij het sein wordt de rest van een doorvoer 'overgeslagen', niet 'mislukt'.
@@ -262,7 +262,7 @@ export async function draaiDepot(deps) {
       if (fout?.limiet && lopend) {
         // Schrijvend werk krijgt meer tijd: na het sein loopt één handeling door, plus Annuleer.
         const afbouwSec = k.taak.schrijft ? cfg.taakAfbouwSchrijfSec : cfg.taakAfbouwSec
-        levend(afbouwSec * 1000 + 120_000)
+        levend(afbouwSec * 1000 + 240_000)
         handlerLooptNog = !(await handlerKlaar(lopend, klok.slaap, afbouwSec * 1000))
         log.warn(`${label} ${taak}: over de limiet; ${handlerLooptNog ? 'handler reageert niet op het stopsein, context gaat dicht' : 'handler gestopt'}`)
         await opslag.gebeurtenis(sessie?.id, { soort: 'taak_limiet', taak, handlerGestopt: !handlerLooptNog })
@@ -396,7 +396,7 @@ export async function draaiDepot(deps) {
           // De browser reageert niet of de schijf is vol: dicht, de volgende taak logt opnieuw in.
           // Niet doorgooien: dat zou de hele lus van dit depot stoppen.
           log.warn(`${label} Nieuw videosegment mislukt, sessie dicht: ${String(err.message).split('\n')[0]}`)
-          levend(120_000)
+          levend(240_000)
           await sluit('fout', { fout: err })
         }
       } else if (sessie && !cfg.contextWissel && (handlerLooptNog || sessie.leeftijdMin >= cfg.browserVernieuwenUur * 60)) {
@@ -409,7 +409,7 @@ export async function draaiDepot(deps) {
       }
     }
   } finally {
-    levend(120_000)   // netjes sluiten (video opslaan) mag het slot niet kosten
+    levend(240_000)   // netjes sluiten (video opslaan) mag het slot niet kosten
     deps.bezig?.set(depot.naam, { taak: 'sessie sluiten', fase: 'afhandeling', sinds: klok.nu() })
     await sluit(stop() ? 'herstart' : 'nacht')
     await bewaar()

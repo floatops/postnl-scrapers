@@ -125,3 +125,11 @@ test('planning_stops wordt in stukken gelezen: een antwoord is hooguit 1000 rije
   assert.ok(lezen.length >= 1)
   for (const l of lezen) assert.match(l, /\.range\(/, 'zonder range mist hij stops, en dan zijn stops die weg zijn niet te zien')
 })
+
+test('sluiten van een context krijgt de tijd om de video af te maken, binnen wat de hartslag dekt (#600)', async () => {
+  const { CONTEXT_SLUIT_MS } = await import('../src/sessie.js')
+  assert.ok(CONTEXT_SLUIT_MS >= 120_000, '06-11: 30 s was te kort, elk videosegment gaf een nieuwe login')
+  const depot = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/depot.js'), 'utf8')
+  assert.ok(!/levend\(120_000\)/.test(depot), 'de hartslag moet het sluiten dekken')
+  assert.ok(CONTEXT_SLUIT_MS + 30_000 * 2 <= 240_000)
+})
