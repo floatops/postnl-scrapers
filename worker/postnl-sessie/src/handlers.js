@@ -15,8 +15,20 @@ export class DagNietBeschikbaar extends Error {}
 
 // Komt er tijdens een verversronde een Plannen-opdracht binnen (VPS-wekker), dan houdt de ronde op
 // tussen twee ritten: de opdracht hoeft niet op de hele shift te wachten (matransport#578).
-export function stopBijPlannerOpdracht(ctx, begin = Date.now()) {
-  return () => (ctx.plannerSignaal?.() ?? 0) > begin || Boolean(ctx.gestopt?.())
+// Een RVA-opdracht ook (matransport#600), maar hoogstens eens per RVA_STOP_MS per depot: elke ronde
+// begint bij de eerste rit, en de app vraagt vanzelf om ophalen. Zonder rem zou een stroom opdrachten
+// de achterste ritten nooit laten lezen. `rva: false` voor de laatste lezing na de autorisatie.
+export const RVA_STOP_MS = 5 * 60_000
+export function stopBijPlannerOpdracht(ctx, begin = Date.now(), { rva = true } = {}) {
+  let gestopt = false
+  return () => {
+    if (gestopt || (ctx.plannerSignaal?.() ?? 0) > begin || ctx.gestopt?.()) return true
+    if (!rva || (ctx.rvaSignaal?.() ?? 0) <= begin) return false
+    if (ctx.rvaStop && begin - ctx.rvaStop.om < RVA_STOP_MS) return false
+    if (ctx.rvaStop) ctx.rvaStop.om = begin
+    gestopt = true
+    return true
+  }
 }
 
 // Dagplanning openen op de dag van vandaag. Staat de dag er nog niet: DagNietBeschikbaar.
@@ -346,9 +358,10 @@ export const HANDLERS = {
     }
   },
 
-  // Plannen-tab bijwerken in de open sessie (#562): alleen verschillen, alleen ritten vóór hun
-  // deadline (postnl-planner verversPlanning). Loopt er een Plannen-opdracht, dan niet ertussen.
-  async plannen(ctx, dag, { soort, shifts }) {
+  // Plannen-tab bijwerken in de open sessie (#562): alleen verschillen, ritten vóór hun deadline, en
+  // met `naAutorisatie` één keer de hele shift (postnl-planner verversPlanning). Loopt er een
+  // Plannen-opdracht, dan niet ertussen.
+  async plannen(ctx, dag, { soort, shifts, naAutorisatie = false }) {
     const { sessie, supabase, nu } = ctx
     const p = { ...(dag.plannen ?? {}), stopsOm: { ...(dag.plannen?.stopsOm ?? {}) } }
     // Altijd de tijd vastleggen, ook bij overslaan of een fout: anders meteen opnieuw.
@@ -365,12 +378,14 @@ export const HANDLERS = {
       if (await opStartpagina(sessie.page).catch(() => false)) await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
       return { dag: verder, run: null }
     }
-    const stoppen = stopBijPlannerOpdracht(ctx)
+    const stoppen = stopBijPlannerOpdracht(ctx, Date.now(), { rva: !naAutorisatie })
     try {
       await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
       const { verversPlanning } = await planner.laad()
-      const uit = await verversPlanning(sessie.page, volgMendix(sessie.page), { depot: sessie.depot.naam, datum: dag.datum, soort, shifts, nu, stoppen })
+      const uit = await verversPlanning(sessie.page, volgMendix(sessie.page), { depot: sessie.depot.naam, datum: dag.datum, soort, shifts, nu, stoppen, naDeadline: naAutorisatie })
       sessie.lezingen++
+      // Pas als de ronde helemaal klaar is: anders de volgende keer opnieuw.
+      if (naAutorisatie && !uit.gestopt) p.stopsDefinitiefOm = { ...(p.stopsDefinitiefOm ?? {}), ...Object.fromEntries(shifts.map(s => [s, nu.toISOString()])) }
       const tel = (t) => (t ? t.nieuw + t.gewijzigd + t.weg : 0)
       const tekst = (naam, t) => (tel(t) ? `${naam} ${t.nieuw} nieuw, ${t.gewijzigd} gewijzigd, ${t.weg} weg` : null)
       const delen = [tekst('ritten', uit.ritten), tekst('stops', uit.stops)].filter(Boolean)

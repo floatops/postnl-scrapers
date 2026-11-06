@@ -179,6 +179,7 @@ async function main() {
   // Wanneer de VPS het laatst een Plannen-opdracht meldde: een lopende verversronde (taak plannen)
   // houdt dan op tussen twee ritten, zodat de opdracht niet hoeft te wachten (matransport#578).
   let plannerSignaal = 0
+  let rvaSignaal = 0
 
   log.log(`Sessiehouder gestart voor ${depots.length} depot(s), houder ${houder}`)
   // Per depot één lus (één browser, één tabblad, één login), elk met een eigen stop-vlag.
@@ -196,7 +197,7 @@ async function main() {
         schatting: () => schattingen[depot.naam] ?? null,
         telRitmonitor: (d, r) => teller.tel(d, r),
         handlers: HANDLERS,
-        ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor, plannerSignaal: () => plannerSignaal },
+        ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor, plannerSignaal: () => plannerSignaal, rvaSignaal: () => rvaSignaal, rvaStop: { om: 0 } },
         maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),
       }).catch(async (err) => {
         exitCode = exitCode || 1
@@ -248,6 +249,9 @@ async function main() {
   // leest rva_opdrachten ook elke 15 s als vangnet.
   const rvaCheck = await volgWekker(process.env.POSTNL_RVA_WEKKER, 1_000, async () => {
     log.log('RVA-opdracht: meteen oppakken')
+    // Ook een lopende verversronde houdt dan op tussen twee ritten: daar wachtte een opdracht uit de
+    // app tot ruim een minuut op (06-11: tot 92 s, matransport#600). Geremd per depot, zie handlers.js.
+    rvaSignaal = Date.now()
     if (!cfg.rva) await herleesInstellingen('RVA-opdracht')
     for (const w of [...wekkers]) w()
   })

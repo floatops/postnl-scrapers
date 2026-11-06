@@ -7,12 +7,14 @@ import http from 'node:http'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
+import fsSync from 'node:fs'
 import assert from 'node:assert/strict'
 import { chromium } from 'playwright'
 process.env.OPNAME_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'opnames-'))
 // Eigen werkmap, en de playwright-mappen van een draaiende sessiehouder tellen niet mee: de proef
 // draait op de VPS naast de echte (matransport#600).
 process.env.SESSIE_WERK_ROOT = await fs.mkdtemp(path.join(os.tmpdir(), 'proef-werk-'))
+process.on('exit', () => { for (const m of [process.env.OPNAME_ROOT, process.env.SESSIE_WERK_ROOT]) fsSync.rmSync(m, { recursive: true, force: true }) })
 const artifactsVooraf = new Set((await fs.readdir(os.tmpdir())).filter(n => n.startsWith('playwright-artifacts-')))
 const { Sessie } = await import('../src/sessie.js')
 import { classificeer } from '../src/gezondheid.js'

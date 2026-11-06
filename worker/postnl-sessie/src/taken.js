@@ -154,20 +154,26 @@ export const TAKEN = [
     },
   },
   {
-    // Plannen-tab vanzelf bijwerken (#562): alleen shifts waarvan de deadline nog niet voorbij is
-    // (daarna kan er niet meer gepland worden en verandert er niets). Zo snel als het kan: is al het
+    // Plannen-tab vanzelf bijwerken (#562): shifts waarvan de deadline nog niet voorbij is, plus één
+    // laatste lezing van de stops na de autorisatie (hieronder). Zo snel als het kan: is al het
     // andere gedaan (lagere prioriteit dan de ritmonitor), dan de ritten of de stops van een shift,
     // om de beurt wat het langst geleden is. Een shift die iemand in Plannen open heeft, gaat voor.
     naam: 'plannen', prioriteit: 20, worker: null,
     volgende: (dag, nu, cfg) => {
       if (!cfg.plannenVerversen || rustdag(nu, cfg) || !voorTijd(nu, cfg.eindtijd) || !dag.ochtend?.gelezenOm) return null
-      const open = Object.entries(dag.shifts ?? {}).filter(([, s]) => s.deadline && new Date(s.deadline) > nu).map(([k]) => k).sort()
-      if (!open.length) return null
+      // Na de autorisatie één laatste keer de stops van die shift: PostNL schuift na de deadline nog
+      // stops tussen ritten (03-11: Den Hoorn 218 van 183 naar 45), en pas dan liggen de adressen per
+      // rit vast (matransport#600). Een gewone kandidaat, met de beurtrol via stopsOm en minstens een
+      // minuut ertussen: lukt de lezing niet, dan mag hij de rij niet blokkeren.
       const p = dag.plannen ?? {}
+      const definitief = Object.entries(dag.shifts ?? {}).filter(([k, s]) => s.geautoriseerdOm && !p.stopsDefinitiefOm?.[k]).map(([k]) => k).sort()
+      const open = Object.entries(dag.shifts ?? {}).filter(([k, s]) => s.deadline && new Date(s.deadline) > nu && !definitief.includes(k)).map(([k]) => k).sort()
+      if (!open.length && !definitief.length) return null
       const kijkers = dag.plannenKijkers ?? []
       const tijd = (iso) => (iso ? new Date(iso).getTime() : 0)
       const kandidaten = [
-        { laatst: tijd(p.rittenOm), min: cfg.plannenRittenMin, rang: 0, args: { soort: 'ritten', shifts: open } },
+        ...definitief.map(shift => ({ laatst: tijd(p.stopsOm?.[shift]), min: 1, rang: 1, args: { soort: 'stops', shifts: [shift], naAutorisatie: true } })),
+        ...(open.length ? [{ laatst: tijd(p.rittenOm), min: cfg.plannenRittenMin, rang: 0, args: { soort: 'ritten', shifts: open } }] : []),
         ...open.map((shift) => {
           const kijkt = kijkers.includes(shift)
           return {

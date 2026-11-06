@@ -2,7 +2,7 @@
 // in de open sessie uitvoeren met de planner-logica van postnl-planner (hier vervangen door een nep).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { HANDLERS, planner, stopBijPlannerOpdracht } from '../src/handlers.js'
+import { HANDLERS, planner, stopBijPlannerOpdracht, RVA_STOP_MS } from '../src/handlers.js'
 import { nieuweDag } from '../src/dagstatus.js'
 
 const dag = { ...nieuweDag('2026-11-03'), aanvragen: [{ id: 't1', soort: 'planner' }] }
@@ -76,4 +76,46 @@ test('verversronde houdt op zodra er na het begin een Plannen-opdracht binnenkom
   signaal = 2500
   assert.equal(stoppen(), true, 'opdracht binnen tijdens de ronde: ophouden')
   assert.equal(stopBijPlannerOpdracht({}, 2000)(), false, 'zonder signaal (losse scripts): nooit ophouden')
+})
+
+test('een RVA-opdracht stopt een ronde, hoogstens eens per 5 min per depot, en de stand blijft staan (#600)', () => {
+  let rva = 0
+  const ctx = { rvaSignaal: () => rva, rvaStop: { om: 0 } }
+  const begin = RVA_STOP_MS * 2
+  const stoppen = stopBijPlannerOpdracht(ctx, begin)
+  assert.equal(stoppen(), false)
+  rva = begin + 1
+  assert.equal(stoppen(), true, 'eerste keer: ophouden')
+  assert.equal(stoppen(), true, 'en blijven ophouden in deze ronde')
+  assert.equal(stopBijPlannerOpdracht(ctx, begin + 1000)(), false, 'volgende ronde binnen 5 min: doorlezen, anders hongeren de achterste ritten uit')
+  rva = begin + RVA_STOP_MS + 1
+  assert.equal(stopBijPlannerOpdracht(ctx, begin + RVA_STOP_MS)(), true, 'na 5 min weer wel')
+})
+
+test('de laatste lezing stopt niet voor RVA, wel voor Plannen en het stopsein (#600)', () => {
+  const signaal = 3000
+  const ctx = { rvaSignaal: () => signaal, rvaStop: { om: 0 } }
+  assert.equal(stopBijPlannerOpdracht(ctx, 2000, { rva: false })(), false)
+  assert.equal(stopBijPlannerOpdracht({ plannerSignaal: () => 3000 }, 2000, { rva: false })(), true)
+  assert.equal(stopBijPlannerOpdracht({ gestopt: () => true }, 2000, { rva: false })(), true)
+})
+
+function supabaseGeenOpdrachten() {
+  return { from: () => ({ select: () => ({ eq: () => ({ in: () => ({ limit: async () => ({ data: [], error: null }) }) }) }) }) }
+}
+
+test('plannen-handler: de laatste lezing telt pas als de ronde helemaal klaar is (#600)', async () => {
+  const opties = []
+  let gestopt = false
+  planner.laad = async () => ({ verversPlanning: async (p, m, o) => { opties.push(o); return { stops: { nieuw: 0, gewijzigd: 0, weg: 0 }, ritten: null, gestopt } } })
+  const nu = new Date('2026-11-03T12:00:00Z')
+  const s = { ...sessie(), page: { locator: () => ({ first: () => ({ isVisible: async () => true, waitFor: async () => {}, click: async () => {} }) }), url: () => 'https://x/', goto: async () => null, waitForLoadState: async () => {}, getByText: () => ({ first: () => ({ waitFor: async () => {} }) }), on() {}, waitForTimeout: async () => {} }, log: { log() {}, warn() {} } }
+  const ctx = { sessie: s, supabase: supabaseGeenOpdrachten(), klantId: 'k', nu }
+  const uit = await HANDLERS.plannen(ctx, dag, { soort: 'stops', shifts: ['07'], naAutorisatie: true })
+  assert.equal(opties[0].naDeadline, true)
+  assert.equal(uit.dag.plannen.stopsDefinitiefOm['07'], nu.toISOString())
+  gestopt = true
+  const nog = await HANDLERS.plannen(ctx, dag, { soort: 'stops', shifts: ['07'], naAutorisatie: true })
+  assert.equal(nog.dag.plannen.stopsDefinitiefOm?.['07'], undefined, 'gestopt: de volgende keer opnieuw')
+  assert.equal(nog.dag.plannen.stopsOm['07'], nu.toISOString(), 'wel de tijd, voor de beurtrol')
 })

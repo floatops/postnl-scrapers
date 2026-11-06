@@ -25,7 +25,8 @@ import { openRva } from '../../postnl-rva/src/scherm.js'
 import { depotSlug, nlTijdstempel, BEWAAR_DAGEN } from '../../credentials-shared/src/sessieVideo.js'
 
 export const WORKER = 'postnl-sessie'
-export const OPNAME_ROOT = process.env.OPNAME_ROOT || '/var/log/workers/postnl/opnames'
+// LOG_ROOT: Stack B logt in zijn eigen map; de map van Stack A is voor die gebruiker niet schrijfbaar.
+export const OPNAME_ROOT = process.env.OPNAME_ROOT || path.join(process.env.LOG_ROOT || '/var/log/workers', 'postnl', 'opnames')
 // Per gebruiker: /tmp is gedeeld, Stack A draait als root en Stack B als floatops-b, en een klant-uuid
 // kan op beide stacks bestaan (Stack B is een kloon).
 export const WERK_ROOT = process.env.SESSIE_WERK_ROOT || path.join(os.tmpdir(), `postnl-sessie-werk-${process.getuid?.() ?? 'lokaal'}`)

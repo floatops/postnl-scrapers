@@ -61,7 +61,7 @@ function opzet({ start = '2026-11-02T10:00:00+01:00', handlers, opdrachten = () 
   const gebeurtenissen = []
   const klok = nepKlok(start, { timers })
   const eind = new Date(start).getTime() + duurMin * 60_000
-  const opgeslagen = dag ?? { ...nieuweDag('2026-11-02'), ochtend: { gelezenOm: '2026-11-02T05:31:00Z' }, shifts: { '01': { deadline: '2026-11-02T06:15:00Z', geautoriseerdOm: '2026-11-02T06:20:00Z', definitiefOm: '2026-11-02T06:20:00Z' } } }
+  const opgeslagen = dag ?? { ...nieuweDag('2026-11-02'), ochtend: { gelezenOm: '2026-11-02T05:31:00Z' }, shifts: { '01': { deadline: '2026-11-02T06:15:00Z', geautoriseerdOm: '2026-11-02T06:20:00Z', definitiefOm: '2026-11-02T06:20:00Z' } }, plannen: { stopsDefinitiefOm: { '01': '2026-11-02T06:21:00Z' } } }
   const deps = {
     depot: DEPOT, klantId: 'k', houder: 'postnl-sessie:test', cfg: mergeInstellingen(cfg), klok, log: { log() {}, warn() {}, error() {} },
     stop: () => klok.nu().getTime() >= eind,

@@ -118,3 +118,10 @@ test('losse scripts hebben een korte lease: het vangnet neemt na een crash binne
     assert.ok(m && Number(m[1]) <= 300, `${f}: lease ${m?.[1]}; de hartslag houdt het slot vast`)
   }
 })
+
+test('planning_stops wordt in stukken gelezen: een antwoord is hooguit 1000 rijen, een shift heeft er 2000 (#600)', () => {
+  const code = fs.readFileSync(path.join(WORKER, 'postnl-planner/src/index.js'), 'utf8')
+  const lezen = [...code.matchAll(/from\('planning_stops'\)\.select\(\['stop_id'[\s\S]{0,260}/g)].map(m => m[0])
+  assert.ok(lezen.length >= 1)
+  for (const l of lezen) assert.match(l, /\.range\(/, 'zonder range mist hij stops, en dan zijn stops die weg zijn niet te zien')
+})

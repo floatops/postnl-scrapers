@@ -159,13 +159,14 @@ export async function leesShifts(page) {
 }
 
 // Kiest links de shift en geeft de ritten terug. Opnieuw klikken zou hem uitzetten, en dan komt
-// er geen lijst binnen: staat hij al aan, dan eerst een andere shift en terug.
+// er geen lijst binnen: staat hij al aan, dan eerst een andere shift en terug. Is er geen andere
+// (één shift op de dag), dan uit en weer aan.
 export async function kiesShift(page, mendix, shift) {
   const rij = shiftRij(page, SCHERM.shiftsLinks, shift)
   await rij.waitFor({ state: 'visible', timeout: 15_000 })
   if (await isGeselecteerd(rij)) {
     const andere = (await leesShifts(page)).find(s => s !== shift)
-    if (andere) await mendix.actie(() => shiftRij(page, SCHERM.shiftsLinks, andere).click())
+    await mendix.actie(() => (andere ? shiftRij(page, SCHERM.shiftsLinks, andere) : rij).click())
   }
   const antwoorden = await mendix.actie(() => rij.click())
   return rittenUit(antwoorden)

@@ -3,6 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { kies } from '../src/rij.js'
+import { TAAK } from '../src/taken.js'
 import { STANDAARD, mergeInstellingen as mergeInstellingenEcht } from '../src/instellingen.js'
 
 // De taak 'gisteren' (nalezen van de vorige werkdag) heeft eigen tests; hier staat hij uit.
@@ -61,6 +62,7 @@ function simuleer({ datum = '2026-11-02', van = '05:00', tot = '23:30', postnl, 
         const pl = { ...(dag.plannen ?? {}), stopsOm: { ...(dag.plannen?.stopsOm ?? {}) } }
         if (k.args.soort === 'ritten') pl.rittenOm = nu.toISOString()
         else for (const sh of k.args.shifts) pl.stopsOm[sh] = nu.toISOString()
+        if (k.args.naAutorisatie) pl.stopsDefinitiefOm = { ...(pl.stopsDefinitiefOm ?? {}), [k.args.shifts[0]]: nu.toISOString() }
         dag = { ...dag, plannen: pl }
         log.push([fmt(nu), `plannen:${k.args.soort}:${k.args.shifts.join('+')}`])
       }
@@ -266,9 +268,9 @@ test('plannen: zo snel als het kan, om de beurt ritten en stops per open shift; 
   assert.ok(met('07', '24:00', '07:20').length > 0, 'shift 07 gaat door')
 })
 
-test('plannen: na de laatste deadline doet de taak niets meer', () => {
+test('plannen: na de laatste deadline alleen nog één lezing na de autorisatie', () => {
   const s = simuleer({ postnl: { dagVanaf: '05:00', shifts: { '01': { deadline: '06:00', autorisatie: '06:05' } } }, tot: '09:00', cfg: mergeInstellingen({}) })
-  assert.equal(s.log.filter(([t, x]) => x.startsWith('plannen') && t >= '06:00').length, 0)
+  assert.deepEqual(s.log.filter(([t, x]) => x.startsWith('plannen') && t >= '06:01').map(([, x]) => x), ['plannen:stops:01'])
 })
 
 test('plannen: de shift die iemand in Plannen open heeft, gaat voor', async () => {
@@ -318,4 +320,27 @@ test('gisteren staat standaard uit (04-11: na middernacht toont PostNL niet de g
   const { kies } = await import('../src/rij.js')
   const k = kies(nieuweDag('2026-11-04'), new Date('2026-11-04T00:31:00+01:00'), mergeInstellingenEcht({ plannenVerversen: false }))
   assert.notEqual(k.taak?.naam, 'gisteren')
+})
+
+test('plannen: na de autorisatie één laatste keer de stops van die shift, ook na de deadline (#600)', () => {
+  const cfg = mergeInstellingenEcht({})
+  const plannen = TAAK.plannen
+  const nu = new Date('2026-11-06T10:40:00+01:00')
+  const dag = { ochtend: { gelezenOm: '2026-11-06T04:30:00Z' }, plannen: {}, shifts: { '07': { deadline: '2026-11-06T09:25:00Z', geautoriseerdOm: '2026-11-06T09:37:00Z', definitiefOm: '2026-11-06T09:37:00Z' } } }
+  assert.deepEqual(plannen.volgende(dag, nu, cfg).args, { soort: 'stops', shifts: ['07'], naAutorisatie: true })
+  const klaar = { ...dag, plannen: { stopsDefinitiefOm: { '07': nu.toISOString() } } }
+  assert.equal(plannen.volgende(klaar, nu, cfg), null, 'daarna niets meer')
+})
+
+test('plannen: een laatste lezing die steeds stopt, blokkeert de open shift niet (#600)', () => {
+  const cfg = mergeInstellingenEcht({})
+  const nu = new Date('2026-11-06T10:40:00+01:00')
+  const op = (min) => new Date(nu.getTime() - min * 60_000).toISOString()
+  const dag = { ochtend: { gelezenOm: op(300) }, shifts: {
+    '01': { deadline: op(120), geautoriseerdOm: op(100), definitiefOm: op(100) },
+    '07': { deadline: new Date(nu.getTime() + 60 * 60_000).toISOString() },
+  }, plannen: { rittenOm: op(1), stopsOm: { '01': op(0.2), '07': op(5) } } }
+  assert.deepEqual(TAAK.plannen.volgende(dag, nu, cfg).args, { soort: 'stops', shifts: ['07'] }, 'net geprobeerd: de open shift is aan de beurt')
+  const later = { ...dag, plannen: { ...dag.plannen, stopsOm: { '01': op(5), '07': op(1) }, rittenOm: op(1) } }
+  assert.equal(TAAK.plannen.volgende(later, nu, cfg).args.naAutorisatie, true, 'daarna weer de laatste lezing')
 })

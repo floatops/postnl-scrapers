@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, kiesGewenst, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -141,6 +141,8 @@ async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
   const bekend = new Map(bestaand.map(r => [r.rit_id, r]))
   const rijen = ritten.map(r => ({
     ...r,
+    // Na de autorisatie kan de deadline-tekst ontbreken: dan de bekende houden.
+    deadline: r.deadline ?? bekend.get(r.rit_id)?.deadline ?? null,
     stops_gelezen: r.stops_gelezen ?? bekend.get(r.rit_id)?.stops_gelezen ?? null,
     chauffeur_wijzigbaar: r.chauffeur_wijzigbaar ?? bekend.get(r.rit_id)?.chauffeur_wijzigbaar ?? false,
     chauffeur_opties: r.chauffeur_opties ?? bekend.get(r.rit_id)?.chauffeur_opties ?? [],
@@ -179,17 +181,29 @@ const zonderPostcode = ({ postcode, ...rij }) => rij
 // `deel`: alleen een paar ritten van de shift (na een doorvoer, matransport#578); de shift telt dan
 // niet als helemaal gecontroleerd (planning_versheid). `stoppen()` true = ophouden vóór de volgende
 // rit (er wacht een Plannen-opdracht); wat al gelezen is, blijft gewoon staan.
-async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang = async () => {}, { deel = false, stoppen = () => false } = {}) {
+async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang = async () => {}, { deel = false, stoppen = () => false, heleShift = false } = {}) {
   const eigen = ritten.filter(r => r.shift === shift)
+  // De laatste lezing leest de hele shift, en daarna herstelt niets een lege lezing meer.
+  if (heleShift && !eigen.length) throw new Error(`Shift ${shift} gaf geen ritten: lezing niet vertrouwd, niets verwijderd`)
   if (deel && !eigen.length) return { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
   await kiesShift(page, mendix, shift)
   const nu = new Date().toISOString()
   const velden = await stopVelden()
-  const bestaand = await db(supabase.from('planning_stops').select(['stop_id', ...velden].join(', '))
-    .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).eq('shift', shift), 'stops lezen')
+  // In stukken: een antwoord is hooguit 1000 rijen en shift 07 heeft er ruim 2000. Tot #600 telde de
+  // rest elke ronde als 'nieuw' (770 onnodige schrijfacties per ronde), en bleven stops die uit een
+  // rit verdwenen in de database staan: 'spookstops', waardoor Plannen een hele verplaatsing oversloeg.
+  const bestaand = []
+  for (let van = 0; ; van += 1000) {
+    const stuk = await db(supabase.from('planning_stops').select(['stop_id', ...velden].join(', '))
+      .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum).eq('shift', shift)
+      .order('stop_id').range(van, van + 999), 'stops lezen')
+    bestaand.push(...stuk)
+    if (stuk.length < 1000) break
+  }
   const gelezenRitten = new Set()
   const gezien = []
   const telling = { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
+  const nietGelezen = new Set()
   let klaar = 0
   for (const rit of eigen) {
     if (stoppen()) { telling.gestopt = true; break }
@@ -197,6 +211,17 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
     if (rit.stops > 0) {
       const stops = await openRit(page, mendix, rit.ritnaam)
       const eigenStops = stops
+      // De kop zegt dat er stops zijn en het antwoord is leeg: een mislukte lezing, of een rit met
+      // alleen postcodeblokken (die heeft geen stoptabel). Niet gooien, dat stopte de hele ronde
+      // (#557), maar ook niets verwijderen: zijn stops blijven zoals ze zijn.
+      if (!eigenStops.length) {
+        console.warn(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord leeg: stops ongemoeid`)
+        nietGelezen.add(rit.rit_id)
+        gelezenRitten.delete(rit.rit_id)
+        rit.stops_gelezen = 0
+        await opVoortgang(++klaar / Math.max(1, eigen.length), eigen[klaar]?.ritnaam)
+        continue
+      }
       const rijen = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu }))
         .map(r => (postcodeKolom ? r : zonderPostcode(r)))
       gezien.push(...rijen)
@@ -224,9 +249,12 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
   }
   // Pas na een complete ronde: bij een fout onderweg blijft de vorige stand staan. Alleen stops van
   // ritten die deze ronde gelezen zijn (een rit zonder stops telt als gelezen).
-  const weg = verschil(bestaand.filter(s => gelezenRitten.has(s.rit_id)), gezien, 'stop_id', velden).weg
-  if (weg.length) {
-    await db(supabase.from('planning_stops').delete().eq('klant_id', KLANT_ID).in('stop_id', weg), 'oude stops weghalen')
+  // Na een complete laatste lezing ook de stops van ritten die niet meer bestaan.
+  if (heleShift && !telling.gestopt && !gezien.length && nietGelezen.size) throw new Error(`Shift ${shift}: geen enkele rit gaf stops, niets verwijderd`)
+  const heel = heleShift && !telling.gestopt
+  const weg = verschil(bestaand.filter(s => !nietGelezen.has(s.rit_id) && (heel || gelezenRitten.has(s.rit_id))), gezien, 'stop_id', velden).weg
+  for (let i = 0; i < weg.length; i += 200) {
+    await db(supabase.from('planning_stops').delete().eq('klant_id', KLANT_ID).in('stop_id', weg.slice(i, i + 200)), 'oude stops weghalen')
   }
   telling.weg = weg.length
   if (!deel && !telling.gestopt) await zetVersheid(taak, [shift], { stops_om: nu })
@@ -286,9 +314,11 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
   const doelWeigertZelf = doel?.geautoriseerd === true
   if (reden && !doelWeigertZelf) return { status: 'overgeslagen', melding: reden }
 
-  const gewenst = stops.filter(s => v.stop_ids.includes(s.guid))
-  if (gewenst.length !== v.stop_ids.length) {
-    return { status: 'overgeslagen', melding: `${v.stop_ids.length - gewenst.length} stop(s) staan niet meer in ${bron.ritnaam}. Haal de planning opnieuw op.` }
+  const { gewenst, nietMeer } = kiesGewenst(stops, v.stop_ids)
+  // Staat een deel er niet meer (al verplaatst, of door PostNL verschoven): de rest gewoon doen, dat
+  // wilde de planner. Tot #600 ging dan de hele verplaatsing niet door (06-11: 5 keer 15-31 stops om 1 of 2).
+  if (!gewenst.length) {
+    return { status: 'overgeslagen', melding: `${v.stop_ids.length} stop(s) staan niet meer in ${bron.ritnaam}. Haal de planning opnieuw op.` }
   }
 
   const { problemen } = rijenVoorStops(gewenst, await leesStopTabel(page))
@@ -315,7 +345,7 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
   if (missen.length) {
     return { status: 'mislukt', melding: `${missen.length} stop(s) staan na de actie niet in ${doel.ritnaam}${dialoog ? ` (PostNL: ${dialoog})` : ''}. Controleer dit in PostNL.` }
   }
-  return { status: 'gelukt', melding: null }
+  return { status: 'gelukt', melding: nietMeer ? `${gewenst.length} stop(s) verplaatst; ${nietMeer} stond(en) al niet meer in ${bron.ritnaam}.` : null }
 }
 
 // Ritten-pagina meteen laten kloppen, niet pas na de volgende sync (om 05:40 zou dat tot 07:00
@@ -488,16 +518,17 @@ let tellingDoorvoer = {}
 // nog vóór hun deadline zijn (daarna kan er niet meer gepland worden). soort 'ritten': de koppen van
 // de gegeven shifts; soort 'stops': ook de stops van die ritten. Geeft het aantal verschillen.
 // `stoppen()`: true = tussen twee ritten ophouden, want er wacht een Plannen-opdracht (matransport#578).
-export async function verversPlanning(page, mendix, { depot, datum, soort, shifts, nu = new Date(), stoppen = () => false }) {
+// `naDeadline`: ook ritten voorbij hun deadline, voor de laatste lezing na de autorisatie (matransport#600).
+export async function verversPlanning(page, mendix, { depot, datum, soort, shifts, nu = new Date(), stoppen = () => false, naDeadline = false }) {
   const taak = { id: null, depot, datum }
-  const open = (r) => shifts.includes(r.shift) && (!r.deadline || new Date(r.deadline) > nu)
+  const open = (r) => shifts.includes(r.shift) && (naDeadline || !r.deadline || new Date(r.deadline) > nu)
   await kiesDag(page, mendix, dagLabel(datum))
   const ritten = (await leesRitten(page, mendix, taak, { shifts })).filter(open)
   const uit = { ritten: null, stops: null, gestopt: false }
   if (soort === 'stops') {
     uit.stops = { nieuw: 0, gewijzigd: 0, weg: 0 }
     for (const shift of shifts) {
-      const t = await leesStopsVanShift(page, mendix, taak, shift, ritten, undefined, { stoppen })
+      const t = await leesStopsVanShift(page, mendix, taak, shift, ritten, undefined, { stoppen, heleShift: naDeadline })
       for (const k of Object.keys(uit.stops)) uit.stops[k] += t[k]
       if (t.gestopt) { uit.gestopt = true; break }
     }
