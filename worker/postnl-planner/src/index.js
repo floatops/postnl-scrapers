@@ -269,15 +269,19 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
         continue
       }
       await vulStraten(eigenStops)
-      const rijen = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu, straten: STRATEN }))
+      const alle = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu, straten: STRATEN }))
       // Kon het register niet gelezen worden, dan de straat die er al stond: anders wisselt hij elke
-      // keer tussen officieel en opgeschoond, en schrijft elke ronde alle stops opnieuw.
-      for (const r of rijen) {
-        if (STRATEN.has(adresPaar(r.postcode, r.huisnummer))) continue
+      // keer tussen officieel en opgeschoond, en schrijft elke ronde alle stops opnieuw. Vóór het
+      // weglaten van de postcodekolom: de sleutel heeft de postcode nodig.
+      for (const r of alle) {
+        // Zonder geldig postcode-huisnummerpaar is er niets op te zoeken: dan geldt de opgeschoonde
+        // straat, niet voor altijd de ruwe van vóór de schoonmaak.
+        const paar = adresPaar(r.postcode, r.huisnummer)
+        if (!paar || STRATEN.has(paar)) continue
         const oud = oudeStraat.get(r.stop_id)
         if (oud) r.straat = oud
       }
-        .map(r => (postcodeKolom ? r : zonderPostcode(r)))
+      const rijen = alle.map(r => (postcodeKolom ? r : zonderPostcode(r)))
       gezien.push(...rijen)
       // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is. Alleen wat anders is.
       const v = verschil(bestaand, rijen, 'stop_id', velden)

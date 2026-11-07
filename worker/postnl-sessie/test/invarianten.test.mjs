@@ -9,7 +9,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import path from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { spawnSync } from 'node:child_process'
+import os from 'node:os'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { TAKEN } from '../src/taken.js'
 import { STANDAARD, waakhondMs } from '../src/instellingen.js'
 import { LOGIN_MAX_SEC } from '../../credentials-shared/src/postnl/login.js'
@@ -84,6 +86,48 @@ test('nooit wachten zonder grens: Promise.all/allSettled en antwoord-uitlezen al
     }
   }
   assert.deepEqual(fout, [], 'zet er een grens op (Promise.race met een timer), of zet de regel met reden in TOEGESTAAN')
+})
+
+// Elk bronbestand van elke worker is geldige JavaScript (matransport#608). De sessiehouder laadt
+// postnl-planner/src/index.js pas bij een Plannen-taak (import()), en geen test importeert dat
+// bestand: een syntaxfout erin ging op 06-11 door de tests en de proefperiode heen, en elke
+// Plannen-ronde faalde daarna met "Unexpected token '.'".
+test('elk bronbestand van elke worker is geldige JavaScript (node --check)', () => {
+  const fout = []
+  for (const w of fs.readdirSync(WORKER, { withFileTypes: true }).filter(d => d.isDirectory())) {
+    for (const sub of ['src', 'scripts']) {
+      for (const f of bestanden(path.join(WORKER, w.name, sub))) {
+        const r = spawnSync(process.execPath, ['--check', f], { encoding: 'utf8', timeout: 30_000 })
+        if (r.status !== 0) {
+          const regels = (r.stderr || r.error?.message || '').split(/\r?\n/)
+          const plek = regels.find(l => /:\d+$/.test(l.trim()))?.trim().split(/[\\/]/).pop() ?? ''
+          fout.push(`${path.relative(WORKER, f).split(path.sep).join('/')} (${plek}): ${regels.find(l => /Error/.test(l)) ?? 'node --check faalde'}`)
+        }
+      }
+    }
+  }
+  assert.deepEqual(fout, [])
+})
+
+// node --check ziet geen koppelfouten (een import van een naam die niet geëxporteerd wordt, een
+// verkeerd pad). De bestanden die de sessiehouder pas bij een taak via import() laadt
+// (src/handlers.js), worden daarom echt geladen, in een kindproces met een nep-omgeving: hun main()
+// draait alleen als ze zelf het startscript zijn, dus er gaat niets naar buiten. Zonder node_modules
+// van die worker (lokaal soms) slaat de test hem over; in de werkmap van de deploy zijn ze er.
+const LATER_GELADEN = ['postnl-planner/src/index.js', 'postnl-rva/src/index.js']
+test('wat de sessiehouder pas bij een taak laadt (import()), laadt ook echt', (t) => {
+  const handlers = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/handlers.js'), 'utf8')
+  const doelen = [...handlers.matchAll(/import\('\.\.\/\.\.\/([^']+)'\)/g)].map(m => m[1])
+  assert.deepEqual([...doelen].sort(), [...LATER_GELADEN].sort(), 'nieuw import()-doel in handlers.js: zet het in LATER_GELADEN')
+  for (const doel of LATER_GELADEN) {
+    if (!fs.existsSync(path.join(WORKER, doel.split('/')[0], 'node_modules'))) { t.diagnostic(`${doel}: geen node_modules, overgeslagen`); continue }
+    const url = pathToFileURL(path.join(WORKER, doel)).href
+    const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`], {
+      encoding: 'utf8', timeout: 60_000, cwd: os.tmpdir(),
+      env: { PATH: process.env.PATH, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), SUPABASE_URL: 'http://127.0.0.1:9', SUPABASE_SERVICE_ROLE_KEY: 'x', KLANT_ID: '00000000-0000-0000-0000-000000000000' },
+    })
+    assert.equal(r.status, 0, `${doel} laadt niet: ${(r.stderr || r.error?.message || '').split(/\r?\n/).find(l => /Error/.test(l))}`)
+  }
 })
 
 // ---- Niets stapelt zich op zolang de browser open blijft (#600) ----
