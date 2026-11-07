@@ -22,11 +22,11 @@ import { maakOpslag } from './opslag.js'
 import path from 'node:path'
 import { Sessie, WORKER, WERK_ROOT } from './sessie.js'
 import { draaiDepot } from './depot.js'
-import { HANDLERS } from './handlers.js'
+import { HANDLERS, planner, rva } from './handlers.js'
 import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
-import { codeVersie, gewijzigdePaden, raaktSessiehouder } from './codeversie.js'
+import { beslisCode, codeVersie, codeVersieBijStart, codeVersieFout, gewijzigdePaden, headVerschovenOp } from './codeversie.js'
 import { beoordeelGeheugen, beoordeelTotaal, geheugenTekst, meetTotaal, mapMb, vrijGb } from './geheugen.js'
 import { waakhondMs } from './instellingen.js'
 import { zetTijdInLog, tijdStempel } from '../../credentials-shared/src/tijdLog.js'
@@ -74,17 +74,56 @@ async function main() {
 
   // Nieuwe code in de checkout die de sessiehouder raakt: de lopende taken afmaken en met 42
   // stoppen. Code van een andere worker (bv. postnl-rva) geeft geen herstart (codeversie.js).
-  let versie = codeVersie()
+  // Lukt het bepalen van de versie niet (git weigert, matransport#622), dan één melding: zonder
+  // versie merkt dit proces nieuwe code niet op en kan het half op oude code blijven draaien.
+  const startMs = Date.now()
+  let versie = await codeVersieBijStart()
+  let onbekendGemeld = false
+  let onbekendGelogdOp = 0
+  const versieOnbekend = (wanneer) => {
+    if (Date.now() - onbekendGelogdOp >= 60 * 60_000) { // hoogstens één logregel per uur
+      onbekendGelogdOp = Date.now()
+      log.warn(`Codeversie onbekend (${wanneer}): ${codeVersieFout()}`)
+    }
+    if (onbekendGemeld) return
+    onbekendGemeld = true
+    // Eigen bron: check_operationele_fouten dempt per bron 6 uur, en onder 'postnl-sessie' zou
+    // een eerdere melding van die dag deze push tegenhouden.
+    melden({ bron: 'postnl-sessie-codeversie', soort: 'codeversie_onbekend', detail: `git rev-parse HEAD faalt ${wanneer} (${codeVersieFout()}); nieuwe code wordt niet opgemerkt` })
+      .catch(err => log.error(`Melden mislukt: ${err?.message ?? err}`))
+  }
+  if (versie) log.log(`Codeversie bij de start: ${versie.slice(0, 7)}`)
+  else versieOnbekend('bij de start')
+
+  // Planner en RVA meteen laden, uit dezelfde versie als de rest (matransport#622): pas bij de
+  // eerste taak laden gaf na een deploy nieuwe planner-code naast oude gedeelde modules
+  // ("does not provide an export named …"). Mislukt het hier, dan probeert de taak het later.
+  for (const [naam, m] of [['planner', planner], ['rva', rva]]) {
+    try { await m.laad() } catch (err) { log.error(`Vooraf laden van ${naam} mislukt (taak probeert later): ${err?.message ?? err}`) }
+  }
+
   const codeCheck = setInterval(() => {
     const nu = codeVersie()
-    if (!versie || !nu || nu === versie) return
-    const paden = gewijzigdePaden(versie, nu)
-    if (paden && !raaktSessiehouder(paden)) {
+    const paden = versie && nu && nu !== versie ? gewijzigdePaden(versie, nu) : null
+    let verschovenNaStart = null
+    if (!versie && nu) { const op = headVerschovenOp(); verschovenNaStart = op == null ? null : op > startMs }
+    const besluit = beslisCode(versie, nu, paden, { verschovenNaStart })
+    if (besluit === 'gelijk') return
+    if (besluit === 'onbekend') { versieOnbekend('tijdens het draaien'); return }
+    if (besluit === 'aannemen') {
+      log.log(`Codeversie weer bekend (${nu.slice(0, 7)}), sinds de start niet verschoven: geen herstart`)
+      versie = nu
+      return
+    }
+    if (besluit === 'geen_herstart') {
       log.log(`Nieuwe code (${nu.slice(0, 7)}) raakt de sessiehouder niet: geen herstart`)
       versie = nu
       return
     }
-    log.log(`Nieuwe code (${nu.slice(0, 7)}): herstart na de lopende taak`); stop = true; exitCode = 42
+    log.log(versie
+      ? `Nieuwe code (${nu.slice(0, 7)}): herstart na de lopende taak`
+      : `Codeversie weer bekend (${nu.slice(0, 7)}), was onbekend bij de start: herstart na de lopende taak`)
+    stop = true; exitCode = 42
   }, cfg.codeCheckMin * 60_000)
 
   // Geheugenwacht (geheugen.js, matransport#578, #600): elke minuut de heap en het totaal met

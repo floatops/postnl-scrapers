@@ -136,4 +136,11 @@ Per klant: `postnl_instellingen.actief = true` (migratie). Tot dan doet de sessi
 
 ## Herstart bij nieuwe code
 
-Elke 5 min kijkt het proces naar `git HEAD` van de checkout. Nieuwe code: de lopende taken afmaken, sessies sluiten (reden `herstart`), exit 42; de wrapper op de VPS start meteen opnieuw (één nieuwe login per depot).
+Elke 5 min kijkt het proces naar `git HEAD` van de checkout. Nieuwe code: de lopende taken afmaken, sessies sluiten (reden `herstart`), exit 42; de wrapper op de VPS start meteen opnieuw (één nieuwe login per depot). Bij de start staat de versie in het log ("Codeversie bij de start: …").
+
+**Valkuil: git onder een andere gebruiker (matransport#622).** Stack A (root) en Stack B (`floatops-b`) delen de checkout `/opt/postnl-scrapers`, en die is van root. Git weigert dan onder `floatops-b` met "detected dubious ownership". Tot 07-11 gaf `codeVersie()` daardoor stil `null` en sloeg de controle altijd over: Stack B zag nieuwe code nooit. Erger dan alleen geen update: wat het proces al geladen had bleef oud, wat `handlers.js` pas bij een taak met `import()` laadt was nieuw. Zo faalde Plannen op 07-11 vanaf 20:27 steeds met "does not provide an export named 'gooiBijProxyWeigering'" (het proces startte 22 s vóór de deploy van f9be94f). Daarom:
+- elke git-aanroep gaat via `gitArgs()` met `-c safe.directory=*` (alleen lezen; de test faalt bij een kale `execFileSync('git', …)` in `codeversie.js`);
+- bij de start drie pogingen (`codeVersieBijStart`), zodat één hapering van git niet meteen "onbekend" wordt;
+- een onbekende versie geeft hoogstens één logregel per uur en één melding `codeversie_onbekend` onder een eigen bron `postnl-sessie-codeversie` (db_fout_log; een eigen bron omdat `check_operationele_fouten` per bron 6 uur dempt);
+- was de versie bij de start onbekend en wordt hij later wel bekend, dan herstart het proces alleen als HEAD na de start verschoof (reflog, `headVerschovenOp`) of als dat niet te zeggen is; anders neemt hij de versie gewoon aan (geen onnodige login). Besluit in `beslisCode()`, met test;
+- **planner en RVA worden bij de start geladen**, niet pas bij de eerste taak. Anders laadt de eerste Plannen- of RVA-taak na een deploy nieuwe code naast de oude gedeelde modules die al in het geheugen zitten, tot de codecheck (elke 5 min) de herstart vraagt. Mislukt het vooraf laden, dan logt hij dat en probeert de taak het later zoals vroeger.
