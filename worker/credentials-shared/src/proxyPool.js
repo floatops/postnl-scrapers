@@ -2,14 +2,15 @@
 // (floatops/matransport#173).
 //
 // Twee standen:
-// - PROXY_POOL=true (de VPS zet dit altijd): elke sessie vraagt de database om het
+// - PROXY_POOL=true (de VPS zet dit als de stack eigen proxies heeft of de .env het zegt,
+//   matransport worker/vps-server/src/proxyPoolStand.js): elke sessie vraagt de database om het
 //   volgende IP uit de eigen proxy-pool (`volgende_proxy()`, rouleert 1..n over alle
 //   depots) en sluit af met `proxy_gebruik_afsluiten()` → uitkomst ok / fout /
 //   blokkade in `proxy_gebruik_log`. Een blokkade zet het IP in quarantaine en stuurt
 //   super_admin een pushmelding; de volgende sessie krijgt vanzelf een ander IP.
 //   Geen bruikbaar IP = een harde fout, nooit stil via het (geblokkeerde) VPS-IP.
-// - anders (GitHub Actions): het oude gedrag — optioneel één vaste PROXY_SERVER uit
-//   de omgeving, niets gelogd. De pool-proxies werken daar ook niet: ze accepteren
+// - anders (Stack B zolang die geen eigen proxies heeft, of de noodknop PROXY_POOL=false):
+//   rechtstreeks, of optioneel via één vaste PROXY_SERVER uit de omgeving, niets gelogd. De pool-proxies werken daar ook niet: ze accepteren
 //   alleen verkeer vanaf het VPS-IP.
 //
 // Uitleg van de pool zelf: matransport worker/proxy-pool/PROXY_POOL.md.
