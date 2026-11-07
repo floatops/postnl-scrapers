@@ -41,14 +41,35 @@ export class ProxyGeweigerdError extends Error {
   }
 }
 
-// Een 407 komt alleen van een proxy. Gemeten (proef-lokaal, sporen van 07-11): page.goto gooit dan
-// NIET. Hij slaagt, met een response met status 407 en de header proxy-authenticate, en laat een
-// leeg document staan onder het gevraagde adres. Daarom bleef het 10 uur "Planning-menu niet
-// zichtbaar (url: …/index.html)". Elke navigatie moet dus naar de status kijken.
+// Een 407 komt alleen van een proxy. Gemeten op de echte Decodo (matransport#613): page.goto geeft dan
+// nooit een netwerkfout, er blijft een leeg document staan onder het gevraagde adres.
+//   networkidle, commit       goto slaagt meteen, met een response met status 407
+//   domcontentloaded, load    goto wacht tot zijn time-out en de response gaat verloren
+// Daarom bleef het 10 uur "Planning-menu niet zichtbaar (url: …/index.html)". Elke navigatie moet
+// dus naar de 407 kijken: gooiBijProxyWeigering na networkidle of commit, anders gaNaarMetProxyControle.
 export const isProxyWeigering = (response) => response?.status?.() === 407
 
+const WEIGERING = 'De proxy-aanbieder weigert de login (407)'
 export function gooiBijProxyWeigering(response) {
-  if (isProxyWeigering(response)) throw new ProxyGeweigerdError('De proxy-aanbieder weigert de login (407)')
+  if (isProxyWeigering(response)) throw new ProxyGeweigerdError(WEIGERING)
+}
+
+// page.goto die bij een 407 meteen gooit, ook met domcontentloaded (anders 60 s wachten op niets).
+// Een andere fout gooit gewoon, tenzij `stil`: dan null, net als .catch(() => null). goto heeft een
+// eigen time-out; loopt hij na een 407 nog even door, dan gaat zijn uitkomst nergens heen.
+export async function gaNaarMetProxyControle(page, url, { stil = false, ...opties } = {}) {
+  let weiger
+  const weigering = new Promise((_, nee) => { weiger = nee })
+  const kijk = (res) => { if (isProxyWeigering(res)) weiger(new ProxyGeweigerdError(WEIGERING)) }
+  page.on('response', kijk)
+  try {
+    return await Promise.race([page.goto(url, opties), weigering])
+  } catch (err) {
+    if (err.name === 'ProxyGeweigerdError' || !stil) throw err
+    return null
+  } finally {
+    page.off('response', kijk)
+  }
 }
 
 // Zo meldt Chromium een verzoek dat de proxy niet doorliet (requestfailed, of een fout uit goto als de

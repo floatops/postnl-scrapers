@@ -145,6 +145,24 @@ test('huidigeProxy: dezelfde keuze als volgende_proxy, alleen lezen; zonder pool
   await assert.rejects(huidigeProxy(keten(null, { message: 'kapot' })), /kapot/)
 })
 
+// Gemeten op de echte Decodo: met domcontentloaded blijft goto hangen tot zijn time-out.
+test('gaNaarMetProxyControle: 407 gooit meteen terwijl goto nog hangt, ook met stil; luisteraar weg', async () => {
+  const { gaNaarMetProxyControle } = await import('../src/proxyPool.js')
+  const { EventEmitter } = await import('node:events')
+  const page = new EventEmitter()
+  page.goto = () => new Promise(() => {})   // hangt, zoals domcontentloaded bij een 407
+  setTimeout(() => page.emit('response', { status: () => 200 }), 5)
+  setTimeout(() => page.emit('response', { status: () => 407 }), 20)
+  await assert.rejects(gaNaarMetProxyControle(page, 'https://x/', { stil: true }), { name: 'ProxyGeweigerdError' })
+  assert.equal(page.listenerCount('response'), 0)
+  page.goto = async () => { throw new Error('page.goto: Timeout 60000ms exceeded.') }
+  await assert.rejects(gaNaarMetProxyControle(page, 'https://x/', {}), /Timeout/, 'een andere fout gaat gewoon door')
+  assert.equal(await gaNaarMetProxyControle(page, 'https://x/', { stil: true }), null, 'stil: net als .catch(() => null)')
+  const antwoord = { status: () => 200 }
+  page.goto = async () => antwoord
+  assert.equal(await gaNaarMetProxyControle(page, 'https://x/', {}), antwoord)
+})
+
 // Gemeten met een echte Chromium (proef-lokaal): goto gooit niet bij een 407, hij geeft een response.
 test('gooiBijProxyWeigering: alleen een response met status 407', async () => {
   const { gooiBijProxyWeigering } = await import('../src/proxyPool.js')

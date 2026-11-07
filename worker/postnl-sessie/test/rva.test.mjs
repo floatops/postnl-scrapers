@@ -295,7 +295,7 @@ test('rva-handler: schermfout → mislukt, RVA-tabblad herladen, niet gooien (ge
     leesRitDag: async () => { throw new Error('locator.waitFor: Timeout 15000ms exceeded.') },
   })
   const s = nepSessie()
-  s.rvaTab = async function () { this.rvaPage = { naam: 'rva-tab', on() {}, goto: async (u) => { geladen = u } }; return this.rvaPage }
+  s.rvaTab = async function () { this.rvaPage = { naam: 'rva-tab', on() {}, off() {}, goto: async (u) => { geladen = u } }; return this.rvaPage }
   const db = nepDbTabellen({ ...opdracht, soort: 'ophalen', handelingen: [] })
   const uit = await HANDLERS.rva({ sessie: s, supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
   assert.equal(geladen, 'https://rva.example/')
@@ -350,7 +350,7 @@ test('rva-handler bijlezen: leest de rit-dag die ontbreekt naar rva_regels; misl
     volgendeBijlezen: (await import('../../postnl-rva/src/plan.js')).volgendeBijlezen,
     leesRitDag: async () => { throw new Error('locator.waitFor: Timeout 15000ms exceeded.') },
   })
-  s.rvaTab = async function () { this.rvaPage = { naam: 'rva-tab', on() {}, goto: async () => {} }; return this.rvaPage }
+  s.rvaTab = async function () { this.rvaPage = { naam: 'rva-tab', on() {}, off() {}, goto: async () => {} }; return this.rvaPage }
   const fout = await HANDLERS.rvaBijlezen({ sessie: s, supabase: db, klantId: 'k', nu, cfg: AAN }, nieuweDag('2026-11-04'))
   assert.equal(fout.run, null)
   assert.ok(bijlezenMislukt.get('k|Depot A|proefrit|Za') > nu.getTime(), 'een uur overslaan')

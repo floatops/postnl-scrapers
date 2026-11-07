@@ -1,7 +1,7 @@
 // Inloggen bij PostNL en naar het depot-portaal gaan. Eén versie voor alle PostNL-workers
 // (floatops/matransport#562); stond eerder in ritmonitor, dagplanning en planner apart.
 // Geen eigen packages: de aanroeper geeft de Playwright-page mee.
-import { detecteerBlok, isBlokStatus, proxyPoolAan, ProxyBlokkadeError, PROXY_NETWERKFOUT, gooiBijProxyWeigering } from '../proxyPool.js'
+import { detecteerBlok, isBlokStatus, proxyPoolAan, ProxyBlokkadeError, PROXY_NETWERKFOUT, gooiBijProxyWeigering, gaNaarMetProxyControle } from '../proxyPool.js'
 
 export const SEL_LOGIN_VELD = 'input[type="text"], input[type="email"]'
 export const SEL_PLANNING = 'a.mx-name-menuBar1-2, a[title="Planning"]'
@@ -52,7 +52,7 @@ export async function login(page, depot, { log = console } = {}) {
     // Stille SSO. Komt die uit op een fout van PostNL (06-11 15:43: 500 op /oauth/v2/callback), dan
     // zou hier niets meer gebeuren: één keer opnieuw naar het depot. Tot #600 telde dit als een
     // verlopen login, wachtte het 90 s op een loginveld dat nooit kwam en werd het 'gegooid'.
-    if (/\/oauth\/|error-page/.test(page.url())) gooiBijProxyWeigering(await page.goto(depot.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => null))
+    if (/\/oauth\/|error-page/.test(page.url())) await gaNaarMetProxyControle(page, depot.url, { waitUntil: 'domcontentloaded', timeout: 60_000, stil: true })
     return false
   }
   if (stand === 'niets') {

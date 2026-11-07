@@ -7,7 +7,7 @@ import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijve
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
 import { leesDeadlineTekst, volgMendix } from '../../postnl-planner/src/mendix.js'
 import { kiesDag, dagVenster, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
-import { gooiBijProxyWeigering } from '../../credentials-shared/src/proxyPool.js'
+import { gaNaarMetProxyControle } from '../../credentials-shared/src/proxyPool.js'
 import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, aanvraagKlaar } from './dagstatus.js'
 
 const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
@@ -83,7 +83,8 @@ async function rvaKlaar(sessie, r) {
 async function herstelRvaTab(sessie, r) {
   try {
     const page = await sessie.rvaTab()
-    gooiBijProxyWeigering(await page.goto(r.RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }))   // 407: anders 90 s wachten (matransport#613)
+    // Bij een 407 komt domcontentloaded nooit: dan meteen stoppen (matransport#613).
+    await gaNaarMetProxyControle(page, r.RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 })
     await r.openRva(page, { login: (p) => login(p, sessie.depot, { log: sessie.log }) })
     return true
   } catch {

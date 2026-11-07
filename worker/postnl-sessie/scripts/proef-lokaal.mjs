@@ -23,7 +23,7 @@ import { mergeInstellingen } from '../src/instellingen.js'
 import { SEL_PLANNING, opStartpagina, login } from '../../credentials-shared/src/postnl/login.js'
 import { volgMendix, LEZEN_MS } from '../../postnl-planner/src/mendix.js'
 import { metLimiet, handlerKlaar } from '../src/depot.js'
-import { toetsProxy } from '../../credentials-shared/src/proxyPool.js'
+import { toetsProxy, gaNaarMetProxyControle } from '../../credentials-shared/src/proxyPool.js'
 
 const sessies = new Set()
 let gegooid = false
@@ -258,6 +258,13 @@ try {
       const t = await toetsProxy(fout.proxy)
       assert.equal(t.geweigerd, true, `toetsProxy ziet de weigering (${t.status ?? t.fout})`)
       assert.equal(classificeer({ fout, proxyGeweigerd: t.geweigerd }), 'proxy_geweigerd')
+      // Met domcontentloaded (RVA) komt goto bij een 407 nooit terug, gemeten op de echte Decodo.
+      const b = await chromium.launch({ proxy: fout.proxy })
+      const p = await b.newPage()
+      const beginRva = Date.now()
+      await assert.rejects(gaNaarMetProxyControle(p, 'https://rva.proef.invalid/', { waitUntil: 'domcontentloaded', timeout: 20_000 }), { name: 'ProxyGeweigerdError' })
+      assert.ok(Date.now() - beginRva < 5_000, 'meteen, niet op de time-out van goto')
+      await b.close()
       console.log(`✔ storing: proxy weigert (407): naarDepot gooit na ${Math.round(duur / 1000)} s "${String(fout.message).split('\n')[0].slice(0, 90)}", toets ziet 407`)
     } finally {
       for (const k of ['PROXY_SERVER', 'PROXY_USERNAME', 'PROXY_PASSWORD']) delete process.env[k]
