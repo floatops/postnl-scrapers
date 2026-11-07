@@ -120,7 +120,13 @@ test('wat de sessiehouder pas bij een taak laadt (import()), laadt ook echt', (t
   const doelen = [...handlers.matchAll(/import\('\.\.\/\.\.\/([^']+)'\)/g)].map(m => m[1])
   assert.deepEqual([...doelen].sort(), [...LATER_GELADEN].sort(), 'nieuw import()-doel in handlers.js: zet het in LATER_GELADEN')
   for (const doel of LATER_GELADEN) {
-    if (!fs.existsSync(path.join(WORKER, doel.split('/')[0], 'node_modules'))) { t.diagnostic(`${doel}: geen node_modules, overgeslagen`); continue }
+    if (!fs.existsSync(path.join(WORKER, doel.split('/')[0], 'node_modules'))) {
+      // In de deploy (auto-deploy-scrapers.sh zet INVARIANTEN_STRENG) is overslaan rood: daar
+      // betekent het dat npm install mislukte, en dan zou de bescherming stil uit staan.
+      assert.ok(!process.env.INVARIANTEN_STRENG, `${doel}: geen node_modules, de laadtest kan niet draaien`)
+      t.diagnostic(`${doel}: geen node_modules, overgeslagen`)
+      continue
+    }
     const url = pathToFileURL(path.join(WORKER, doel)).href
     const r = spawnSync(process.execPath, ['--input-type=module', '-e', `await import(${JSON.stringify(url)})`], {
       encoding: 'utf8', timeout: 60_000, cwd: os.tmpdir(),
