@@ -105,7 +105,10 @@ export class Sessie {
   async openen() {
     this.proxy = await kiesProxy(this.supabase, { worker: WORKER, depot: this.depot })
     // tracesDir: anders in de eigen playwright-artifacts-map van de browser, die pas bij sluiten weggaat.
-    const opties = { headless: this.headless, args: ['--disable-dev-shm-usage'], tracesDir: this.tracesDir }
+    // handleSIGTERM/SIGINT uit: anders sluit Playwright bij een SIGTERM meteen de browser, en faalt de
+    // lopende taak (07-11 22:12, proef matransport#613: Waddinxveen "browser_weg"). index.js stopt zelf
+    // netjes na de lopende taak. Valt het proces hard weg, dan sluit Chromium vanzelf: de pipe is dicht.
+    const opties = { headless: this.headless, args: ['--disable-dev-shm-usage'], tracesDir: this.tracesDir, handleSIGTERM: false, handleSIGINT: false }
     if (process.env.CHROMIUM_EXECUTABLE_PATH) opties.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
     if (this.proxy) opties.proxy = this.proxy.proxy
     try {

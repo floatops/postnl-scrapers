@@ -134,6 +134,10 @@ De sessiehouder houdt het sessie-slot vast (lease 3 min). **Een hartslag verleng
 
 Per klant: `postnl_instellingen.actief = true` (migratie). Tot dan doet de sessiehouder niets en draaien de losse scripts zoals altijd.
 
+## Stoppen met SIGTERM
+
+`index.js` vangt SIGTERM en SIGINT zelf op en stopt na de lopende taak (sessies dicht met reden `herstart`). Daarom start de browser met `handleSIGTERM: false` en `handleSIGINT: false`: met de standaard van Playwright sluit die bij een SIGTERM meteen de browser, en faalde de lopende taak als `browser_weg` (gezien bij de storingsproef van 07-11, matransport#613). Zo stopt ook de noodknop (`PROXY_POOL`) en de bewaker.
+
 ## Herstart bij nieuwe code
 
 Elke 5 min kijkt het proces naar `git HEAD` van de checkout. Nieuwe code: de lopende taken afmaken, sessies sluiten (reden `herstart`), exit 42; de wrapper op de VPS start meteen opnieuw (één nieuwe login per depot). Bij de start staat de versie in het log ("Codeversie bij de start: …").

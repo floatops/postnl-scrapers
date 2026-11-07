@@ -195,6 +195,14 @@ test('wachten op de proxy houdt de waakhond, het slot en stoppen in leven (#613)
   assert.match(lus, /hartslag\?\.weg/, 'zonder slot niet doorwachten')
 })
 
+test('een SIGTERM laat de browser staan tot de lopende taak klaar is: index.js stopt zelf netjes (#613)', () => {
+  const sessie = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/sessie.js'), 'utf8')
+  const index = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/index.js'), 'utf8')
+  assert.match(sessie, /handleSIGTERM: false/, 'anders sluit Playwright de browser midden in de taak')
+  assert.match(sessie, /handleSIGINT: false/)
+  assert.match(index, /process\.on\('SIGTERM'/, 'en dan moet index.js het signaal zelf afhandelen')
+})
+
 test('sluiten van een context krijgt de tijd om de video af te maken, binnen wat de hartslag dekt (#600)', async () => {
   const { CONTEXT_SLUIT_MS } = await import('../src/sessie.js')
   assert.ok(CONTEXT_SLUIT_MS >= 120_000, '06-11: 30 s was te kort, elk videosegment gaf een nieuwe login')
