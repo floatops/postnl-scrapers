@@ -41,7 +41,7 @@ export function decrypt(encryptedText, keyHex) {
  * @param {object} supabase - Supabase-client (service role)
  * @param {string} klantId
  * @param {'postnl'|'movemove'} systeem
- * @returns {Promise<Array<{id: string, naam: string|null, url: string|null, username: string, password: string, storageState: string}>>}
+ * @returns {Promise<Array<{id: string, naam: string|null, url: string|null, username: string, password: string, storageState: null}>>}
  */
 export async function getDepots(supabase, klantId, systeem) {
   if (!klantId) throw new Error('getDepots: klantId ontbreekt')
@@ -62,6 +62,12 @@ export async function getDepots(supabase, klantId, systeem) {
     url: d.depot_url,
     username: d.username,
     password: decrypt(d.password_encrypted, key),
-    storageState: `.${systeem}-auth-state-${(d.depot_naam ?? 'default').toLowerCase().replace(/\s+/g, '-')}.json`,
+    // Nooit een opgeslagen sessie op schijf (floatops/matransport#609). Het pad was
+    // `.<systeem>-auth-state-<depotnaam>.json` in de werkmap: zonder klant of stack in de
+    // naam, en Stack A en B delen deze checkout. Twee klanten op hetzelfde depot (Den
+    // Hoorn) deelden zo één bestand: de ene stack kon de PostNL-sessie van de andere
+    // inladen. Met de proxy-pool stond dit al uit; sinds de pool per stack uit kan
+    // (PROXY_POOL=false, matransport#606) niet meer. Elke run logt dus vers in.
+    storageState: null,
   }))
 }

@@ -11,7 +11,7 @@ import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekL
 
 import {
   kiesProxy, sluitProxyAf, uitkomstBijFout,
-  proxyPoolAan, ProxyBlokkadeError,
+  ProxyBlokkadeError,
 } from '../../credentials-shared/src/proxyPool.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot, sessiehouderHeeftAlles } from '../../credentials-shared/src/sessieSlot.js'
@@ -36,7 +36,6 @@ const CONFIG = {
   timezone: process.env.TZ || 'Europe/Amsterdam',
   headless: String(process.env.POSTNL_HEADLESS ?? 'true').toLowerCase() !== 'false',
   slowMo: Number(process.env.POSTNL_SLOWMO || 0),
-  storageState: process.env.POSTNL_STORAGE_STATE || '.postnl-auth-state.json',
 }
 
 function requireEnv(name) {
@@ -252,8 +251,7 @@ async function syncDepotMetSlot(depot, markeerGereden, allesDatums, syncDatum, v
 // `alleen`: alleen deze depots (de herkansing doet alleen wat faalde).
 async function syncPostnlStops(markeerGereden = false, allesDatums = false, syncDatum = null, alleen = null) {
   const alleDepots = await getDepots(supabase, KLANT_ID, 'postnl')
-  // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij een ander IP.
-  if (proxyPoolAan()) for (const d of alleDepots) d.storageState = null
+  // Geen opgeslagen sessie: getDepots() geeft storageState altijd null (matransport#609).
   if (alleDepots.length === 0) throw new Error('Geen depots geconfigureerd (klant_credentials leeg voor deze klant)')
   // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
   installeerNeutraleConsole({ klantId: KLANT_ID, depots: alleDepots })

@@ -402,9 +402,7 @@ async function syncRitmonitor() {
     return
   }
   const runLogId = await startRunLog()
-  // Met de proxy-pool geen opgeslagen sessie hergebruiken: die cookies horen bij
-  // een ander IP, en het bewezen patroon (GitHub Actions) is elke run vers inloggen.
-  if (proxyPoolAan()) for (const d of DEPOTS) d.storageState = null
+  // Geen opgeslagen sessie: getDepots() geeft storageState altijd null (matransport#609).
   // Publieke repo: vanaf hier geen depotnamen, logins of URL's meer in de run-log.
   installeerNeutraleConsole({ klantId: KLANT_ID, depots: DEPOTS })
   if (DEPOTS.length === 0) {
