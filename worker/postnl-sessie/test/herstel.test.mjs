@@ -103,3 +103,16 @@ test('ritmonitor-samenvatting: zoals de wachtdogs het verwachten', () => {
   const leeg = samenvatting(['A'], { A: { ok: 7, maxRijen: 0, leegBevestigd: true, fouten: [] } })
   assert.deepEqual(leeg.leeg_onbevestigd, [], 'lege lijst bevestigd door PostNL is normaal ( #357 )')
 })
+
+// matransport#613 (07-11): de proxy-aanbieder weigert de login (407). Gaat voor alles: het lege scherm
+// of de time-out die erbij hoort is daar het gevolg van. Nooit een nieuwe login, ook niet na meer fouten.
+test('proxy geweigerd: eigen soort, gaat voor de rest, en het herstel is wachten, nooit inloggen', () => {
+  assert.equal(classificeer({ fout: new Error('Planning-menu niet zichtbaar'), proxyGeweigerd: true }), 'proxy_geweigerd')
+  assert.equal(classificeer({ url: 'https://www.loginpostnl.net/login', depotHost: DEPOT, fout: new Error('x'), proxyGeweigerd: true }), 'proxy_geweigerd')
+  assert.equal(classificeer({ fout: Object.assign(new Error('x'), { name: 'ProxyGeweigerdError' }) }), 'proxy_geweigerd')
+  assert.equal(classificeer({ fout: Object.assign(new Error('Proxy liet de verbinding niet door'), { proxyFout: true }) }), 'fout', 'zonder toets is een tunnelfout nog een gewone fout')
+  const nu = new Date('2026-11-07T01:30:00Z')
+  const recent = [1, 2, 3].map(i => ({ soort: 'fout', at: new Date(nu - i * 60_000) }))
+  const logins = [1, 2, 3, 4].map(i => new Date(nu - i * 60_000))
+  assert.equal(herstel('proxy_geweigerd', { nu, cfg, recent, logins }), 'proxy_wacht')
+})

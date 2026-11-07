@@ -34,3 +34,26 @@ test('kiesShift: al gekozen shift wacht tot de ritten (RideNumber) binnen zijn e
   assert.ok(Date.now() - begin >= 1_300, `te vroeg klaar (${Date.now() - begin} ms): de ritten waren er nog niet of het was niet stil`)
   assert.equal(geklikt, false, 'een gekozen shift niet opnieuw aanklikken (dat zet hem uit)')
 })
+
+// matransport#613 (07-11 12:16, Den Hoorn): de ritten van shift 01 kwamen pas tijdens de klik op 07
+// binnen. kiesShift zag "een RideNumber na de klik" en ging door: 0 ritten van 07, de deadline van 01,
+// en een vals autorisatie_niet_gezien. Nu eerst laten uitladen, dan tellen, en na de klik weer stil.
+test('kiesShift: late antwoorden van de vorige shift tellen niet als de ritten van de gekozen shift', async () => {
+  const { kiesShift } = await import('../src/postnl/dagplanningScherm.js')
+  const antwoorden = [{ objects: [{ objectType: 'OperationalPlanning.Shift' }] }]
+  let vanafKlik = null
+  const rij = {
+    waitFor: async () => {},
+    evaluate: async () => false,   // niet gekozen
+    click: async () => {
+      vanafKlik = antwoorden.length
+      setTimeout(() => antwoorden.push({ shift: '07', objects: [{ objectType: 'OperationalPlanning.RideNumber' }] }), 300)
+    },
+  }
+  const page = { locator: () => ({ filter: () => ({ first: () => rij }) }) }
+  // Een laat antwoord van shift 01, nét voor de klik onderweg.
+  setTimeout(() => antwoorden.push({ shift: '01', objects: [{ objectType: 'OperationalPlanning.RideNumber' }] }), 200)
+  assert.equal(await kiesShift(page, '07', antwoorden, { ms: 5_000 }), 'ok')
+  assert.equal(antwoorden[vanafKlik - 1].shift, '01', 'het late antwoord van 01 was binnen vóór de klik')
+  assert.equal(antwoorden.at(-1).shift, '07', 'pas klaar als het antwoord van 07 er is')
+})

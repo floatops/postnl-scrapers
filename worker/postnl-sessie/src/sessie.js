@@ -17,7 +17,7 @@
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { kiesProxy, sluitProxyAf } from '../../credentials-shared/src/proxyPool.js'
+import { kiesProxy, sluitProxyAf, isProxyWeigering, PROXY_NETWERKFOUT } from '../../credentials-shared/src/proxyPool.js'
 import { naarDepot, login, volgLogins, volgWachtwoord } from '../../credentials-shared/src/postnl/login.js'
 import { maakLevensmeter, duurTekst } from './levensmeter.js'
 import { volgMendix } from '../../postnl-planner/src/mendix.js'
@@ -59,11 +59,14 @@ export async function ruimOpnamesOp(map, nu = Date.now()) {
     if (st && nu - st.mtimeMs > BEWAAR_DAGEN * 86400_000) await fs.rm(path.join(fout, n), { force: true })
   }
 }
-const VIDEO = { width: 1280, height: 720 }
+// Zelfde verhouding als de viewport (1440x900). Tot 07-11 1280x720: met vier opnames tegelijk liep
+// ffmpeg (VP8, één thread) zo ver achter dat het sluiten van een segment opliep tot boven de 150 s,
+// en elke keer kostte dat een sessie en een login (matransport#613). 960x600 = 37% minder pixels.
+export const VIDEO = { width: 960, height: 600 }
 
 export class Sessie {
-  constructor({ depot, klantId, supabase, chromium, opslag, cfg, log = console, headless = true }) {
-    Object.assign(this, { depot, klantId, supabase, chromium, opslag, cfg, log, headless })
+  constructor({ depot, klantId, supabase, chromium, opslag, cfg, log = console, headless = true, contextSluitMs = CONTEXT_SLUIT_MS }) {
+    Object.assign(this, { depot, klantId, supabase, chromium, opslag, cfg, log, headless, contextSluitMs })
     this.browser = null
     this.context = null
     this.page = null
@@ -77,6 +80,10 @@ export class Sessie {
     this.herlogins = 0
     this.huidigeTaak = null
     this.herloginTaak = 0    // fouten 460 tijdens de huidige taak (matransport#598)
+    // Proxy-signalen tijdens de huidige taak, op beide tabbladen (matransport#613): 407-antwoorden
+    // (de aanbieder weigert) en verzoeken die de proxy niet doorliet (dan toetst de depot-lus).
+    this.proxy407 = 0
+    this.tunnelFouten = 0
     // Tijdstippen (ms) van alle 460's in deze sessie. Bewust een andere naam dan `herlogins` (het
     // aantal logins in hetzelfde tabblad, een getal naar postnl_sessies.herlogins): in 33f0ae9 deelden
     // ze één naam, waardoor het afsluiten van een sessie faalde en een 460 na een her-login het
@@ -117,6 +124,11 @@ export class Sessie {
       this.log.log(`[${this.depot.naam}] Ingelogd (${this.proxy?.label ?? 'geen proxy'})`)
     } catch (err) {
       err.page = this.page
+      // De proxy van deze poging: sluiten() vergeet hem, de depot-lus wil hem nog toetsen (#613).
+      err.proxy = this.proxy?.proxy ?? null
+      // De depot-lus heeft nog geen sessie: geef mee wat de tabbladen tijdens het inloggen zagen.
+      err.proxy407 = this.proxy407
+      err.tunnelFouten = this.tunnelFouten
       await this.sluiten('login_mislukt', { fout: err }).catch(() => {})
       throw err
     }
@@ -132,6 +144,7 @@ export class Sessie {
     volgWachtwoord(this.context, { voor: () => this.#tracePauze(), na: () => this.#traceHervat() })
     this.page = await this.context.newPage()
     volgLogins(this.page, () => this.#verlopen('oompd'))
+    this.#volgTunnel(this.page)
     this.mendix = volgMendix(this.page)
     this.page.on('response', (res) => {
       if (!res.url().includes('/xas/')) return
@@ -157,8 +170,20 @@ export class Sessie {
     if (!this.rvaPage || this.rvaPage.isClosed()) {
       this.rvaPage = await this.context.newPage()
       volgLogins(this.rvaPage, () => this.#verlopen('rva'))
+      this.#volgTunnel(this.rvaPage)
     }
     return this.rvaPage
+  }
+
+  // Verzoeken die de proxy niet doorliet. 07-11 (matransport#613): de aanbieder gaf 407 op elke
+  // CONNECT; in het RVA-tabblad gaf dat "Fout – Er is een fout opgetreden" en lege pagina's. Een 407
+  // is de aanbieder zelf (gemeten: response met status 407, gevolgd door requestfailed met
+  // ERR_TUNNEL_CONNECTION_FAILED); alleen de tunnelfout laat de depot-lus nog toetsen.
+  #volgTunnel(page) {
+    page.on('response', (res) => { if (isProxyWeigering(res)) this.proxy407++ })
+    page.on('requestfailed', (req) => {
+      if (PROXY_NETWERKFOUT.test(req.failure()?.errorText ?? '')) this.tunnelFouten++
+    })
   }
 
   // RVA openen als het aanstaat. Lukt het niet, dan gaat de sessie gewoon door (OOM PD werkt);
@@ -230,6 +255,8 @@ export class Sessie {
   async taakBegin(naam) {
     this.huidigeTaak = naam
     this.herloginTaak = 0
+    this.proxy407 = 0
+    this.tunnelFouten = 0
     this.antwoorden = []
     this.tracePauzeVan = null
     if (this.context) await this.#startTrace(naam)
@@ -285,13 +312,34 @@ export class Sessie {
     await grens(oud.context.tracing.stop(), SLUIT_MS, 'Trace stoppen').catch(() => {})
     this.traceLoopt = false
     const sluitBegin = Date.now()
-    await grens(oud.context.close(), CONTEXT_SLUIT_MS, 'Context sluiten')
-    this.log.log(`[${this.depot.naam}] Videosegment: context dicht in ${Math.round((Date.now() - sluitBegin) / 1000)} s`)
+    // Eerst de tabbladen leeg: daarna praat de oude context niet meer met PostNL. Niet page.close():
+    // die wacht net als context.close() op ffmpeg, en het tabblad blijft zolang verkeer geven
+    // (gemeten: 8 s ffmpeg = 8 s page.close(), about:blank 25 ms en daarna geen verzoek meer).
+    let leeg = true
+    for (const p of [oud.page, oud.rvaPage]) {
+      if (p && !p.isClosed()) await grens(p.goto('about:blank'), SLUIT_MS, 'Tabblad leegmaken').catch((e) => { leeg = false; this.log.warn(`[${this.depot.naam}] ${e.message}`) })
+    }
+    // context.close() wacht tot ffmpeg de video's af heeft. Liep dat uit (06-11: tot boven de 150 s,
+    // elke keer een sessie en een login kwijt, matransport#613), dan is er niets mis met de sessie:
+    // de tabbladen zijn leeg. Dan door met de nieuwe context; de half geschreven video van dit
+    // segment wordt niet bewaard, en de map gaat weg zodra het sluiten toch klaar is.
+    const dicht = oud.context.close()
+    let videoKlaar = true
+    try {
+      await grens(dicht, this.contextSluitMs, 'Context sluiten')
+      this.log.log(`[${this.depot.naam}] Videosegment: context dicht in ${Math.round((Date.now() - sluitBegin) / 1000)} s`)
+    } catch (err) {
+      if (!leeg) throw err   // het oude tabblad draait nog: geen tweede Mendix ernaast, de sessie gaat dicht
+      videoKlaar = false
+      this.log.warn(`[${this.depot.naam}] Videosegment: ${err.message}; tabbladen zijn leeg, verder zonder de video van dit segment`)
+      this.opslag.gebeurtenis(this.id, { soort: 'video_traag', sec: Math.round((Date.now() - sluitBegin) / 1000) }).catch?.(() => {})
+      dicht.catch(() => {}).finally(() => fs.rm(oud.dir, { recursive: true, force: true }).catch(() => {}))
+    }
     this.rvaPage = null
     await fs.rm(this.tracesDir, { recursive: true, force: true }).catch(() => {})   // resources/ hoort bij de oude context
     await this.#legeTraces()
     await this.#nieuweContext(state)
-    await this.#bewaarVideo(oud.page, oud.dir, this.incidentInSegment, oud.rvaPage)
+    if (videoKlaar) await this.#bewaarVideo(oud.page, oud.dir, this.incidentInSegment, oud.rvaPage)
     this.incidentInSegment = false
     this.segmentOm = Date.now()
     try {
@@ -300,6 +348,8 @@ export class Sessie {
       if (ingelogd) return false   // telt de levensmeter (login in dit tabblad)
       return true
     } catch (err) {
+      // Een geweigerde proxy is geen verlopen sessie: de depot-lus moet hem zien (matransport#613).
+      if (err.name === 'ProxyGeweigerdError') throw err
       return false
     }
   }
@@ -336,7 +386,7 @@ export class Sessie {
     this.rvaPage = null
     if (this.context) {
       await grens(this.context.tracing.stop(), SLUIT_MS, 'Trace stoppen').catch(() => {})
-      await grens(this.context.close(), CONTEXT_SLUIT_MS, 'Context sluiten').catch(() => {})
+      await grens(this.context.close(), this.contextSluitMs, 'Context sluiten').catch(() => {})
     }
     if (this.browser) await grens(this.browser.close(), SLUIT_MS, 'Browser sluiten').catch(e => this.log.warn(`[${this.depot.naam}] ${e.message}`))
     this.context = null

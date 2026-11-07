@@ -8,6 +8,7 @@ import { mergeInstellingen as mergeInstellingenEcht } from '../src/instellingen.
 // De taak 'gisteren' (nalezen van de vorige werkdag) heeft eigen tests; hier staat hij uit.
 const mergeInstellingen = (c = {}, ...rest) => mergeInstellingenEcht({ gisterenNalezen: false, ...c }, ...rest)
 import { nieuweDag } from '../src/dagstatus.js'
+import { ProxyGeweigerdError } from '../../credentials-shared/src/proxyPool.js'
 
 const DEPOT = { naam: 'Depot A', url: 'https://depot-a.example/index.html' }
 
@@ -39,10 +40,11 @@ function nepSessies(log) {
   return () => {
     const s = {
       nr: ++n, id: `s${n}`, depotHost: 'depot-a.example', leeftijdMin: 1, segmentOm: Date.now(), lezingen: 0,
-      url: DEPOT.url, planning: true, herloginTaak: 0, fouten460: [],
+      url: DEPOT.url, planning: true, herloginTaak: 0, fouten460: [], proxy407: 0, tunnelFouten: 0,
+      proxy: { proxy: { server: 'http://proxy.test:10001' } },
       get page() { return { url: () => s.url, locator: () => ({ first: () => ({ isVisible: async () => s.planning }) }) } },
-      async openen() { log.push(`open:${s.nr}`) },
-      async taakBegin() { s.herloginTaak = 0 },
+      async openen() { log.push(`open:${s.nr}`); const f = nepSessies.openFout?.(s.nr); if (f) throw f },
+      async taakBegin() { s.herloginTaak = 0; s.proxy407 = 0; s.tunnelFouten = 0 },
       async taakEinde(naam, { incident }) { return incident ? `trace/fout/${naam}` : null },
       async sluiten(reden) { log.push(`dicht:${s.nr}:${reden}`) },
       async nieuwSegment() { log.push(`segment:${s.nr}`); if (nepSessies.segmentFaalt) throw new Error('browser reageert niet'); return true },
@@ -53,7 +55,7 @@ function nepSessies(log) {
 }
 
 // `duurMin`: hoe lang (nep-tijd) de lus draait voordat hij gestopt wordt, zoals bij een deploy.
-function opzet({ start = '2026-11-02T10:00:00+01:00', handlers, opdrachten = () => [], slot = () => true, cfg = {}, duurMin = 3, dag, timers = false } = {}) {
+function opzet({ start = '2026-11-02T10:00:00+01:00', handlers, opdrachten = () => [], slot = () => true, cfg = {}, duurMin = 3, dag, timers = false, toetsProxy, nietGestart } = {}) {
   const log = []
   const meldingen = []
   const runs = []
@@ -73,7 +75,9 @@ function opzet({ start = '2026-11-02T10:00:00+01:00', handlers, opdrachten = () 
     melden: async (m) => { meldingen.push(m) },
     naRun: async (r) => { runs.push(r) },
     telRitmonitor: (d, r) => { ritmonitor.push(r) },
+    ...(toetsProxy ? { toetsProxy: (p) => toetsProxy(p, klok.nu()) } : {}),
     opslag: {
+      ...(nietGestart ? { opdrachtNietGestart: async (soort, id, reden) => { nietGestart.push({ soort, id, reden }); return true } } : {}),
       dagstatus: async () => opgeslagen,
       bewaarDagstatus: async () => {},
       plannerOpdrachten: async () => opdrachten(klok.nu()),
@@ -481,4 +485,192 @@ test('nieuw videosegment mislukt: sessie dicht en de lus gaat door, geen crash v
   } finally { nepSessies.segmentFaalt = false }
   assert.ok(o.log.includes('dicht:1:fout'), 'sessie dicht met reden fout')
   assert.ok(o.log.some(r => String(r).startsWith('open:2')), 'de volgende taak logt opnieuw in')
+})
+
+// ── Proxy geweigerd (matransport#613) ──────────────────────────────────────────────────────────────
+// 07-11: Decodo weigerde na een mislukte betaling elke login met 407. De sessiehouder zag alleen
+// "Planning-menu niet zichtbaar", logde 10 uur lang elke 11 min opnieuw in en gaf 110x te_veel_logins.
+const START = '2026-11-02T10:00:00+01:00'
+const minNa = (min) => new Date(START).getTime() + min * 60_000
+// Wat naarDepot gooit bij een 407, met de proxy van de poging eraan (Sessie.openen).
+const geweigerd = () => Object.assign(new ProxyGeweigerdError('De proxy-aanbieder weigert de login (407)'), { proxy: { server: 'http://proxy.test:10003' } })
+const ritmonitorLukt = async (ctx, dag) => ({ ...ritmonitorOk(dag), dag: { ...dag, ritmonitor: { laatsteOm: ctx.nu.toISOString() } } })
+
+test('proxy geweigerd bij het inloggen: één melding, geen logins tot de toets weer lukt, wachtende opdracht meteen niet uitgevoerd', async () => {
+  const hersteldNa = 25
+  let hersteldOm = null
+  // Inloggen faalt op de proxy tot de toets voor het eerst weer 200 geeft.
+  nepSessies.openFout = () => (hersteldOm === null ? geweigerd() : null)
+  const toetsen = []
+  const p = plannerOpdracht('p1')
+  const nietGestart = []
+  const o = opzet({
+    duurMin: 40, opdrachten: p.opdrachten, nietGestart,
+    toetsProxy: (proxy, nu) => {
+      toetsen.push({ server: proxy?.server, om: nu.getTime() })
+      if (nu.getTime() >= minNa(hersteldNa)) { hersteldOm = nu.getTime(); return { status: 200, geweigerd: false, fout: null } }
+      return { status: 407, geweigerd: true, fout: null }
+    },
+    handlers: { ritmonitor: ritmonitorLukt, planner: async () => { throw new Error('planner mag niet draaien') } },
+  })
+  // Zodra een opdracht "niet gestart" is, staat hij niet meer op wacht.
+  o.deps.opslag.opdrachtNietGestart = async (soort, id, reden) => { nietGestart.push({ soort, id, reden }); p.klaar = true; return true }
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.openFout = null }
+  const logins = o.log.filter(x => x.startsWith('open'))
+  assert.equal(logins.length, 2, `één mislukte login, en pas na het herstel weer één (${logins.join(', ')})`)
+  assert.equal(o.meldingen.filter(m => m.soort === 'proxy_geweigerd').length, 1, 'één melding, niet elke 5 min')
+  const melding = o.meldingen.find(m => m.soort === 'proxy_geweigerd')
+  assert.equal(melding.bron, 'decodo-proxy', 'eigen bron: de push op postnl-sessie is 6 uur gedempt')
+  assert.ok(`${melding.soort} (Waddinxveen): ${melding.detail}`.slice(0, 100).includes('betaling'), 'de oorzaak staat binnen de 100 tekens van de push')
+  assert.equal(o.meldingen.filter(m => m.soort === 'proxy_hersteld').length, 1)
+  assert.ok(!o.meldingen.some(m => m.soort === 'te_veel_logins'), 'geen te_veel_logins meer')
+  assert.equal(toetsen[0].server, 'http://proxy.test:10003', 'zonder pool-gegevens: de proxy van de mislukte login')
+  assert.ok(toetsen.slice(1).every((t, i) => t.om - toetsen[i].om >= 5 * 60_000 - 1), 'tussen twee toetsen ten minste proxyToetsMin')
+  assert.deepEqual(nietGestart.map(x => [x.soort, x.id]), [['planner', 'p1']])
+  assert.match(nietGestart[0].reden, /proxy/)
+  assert.ok(o.ritmonitor.some(r => r.ok), 'na het herstel gewoon verder')
+})
+
+test('alleen tunnelfouten midden in een taak en de toets zegt 407: sessie dicht als proxy_geweigerd, wachten', async () => {
+  let n = 0
+  const o = opzet({
+    duurMin: 12,
+    toetsProxy: (proxy, nu) => (nu.getTime() >= minNa(8) ? { status: 200, geweigerd: false } : { status: 407, geweigerd: true }),
+    handlers: { ritmonitor: async (ctx, dag) => {
+      if (++n === 1) { ctx.sessie.tunnelFouten = 3; throw new Error('locator.click: Timeout 30000ms exceeded') }
+      return ritmonitorLukt(ctx, dag)
+    } },
+  })
+  await draaiDepot(o.deps)
+  assert.ok(o.log.includes('dicht:1:proxy_geweigerd'))
+  assert.equal(o.gebeurtenissen[0].soort, 'proxy_geweigerd')
+  assert.equal(o.gebeurtenissen[0].actie, 'proxy_wacht')
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 2)
+})
+
+test('tunnelfouten maar de proxy werkt (toets 200): een gewone fout, geen wachtstand en geen proxymelding', async () => {
+  let n = 0
+  const o = opzet({
+    duurMin: 3,
+    toetsProxy: () => ({ status: 200, geweigerd: false }),
+    handlers: { ritmonitor: async (ctx, dag) => {
+      if (++n === 1) { ctx.sessie.tunnelFouten = 1; throw new Error('locator.click: Timeout 30000ms exceeded') }
+      return ritmonitorLukt(ctx, dag)
+    } },
+  })
+  await draaiDepot(o.deps)
+  assert.equal(o.gebeurtenissen[0].soort, 'fout')
+  assert.ok(!o.meldingen.some(m => m.soort.startsWith('proxy_')))
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 1)
+})
+
+test('opdracht waarvoor het inloggen steeds mislukt: na 3 keer niet uitgevoerd met uitleg, niet pas na een uur', async () => {
+  const p = plannerOpdracht('p2')
+  const nietGestart = []
+  nepSessies.openFout = () => new Error('Planning-menu niet zichtbaar na 90s (url: https://depot-a.example/index.html)')
+  const o = opzet({ duurMin: 40, opdrachten: p.opdrachten, handlers: { ritmonitor: ritmonitorLukt, planner: async () => { throw new Error('planner mag niet draaien') } } })
+  o.deps.opslag.opdrachtNietGestart = async (soort, id, reden) => { nietGestart.push({ soort, id, reden, om: o.klok.nu().getTime() }); p.klaar = true; return true }
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.openFout = null }
+  assert.equal(nietGestart.length, 1)
+  assert.deepEqual([nietGestart[0].soort, nietGestart[0].id], ['planner', 'p2'])
+  assert.match(nietGestart[0].reden, /inloggen/)
+  assert.ok(nietGestart[0].om - minNa(0) < 30 * 60_000, `binnen een half uur (${Math.round((nietGestart[0].om - minNa(0)) / 60_000)} min)`)
+})
+
+test('407 midden in een taak (bv. het RVA-tabblad): sessie dicht als proxy_geweigerd, en elke keer de huidige proxy toetsen', async () => {
+  let n = 0
+  const toetsen = []
+  const o = opzet({
+    duurMin: 12,
+    // Hersteld met andere poorten (07-11): de oude ingang blijft 407 geven, de nieuwe werkt.
+    toetsProxy: (proxy, nu) => { toetsen.push(proxy.server); return proxy.server.endsWith(':20001') ? { status: 200, geweigerd: false } : { status: 407, geweigerd: true } },
+    handlers: { ritmonitor: async (ctx, dag) => {
+      if (++n === 1) { ctx.sessie.proxy407 = 2; throw new Error('RVA niet in beeld na 90 s (url: https://pnl-rva.p15.cldsvc.net/)') }
+      return ritmonitorLukt(ctx, dag)
+    } },
+  })
+  o.deps.huidigeProxy = () => ({ server: o.klok.nu().getTime() >= minNa(8) ? 'http://proxy.test:20001' : 'http://proxy.test:10002' })
+  await draaiDepot(o.deps)
+  assert.ok(o.log.includes('dicht:1:proxy_geweigerd'))
+  assert.equal(o.meldingen.filter(m => m.soort === 'proxy_geweigerd').length, 1)
+  assert.equal(toetsen.at(-1), 'http://proxy.test:20001', 'hersteld op een andere poort: gezien')
+  assert.equal(o.meldingen.filter(m => m.soort === 'proxy_hersteld').length, 1)
+  assert.equal(o.meldingen.find(m => m.soort === 'proxy_hersteld').bron, 'decodo-proxy')
+})
+
+test('losse 407 en de proxy werkt: geen melding, opdrachten blijven staan, gewoon opnieuw inloggen', async () => {
+  let n = 0
+  const p = plannerOpdracht('p3')
+  const nietGestart = []
+  const o = opzet({
+    duurMin: 3, nietGestart, opdrachten: () => [],
+    toetsProxy: () => ({ status: 200, geweigerd: false }),
+    handlers: { ritmonitor: async (ctx, dag) => {
+      if (++n === 1) { ctx.sessie.proxy407 = 1; throw new Error('locator.click: Timeout 30000ms exceeded') }
+      return ritmonitorLukt(ctx, dag)
+    } },
+  })
+  await draaiDepot(o.deps)
+  assert.ok(!o.meldingen.some(m => m.soort.startsWith('proxy_')))
+  assert.deepEqual(nietGestart, [])
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 2, 'volgende taak logt in')
+  assert.equal(p.klaar, false)
+})
+
+test('Chromium blijft 407 krijgen terwijl de toets lukt: de loginrem geldt, geen hameren', async () => {
+  // Elke login geeft 407, de CONNECT-toets slaagt (flappende aanbieder). Zonder rem: 1800 logins per uur.
+  nepSessies.openFout = () => geweigerd()
+  const o = opzet({ duurMin: 60, toetsProxy: () => ({ status: 200, geweigerd: false }), handlers: { ritmonitor: ritmonitorLukt } })
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.openFout = null }
+  const logins = o.log.filter(x => x.startsWith('open')).length
+  assert.ok(logins <= 4 + 13, `hooguit de rem plus één per toets (${logins})`)
+  assert.ok(o.meldingen.some(m => m.soort === 'proxy_geweigerd'), 'en dan wel een melding')
+})
+
+test('een time-out van de toets is geen herstel: hij blijft wachten en logt niet in', async () => {
+  nepSessies.openFout = () => geweigerd()
+  const o = opzet({ duurMin: 20, toetsProxy: () => ({ status: null, geweigerd: false, fout: 'timeout' }), handlers: { ritmonitor: ritmonitorLukt } })
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.openFout = null }
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 1)
+  assert.ok(!o.meldingen.some(m => m.soort === 'proxy_hersteld'))
+})
+
+test('wachten op de proxy: elke POLL-ronde vrij om te stoppen, slot kwijt = uit de wachtlus', async () => {
+  nepSessies.openFout = () => geweigerd()
+  let slotVan = true
+  const o = opzet({ duurMin: 3, timers: true, slot: (nu) => { slotVan = nu.getTime() < minNa(1.5); return slotVan }, toetsProxy: () => ({ status: 407, geweigerd: true }), handlers: { ritmonitor: ritmonitorLukt } })
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.openFout = null }
+  assert.ok(o.meldingen.some(m => m.soort === 'slot_kwijt'), 'bovenaan de lus afgehandeld, niet doorgewacht')
+})
+
+test('inloggen faalt voor het depot: de teller geldt voor alle wachtende opdrachten, niet per opdracht opnieuw', async () => {
+  const a = plannerOpdracht('a')
+  const b = plannerOpdracht('b')
+  const nietGestart = []
+  nepSessies.openFout = () => new Error('Planning-menu niet zichtbaar na 90s')
+  const o = opzet({ duurMin: 30, opdrachten: (nu) => [...a.opdrachten(nu), ...b.opdrachten(nu)], handlers: { ritmonitor: ritmonitorLukt, planner: async () => { throw new Error('mag niet') } } })
+  const pogingen = () => o.log.filter(x => x.startsWith('open')).length
+  o.deps.opslag.opdrachtNietGestart = async (soort, id, reden) => { nietGestart.push({ id, pogingen: pogingen() }); (id === 'a' ? a : b).klaar = true; return true }
+  try {
+    await draaiDepot(o.deps)
+  } finally { nepSessies.openFout = null }
+  assert.deepEqual(nietGestart.map(x => x.id).sort(), ['a', 'b'])
+  assert.deepEqual(nietGestart.map(x => x.pogingen), [3, 3], 'allebei na de derde poging, niet drie extra per opdracht')
+})
+
+test('een geslaagde taak met een losse 407 sluit de sessie niet', async () => {
+  const o = opzet({ duurMin: 2, toetsProxy: () => ({ status: 407, geweigerd: true }), handlers: { ritmonitor: async (ctx, dag) => { ctx.sessie.proxy407 = 1; return ritmonitorLukt(ctx, dag) } } })
+  await draaiDepot(o.deps)
+  assert.ok(!o.log.includes('dicht:1:proxy_geweigerd'))
+  assert.equal(o.log.filter(x => x.startsWith('open')).length, 1)
 })

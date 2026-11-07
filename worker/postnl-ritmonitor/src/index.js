@@ -24,7 +24,7 @@ import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 import {
   kiesProxy, sluitProxyAf, isBlokStatus, uitkomstBijFout,
-  proxyPoolAan, ProxyBlokkadeError,
+  proxyPoolAan, ProxyBlokkadeError, gooiBijProxyWeigering,
 } from '../../credentials-shared/src/proxyPool.js'
 import { maakRitmonitor } from './ritmonitor.js'
 import { login } from '../../credentials-shared/src/postnl/login.js'
@@ -179,6 +179,7 @@ async function openInBrowser(browser, depot) {
   try {
     const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null)
     if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
+    gooiBijProxyWeigering(response)   // een 407 geeft geen fout uit goto, alleen een leeg document (matransport#613)
     if (page.url().includes('loginpostnl') || page.url().includes('/login') || page.url().includes('/authorize')) {
       await loginPostnl(page, depot)
     }

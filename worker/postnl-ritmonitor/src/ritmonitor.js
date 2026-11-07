@@ -9,6 +9,7 @@ import { nlTijdstipNaarIso as tijdstipNaarIso, nieuweEindtijd } from './eindtijd
 import { teSchrijven } from './wijzigingen.js'
 import { normaliseerRitnummer, TIJDZONE } from '../../credentials-shared/src/postnl/tekst.js'
 import { ritSleutel } from '../../credentials-shared/src/postnl/schrijver.js'
+import { gooiBijProxyWeigering } from '../../credentials-shared/src/proxyPool.js'
 
 // Getal zoals het Ritmonitor-scherm het toont ("1.234" = duizendtal, "3,5" = decimaal).
 export function getalScherm(waarde) {
@@ -278,7 +279,8 @@ export function maakRitmonitor({ supabase, klantId, login, tijdzone = TIJDZONE, 
       throw new Error(`Planning-menu niet zichtbaar na ${maxMs / 1000}s (url: ${page.url()})`)
     }
 
-    await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
+    // Een 407 geeft geen fout uit goto, alleen een leeg document (matransport#613).
+    gooiBijProxyWeigering(await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null))
     await page.waitForTimeout(2000)
     await waitForPlanning()
 

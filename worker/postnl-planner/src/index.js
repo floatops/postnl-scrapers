@@ -19,7 +19,7 @@ import { chromium } from 'playwright'
 import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
-import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, proxyPoolAan, ProxyBlokkadeError } from '../../credentials-shared/src/proxyPool.js'
+import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, proxyPoolAan, ProxyBlokkadeError, gooiBijProxyWeigering } from '../../credentials-shared/src/proxyPool.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
@@ -89,6 +89,7 @@ async function login(page, depot) {
 async function openDagplanning(page, depot) {
   const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60_000 }).catch(() => null)
   if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
+  gooiBijProxyWeigering(response)   // een 407 geeft geen fout uit goto, alleen een leeg document (matransport#613)
   if (page.url().includes('loginpostnl') || page.url().includes('/authorize')) await login(page, depot)
   // Pas na het inloggen: zo komt het wachtwoord nooit in de trace.
   if (traceAan()) await page.context().tracing.start({ screenshots: true, snapshots: true }).catch(() => {})

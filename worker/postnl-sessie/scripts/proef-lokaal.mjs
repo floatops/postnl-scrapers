@@ -4,6 +4,7 @@
 // contextwissel met dezelfde cookies, en wat classificeer() ziet bij verlopen en gegooid.
 //   node scripts/proef-lokaal.mjs   (vraagt geen geheimen, schrijft alleen naar een tijdelijke map)
 import http from 'node:http'
+import cp from 'node:child_process'
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
@@ -22,6 +23,7 @@ import { mergeInstellingen } from '../src/instellingen.js'
 import { SEL_PLANNING, opStartpagina, login } from '../../credentials-shared/src/postnl/login.js'
 import { volgMendix, LEZEN_MS } from '../../postnl-planner/src/mendix.js'
 import { metLimiet, handlerKlaar } from '../src/depot.js'
+import { toetsProxy } from '../../credentials-shared/src/proxyPool.js'
 
 const sessies = new Set()
 let gegooid = false
@@ -234,6 +236,68 @@ try {
     await s2.sluiten('browser_weg')
     assert.equal(opslag.laatst.einde_reden, 'browser_weg', 'sessierij netjes afgesloten na de crash')
     console.log('✔ storing: crash midden in een taak herkend als browser_weg, sessie netjes dicht')
+  }
+  // 4. De proxy-aanbieder weigert de login (07-11, matransport#613): Decodo gaf 407 op elke CONNECT.
+  // Met een echte Chromium: gooit naarDepot meteen (niet pas na 90 s wachten op een leeg scherm), en
+  // ziet toetsProxy de weigering? Zo is ook gemeten dat goto hier niet gooit maar een 407 teruggeeft.
+  {
+    const weigeraar = http.createServer((req, res) => { res.writeHead(407, { 'Proxy-Authenticate': 'Basic realm="Smartproxy"' }); res.end() })
+    weigeraar.on('connect', (req, socket) => socket.end('HTTP/1.1 407 Unauthorized\r\nProxy-Authenticate: Basic realm="Smartproxy"\r\nContent-Length: 0\r\n\r\n'))
+    await new Promise(r => weigeraar.listen(0, '127.0.0.1', r))
+    const proxyServer = `http://127.0.0.1:${weigeraar.address().port}`
+    Object.assign(process.env, { PROXY_SERVER: proxyServer, PROXY_USERNAME: 'proef', PROXY_PASSWORD: 'onbetaald' })
+    try {
+      const s3 = new Sessie({ depot: { ...depot, url: 'https://depot.proef.invalid/index.html' }, klantId: 'k', supabase, chromium, opslag, cfg: mergeInstellingen({}), log: { log() {}, warn() {}, error: console.error } })
+      const begin = Date.now()
+      const fout = await s3.openen().then(() => null, e => e)
+      const duur = Date.now() - begin
+      // Gemeten: goto gooit niet, hij geeft een response met status 407 en een leeg document.
+      assert.equal(fout?.name, 'ProxyGeweigerdError', `naarDepot herkent de 407 (kreeg: ${String(fout?.message).split('\n')[0]})`)
+      assert.ok(duur < 30_000, `meteen, niet na 90 s wachten (${Math.round(duur / 1000)} s)`)
+      assert.equal(fout.proxy?.server, proxyServer, 'de proxy van de poging hangt aan de fout, voor de toets')
+      const t = await toetsProxy(fout.proxy)
+      assert.equal(t.geweigerd, true, `toetsProxy ziet de weigering (${t.status ?? t.fout})`)
+      assert.equal(classificeer({ fout, proxyGeweigerd: t.geweigerd }), 'proxy_geweigerd')
+      console.log(`✔ storing: proxy weigert (407): naarDepot gooit na ${Math.round(duur / 1000)} s "${String(fout.message).split('\n')[0].slice(0, 90)}", toets ziet 407`)
+    } finally {
+      for (const k of ['PROXY_SERVER', 'PROXY_USERNAME', 'PROXY_PASSWORD']) delete process.env[k]
+      weigeraar.close()
+    }
+  }
+  // 5. ffmpeg loopt achter (06-11, matransport#613): context.close() en page.close() wachten daarop.
+  // ffmpeg wordt vervangen door een proces dat na het einde van de invoer nog TRAAG_MS nodig heeft. De
+  // grens op sluiten is hier 2 s (op de VPS 150 s). Verwacht: geen fout, geen nieuwe login, de oude
+  // tabbladen meteen leeg, de half geschreven video niet bewaard.
+  {
+    const TRAAG_MS = 6_000
+    const echt = cp.spawn
+    let ffmpegs = 0
+    cp.spawn = function (cmd, args, opties) {
+      if (!/ffmpeg/i.test(String(cmd))) return echt.call(cp, cmd, args, opties)
+      ffmpegs++
+      return echt.call(cp, process.execPath, ['-e', `process.stdin.resume();process.stdin.on('end',()=>setTimeout(()=>process.exit(0),${TRAAG_MS}))`], opties)
+    }
+    const s4 = new Sessie({ depot, klantId: 'k4', supabase, chromium, opslag, cfg: mergeInstellingen({}), contextSluitMs: 2_000, log: { log() {}, warn() {}, error: console.error } })
+    gegooid = true   // het portaal toont "OOM PD Proces": anders wacht naarDepot daar 15 s op, en dat is geen ffmpeg
+    try {
+      await s4.openen()
+      const oud = s4.page
+      opslag.gebeurtenissen = []
+      const begin = Date.now()
+      const nogIngelogd = await s4.nieuwSegment()
+      const duur = Date.now() - begin
+      assert.ok(ffmpegs >= 1, 'de nep-ffmpeg is gebruikt')
+      assert.equal(nogIngelogd, true, 'een trage video kost geen login')
+      assert.ok(duur < TRAAG_MS + 3_000, `niet doorgewacht op ffmpeg (${duur} ms)`)
+      assert.equal(oud.url(), 'about:blank', 'het oude tabblad praat niet meer met PostNL')
+      assert.ok(opslag.gebeurtenissen.some(g => g.soort === 'video_traag'), 'gebeurtenis video_traag')
+      assert.equal(await s4.page.locator(SEL_PLANNING).first().isVisible(), true, 'de nieuwe context is ingelogd')
+      console.log(`✔ storing: ffmpeg loopt achter: segment gewisseld in ${Math.round(duur / 1000)} s, geen login, video van dat segment overgeslagen`)
+    } finally {
+      await s4.sluiten('herstart').catch(() => {})
+      gegooid = false
+      cp.spawn = echt
+    }
   }
   console.log('Opnames op schijf:', (await opnames()).map(u => `${u.pad.split('/').slice(-2).join('/')} (${u.kb} kB)`).join(', '))
 } finally {

@@ -65,3 +65,89 @@ test('uitkomstBijFout: ProxyBlokkadeError is altijd blokkade', async () => {
   assert.equal(await uitkomstBijFout(new ProxyBlokkadeError('x'), null), 'blokkade')
   assert.equal(await uitkomstBijFout(new Error('x'), null), 'fout')
 })
+
+// matransport#613 (07-11): Decodo weigerde na een mislukte betaling elke login met 407. toetsProxy
+// ziet dat met één CONNECT, zonder browser en zonder PostNL. Hier tegen een nep-proxy op localhost.
+async function nepProxy(status) {
+  const http = await import('node:http')
+  const server = http.createServer((req, res) => { res.writeHead(400); res.end() })
+  const gezien = []
+  server.on('connect', (req, socket) => {
+    gezien.push({ doel: req.url, auth: req.headers['proxy-authorization'] ?? null })
+    socket.end(status === 407
+      ? 'HTTP/1.1 407 Unauthorized\r\nProxy-Authenticate: Basic realm="Smartproxy"\r\nContent-Length: 0\r\n\r\n'
+      : `HTTP/1.1 ${status} OK\r\n\r\n`)
+  })
+  await new Promise(r => server.listen(0, '127.0.0.1', r))
+  return { server, gezien, server_: `http://127.0.0.1:${server.address().port}` }
+}
+
+test('toetsProxy: 407 van de aanbieder = geweigerd, met de login in Proxy-Authorization', async () => {
+  const { toetsProxy } = await import('../src/proxyPool.js')
+  const p = await nepProxy(407)
+  try {
+    const uit = await toetsProxy({ server: p.server_, username: 'gebruiker', password: 'geheim' })
+    assert.deepEqual(uit, { status: 407, geweigerd: true, fout: null })
+    assert.equal(p.gezien[0].doel, 'ip.decodo.com:443')
+    assert.equal(p.gezien[0].auth, 'Basic ' + Buffer.from('gebruiker:geheim').toString('base64'))
+  } finally { p.server.close() }
+})
+
+test('toetsProxy: 200 = de proxy werkt; niet bereikbaar of geen proxy = niet geweigerd (dus geen wachtstand)', async () => {
+  const { toetsProxy } = await import('../src/proxyPool.js')
+  const p = await nepProxy(200)
+  try {
+    assert.deepEqual(await toetsProxy({ server: p.server_, username: 'g', password: 'w' }), { status: 200, geweigerd: false, fout: null })
+  } finally { p.server.close() }
+  const dicht = await toetsProxy({ server: 'http://127.0.0.1:1' }, { ms: 3_000 })
+  assert.equal(dicht.geweigerd, false)
+  assert.ok(dicht.fout, 'de netwerkfout staat erbij')
+  assert.deepEqual(await toetsProxy(null), { status: null, geweigerd: false, fout: 'geen proxy' })
+})
+
+test('toetsProxy: een proxy die niets zegt, houdt het nooit langer op dan de grens', async () => {
+  const { toetsProxy } = await import('../src/proxyPool.js')
+  const net = await import('node:net')
+  const stil = net.createServer(() => {})   // neemt de verbinding aan en zwijgt
+  await new Promise(r => stil.listen(0, '127.0.0.1', r))
+  try {
+    const begin = Date.now()
+    const uit = await toetsProxy({ server: `http://127.0.0.1:${stil.address().port}` }, { ms: 300 })
+    assert.deepEqual(uit, { status: null, geweigerd: false, fout: 'timeout' })
+    assert.ok(Date.now() - begin < 2_000)
+  } finally { stil.close() }
+})
+
+test('PROXY_NETWERKFOUT herkent de foutcode van Chromium bij een geweigerde tunnel (gemeten 07-11)', async () => {
+  const { PROXY_NETWERKFOUT } = await import('../src/proxyPool.js')
+  assert.ok(PROXY_NETWERKFOUT.test('page.goto: net::ERR_TUNNEL_CONNECTION_FAILED at https://pnl-rva.p15.cldsvc.net/'))
+  assert.ok(PROXY_NETWERKFOUT.test('net::ERR_PROXY_CONNECTION_FAILED'))
+  assert.ok(!PROXY_NETWERKFOUT.test('page.goto: Timeout 60000ms exceeded'))
+  assert.ok(!PROXY_NETWERKFOUT.test('net::ERR_CONNECTION_RESET'))
+})
+
+test('huidigeProxy: dezelfde keuze als volgende_proxy, alleen lezen; zonder pool of bruikbare rij null', async () => {
+  const { huidigeProxy } = await import('../src/proxyPool.js')
+  const aanroepen = []
+  const keten = (rijen, error = null) => {
+    const k = {
+      select: () => k, eq: (a, b) => { aanroepen.push([a, b]); return k }, order: () => k,
+      limit: async () => ({ data: rijen, error }),
+    }
+    return { from: () => k, rpc: () => { throw new Error('mag de rij niet opschuiven') } }
+  }
+  const rij = { host: 'isp.decodo.com', poort: 10005, gebruikersnaam: 'u', wachtwoord_encrypted: encrypt('geheim', KEY) }
+  assert.equal(await huidigeProxy(keten([rij])), null, 'pool uit')
+  process.env.PROXY_POOL = 'true'
+  assert.deepEqual(await huidigeProxy(keten([rij])), { server: 'http://isp.decodo.com:10005', username: 'u', password: 'geheim' })
+  assert.deepEqual(aanroepen, [['status', 'actief'], ['laatste_check_ok', true]])
+  assert.equal(await huidigeProxy(keten([])), null, 'niets bruikbaars')
+  await assert.rejects(huidigeProxy(keten(null, { message: 'kapot' })), /kapot/)
+})
+
+// Gemeten met een echte Chromium (proef-lokaal): goto gooit niet bij een 407, hij geeft een response.
+test('gooiBijProxyWeigering: alleen een response met status 407', async () => {
+  const { gooiBijProxyWeigering } = await import('../src/proxyPool.js')
+  assert.throws(() => gooiBijProxyWeigering({ status: () => 407 }), { name: 'ProxyGeweigerdError' })
+  for (const r of [null, undefined, { status: () => 200 }, { status: () => 403 }]) assert.doesNotThrow(() => gooiBijProxyWeigering(r))
+})

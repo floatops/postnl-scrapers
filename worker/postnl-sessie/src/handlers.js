@@ -7,6 +7,7 @@ import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijve
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
 import { leesDeadlineTekst, volgMendix } from '../../postnl-planner/src/mendix.js'
 import { kiesDag, dagVenster, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
+import { gooiBijProxyWeigering } from '../../credentials-shared/src/proxyPool.js'
 import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, aanvraagKlaar } from './dagstatus.js'
 
 const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
@@ -82,7 +83,7 @@ async function rvaKlaar(sessie, r) {
 async function herstelRvaTab(sessie, r) {
   try {
     const page = await sessie.rvaTab()
-    await page.goto(r.RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 })
+    gooiBijProxyWeigering(await page.goto(r.RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }))   // 407: anders 90 s wachten (matransport#613)
     await r.openRva(page, { login: (p) => login(p, sessie.depot, { log: sessie.log }) })
     return true
   } catch {
@@ -466,6 +467,12 @@ export const HANDLERS = {
     const venster = dagVenster(sessie.antwoorden, keuze)
     const ritten = dagplanningRitten(venster.antwoorden, { negeer: venster.negeer })
       .filter(x => (!x.datum || x.datum === dag.datum) && hoortBijShift(x, shift))
+    // Geen enkele rit van een shift die al geautoriseerd gezien is: de lezing is onvolledig (het scherm
+    // was nog niet bij deze shift), niet "niet geautoriseerd". Gooien, zodat hij opnieuw leest. Op 07-11
+    // 12:16 (matransport#613) gaf dit een vals autorisatie_niet_gezien, en daarna keek hij niet meer.
+    if (!ritten.length && dag.shifts?.[shift]?.geautoriseerdOm) {
+      throw new Error(`Shift ${shift}: geen ritten gelezen terwijl de shift al geautoriseerd was; opnieuw`)
+    }
     const geautoriseerd = ritten.length > 0 && ritten.every(x => x.geautoriseerd === true)
     // Geen deadline bij de ochtendlezing (03-11: Den Hoorn shift 01)? Dan nu vastleggen.
     const metDeadline = !dag.shifts?.[shift]?.deadline && r.deadline

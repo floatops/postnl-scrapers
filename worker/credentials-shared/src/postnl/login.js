@@ -1,7 +1,7 @@
 // Inloggen bij PostNL en naar het depot-portaal gaan. Eén versie voor alle PostNL-workers
 // (floatops/matransport#562); stond eerder in ritmonitor, dagplanning en planner apart.
 // Geen eigen packages: de aanroeper geeft de Playwright-page mee.
-import { detecteerBlok, isBlokStatus, proxyPoolAan, ProxyBlokkadeError } from '../proxyPool.js'
+import { detecteerBlok, isBlokStatus, proxyPoolAan, ProxyBlokkadeError, PROXY_NETWERKFOUT, gooiBijProxyWeigering } from '../proxyPool.js'
 
 export const SEL_LOGIN_VELD = 'input[type="text"], input[type="email"]'
 export const SEL_PLANNING = 'a.mx-name-menuBar1-2, a[title="Planning"]'
@@ -52,7 +52,7 @@ export async function login(page, depot, { log = console } = {}) {
     // Stille SSO. Komt die uit op een fout van PostNL (06-11 15:43: 500 op /oauth/v2/callback), dan
     // zou hier niets meer gebeuren: één keer opnieuw naar het depot. Tot #600 telde dit als een
     // verlopen login, wachtte het 90 s op een loginveld dat nooit kwam en werd het 'gegooid'.
-    if (/\/oauth\/|error-page/.test(page.url())) await page.goto(depot.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
+    if (/\/oauth\/|error-page/.test(page.url())) gooiBijProxyWeigering(await page.goto(depot.url, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => null))
     return false
   }
   if (stand === 'niets') {
@@ -60,7 +60,7 @@ export async function login(page, depot, { log = console } = {}) {
     log.warn(`[${depot.naam}] Loginveld niet zichtbaar na 45 s${blok.isBlok ? ' — mogelijke IP-blokkering' : ''} (titel: "${blok.title}")`)
     // Met de pool helpt herladen niet: dit IP is geblokkeerd.
     if (blok.isBlok && proxyPoolAan()) throw new ProxyBlokkadeError(`Loginpagina geblokkeerd: ${blok.title || blok.snippet.slice(0, 80)}`)
-    await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => {})
+    gooiBijProxyWeigering(await page.reload({ waitUntil: 'networkidle', timeout: 60000 }).catch(() => null))
     await page.locator(SEL_LOGIN_VELD).first().waitFor({ state: 'visible', timeout: 45000 })
   }
   // Pas hier is het zeker een echte login, en pas dit telt als een verlopen sessie.
@@ -89,8 +89,16 @@ export async function login(page, depot, { log = console } = {}) {
 // Naar het depot-portaal tot het Planning-menu zichtbaar is; logt in als PostNL daarom vraagt.
 // Mendix start de OAuth-redirect soms pas ná de goto, daarom pollen in plaats van één check.
 export async function naarDepot(page, depot, { log = console, maxMs = 90000 } = {}) {
-  const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch(() => null)
+  let gotoFout = null
+  const response = await page.goto(depot.url, { waitUntil: 'networkidle', timeout: 60000 }).catch((e) => { gotoFout = e; return null })
   if (isBlokStatus(response) && proxyPoolAan()) throw new ProxyBlokkadeError('HTTP 403 op het portaal')
+  // De proxy liet de verbinding niet door: dan komt het portaal nooit, en 90 s wachten op een lege
+  // pagina verstopt de oorzaak (07-11: 119x "Planning-menu niet zichtbaar", matransport#613). Een 407
+  // is de aanbieder zelf; bij een andere proxyfout toetst de aanroeper dat nog (toetsProxy).
+  gooiBijProxyWeigering(response)
+  if (gotoFout && PROXY_NETWERKFOUT.test(String(gotoFout.message))) {
+    throw Object.assign(new Error(`Proxy liet de verbinding niet door: ${String(gotoFout.message).split('\n')[0]}`), { proxyFout: true })
+  }
   const deadline = Date.now() + maxMs
   let logins = 0
   let stil = 0

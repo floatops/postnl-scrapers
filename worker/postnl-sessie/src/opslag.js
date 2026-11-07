@@ -90,6 +90,35 @@ export function maakOpslag({ supabase, klantId, log = console }) {
       return data ?? []
     },
 
+    // Een opdracht die niet kon beginnen omdat PostNL niet bereikbaar was (inloggen bleef mislukken, of
+    // de proxy-aanbieder weigert, matransport#613): op 'mislukt' met de reden, alleen als hij nog
+    // wacht. Zo ziet de gebruiker het meteen, in plaats van dat hij uren later alsnog draait (07-11:
+    // RVA 5 uur) of na 60 min door de wachtdog wordt afgebroken (planner b277d836).
+    // soort 'planner' of 'rva'. Geeft true als hij is bijgewerkt. Mag de sessie niet stilleggen.
+    async opdrachtNietGestart(soort, id, reden) {
+      const nu = new Date().toISOString()
+      try {
+        if (soort === 'planner') {
+          const rijen = await vereis(supabase.from('planning_taken').update({ status: 'mislukt', afgerond_at: nu, fout: reden })
+            .eq('id', id).eq('klant_id', klantId).eq('status', 'wacht').select('id'), 'planner-opdracht niet gestart')
+          if (rijen.length) {
+            await vereis(supabase.from('planning_verplaatsingen').update({ status: 'overgeslagen', melding: reden })
+              .eq('taak_id', id).eq('status', 'wacht'), 'wijzigingen van een niet gestarte opdracht')
+          }
+          return rijen.length > 0
+        }
+        if (soort === 'rva') {
+          const rijen = await vereis(supabase.from('rva_opdrachten').update({ status: 'mislukt', klaar_at: nu, stap: null, melding: reden })
+            .eq('id', id).eq('klant_id', klantId).eq('status', 'wacht').select('id'), 'RVA-opdracht niet gestart')
+          return rijen.length > 0
+        }
+        return false
+      } catch (err) {
+        log.warn(`Opdracht ${id} (${soort}) niet op mislukt gezet: ${err.message}`)
+        return false
+      }
+    },
+
     // Planner-opdrachten van dit depot die op 'bezig' bleven staan, bv. na een crash (matransport#578).
     // Alleen aanroepen met het sessie-slot van dit depot in de hand: dan kan niemand anders ermee
     // bezig zijn. Afbreken, nooit opnieuw uitvoeren: een verplaatsing kan al gelukt zijn. Tot dan

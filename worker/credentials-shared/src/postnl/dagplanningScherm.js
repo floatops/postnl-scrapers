@@ -136,7 +136,17 @@ export async function kiesShift(page, shift, antwoorden, { ms = 12_000 } = {}) {
     await wachtTotStil(antwoorden, { stilMs: 1_000, ms })
     return 'al_gekozen'
   }
+  // Eerst wat er nog onderweg is laten binnenkomen, dan pas tellen vanaf hier. Op 07-11 12:16
+  // (matransport#613) kwamen de ritten van de vorige shift (01) pas tijdens de klik op 07 binnen:
+  // "gevonden" zonder één rit van 07, de deadline van 01 gelezen, en een vals
+  // autorisatie_niet_gezien. Net als kiesDag.
+  await wachtTotStil(antwoorden, { ms })
   const vanaf = antwoorden.length
   await rij.click()
-  return (await wachtOpObject(antwoorden, vanaf, 'OperationalPlanning.RideNumber', ms)) ? 'ok' : 'geen_ritten'
+  if (!(await wachtOpObject(antwoorden, vanaf, 'OperationalPlanning.RideNumber', ms))) return 'geen_ritten'
+  // En daarna tot alles van deze shift er is: de deadline op het scherm en de laatste ritten.
+  // Elke RideNumber telt hier nog als "van deze shift": de kans op verwisselen is kleiner, niet nul.
+  // Daarom gooit de taak definitief ook bij 0 ritten van een shift die al geautoriseerd was.
+  await wachtTotStil(antwoorden, { ms })
+  return 'ok'
 }

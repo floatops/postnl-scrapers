@@ -7,6 +7,7 @@
 // het de bevestiging is die we zelf bedoelen.
 import { WEEKDAGEN, revisiesUit } from './lezen.js'
 import { regelSleutel, regelLabel, vindRegel, pagingStatus } from './plan.js'
+import { gooiBijProxyWeigering } from '../../credentials-shared/src/proxyPool.js'
 
 export const RVA_URL = 'https://pnl-rva.p15.cldsvc.net/'
 
@@ -98,7 +99,8 @@ export const isLoginPagina = (url) => /loginpostnl|\/login|\/authorize/.test(Str
 // Naar RVA tot het menu in beeld is. Inloggen doet de aanroeper (`login`), of in de proef de
 // eigenaar zelf: dan wachten we tot `maxMs`. Geeft { ingelogd }: of er (opnieuw) ingelogd is.
 export async function openRva(page, { login = null, maxMs = 90_000 } = {}) {
-  if (!page.url().includes('pnl-rva')) await page.goto(RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => {})
+  // Een 407 geeft geen fout uit goto, alleen een leeg document: niet 90 s wachten (matransport#613).
+  if (!page.url().includes('pnl-rva')) gooiBijProxyWeigering(await page.goto(RVA_URL, { waitUntil: 'domcontentloaded', timeout: 60_000 }).catch(() => null))
   const tot = Date.now() + maxMs
   let logins = 0
   while (Date.now() < tot) {

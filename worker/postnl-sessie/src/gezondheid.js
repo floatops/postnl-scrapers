@@ -7,6 +7,8 @@
 //               in plaats van op het scherm van de taak. Gemeten op 02-11: zodra een andere sessie
 //               met dezelfde login in Mendix werkt, zet PostNL deze terug naar de startpagina; hij
 //               blijft ingelogd en het Planning-menu blijft zichtbaar.
+//   proxy_geweigerd  de aanbieder van de proxies weigert de login (407, alle IP's; 07-11 een
+//               mislukte betaling, matransport#613): niet inloggen, wachten tot de proxy werkt
 //   blokkade    het IP is geblokkeerd (Akamai)
 //   browser_weg de browser of het tabblad is gesloten of gecrasht
 //   database    de taak faalde op de database, niet op PostNL: de sessie is in orde
@@ -24,7 +26,10 @@ const BROWSER_WEG = /has been closed|Target closed|browser has disconnected|Brow
 const HERLADEN = /Execution context was destroyed|frame was detached|Navigation.*interrupted|herlaadde|PageReload/i
 
 // `herlogin`: hoe vaak PostNL tijdens deze taak een 460 gaf (de app logde daarna zelf opnieuw in).
-export function classificeer({ url = '', depotHost = null, fout = null, planningZichtbaar = null, opStartpagina = false, blokkade = false, herlogin = 0 } = {}) {
+// `proxyGeweigerd`: de depot-lus toetste de proxy na een proxyfout en de aanbieder gaf 407 (toetsProxy).
+export function classificeer({ url = '', depotHost = null, fout = null, planningZichtbaar = null, opStartpagina = false, blokkade = false, herlogin = 0, proxyGeweigerd = false } = {}) {
+  // Vóór alles: met een geweigerde proxy is elke andere uitkomst (leeg scherm, time-out) daar het gevolg van.
+  if (proxyGeweigerd || fout?.name === 'ProxyGeweigerdError') return 'proxy_geweigerd'
   if (blokkade || fout?.name === 'ProxyBlokkadeError') return 'blokkade'
   if (fout?.database) return 'database'
   const tekst = String(fout?.message ?? '')
@@ -47,6 +52,9 @@ export function classificeer({ url = '', depotHost = null, fout = null, planning
 export function herstel(soort, { recent = [], logins = [], nu = new Date(), cfg }) {
   if (soort === 'gezond' || soort === 'database') return 'geen'
   if (soort === 'herlogin') return 'opnieuw_openen'
+  // De aanbieder weigert de proxy (alle IP's tegelijk): inloggen heeft geen zin. Wachten en de proxy
+  // toetsen tot hij weer werkt (matransport#613; 07-11: 10 uur lang elke 11 min een login).
+  if (soort === 'proxy_geweigerd') return 'proxy_wacht'
   const binnen = (min) => (x) => nu - new Date(x.at ?? x) <= min * 60_000
   let actie
   if (soort === 'verlopen' || soort === 'blokkade' || soort === 'browser_weg') actie = 'nieuwe_login'

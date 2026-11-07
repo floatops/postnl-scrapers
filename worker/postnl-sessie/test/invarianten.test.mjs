@@ -176,6 +176,25 @@ test('planning_stops wordt in stukken gelezen: een antwoord is hooguit 1000 rije
   for (const l of lezen) assert.match(l, /\.range\(/, 'zonder range mist hij stops, en dan zijn stops die weg zijn niet te zien')
 })
 
+test('een videosegment past binnen zijn eigen limiet: cookies, trace, twee tabbladen en sluiten (#613)', async () => {
+  const { CONTEXT_SLUIT_MS } = await import('../src/sessie.js')
+  const depot = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/depot.js'), 'utf8')
+  const basis = Number(/const segmentMs = (\d+(?:_\d+)*) \+/.exec(depot)?.[1].replaceAll('_', ''))
+  assert.ok(basis >= CONTEXT_SLUIT_MS + 4 * 30_000, `segmentMs ${basis} dekt het sluiten niet`)
+  const sessie = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/sessie.js'), 'utf8')
+  assert.ok(!/p\.close\(\)/.test(sessie.slice(sessie.indexOf('async nieuwSegment'), sessie.indexOf('#bewaarVideo(page, dir'))), 'page.close() wacht op ffmpeg: about:blank gebruiken')
+})
+
+test('wachten op de proxy houdt de waakhond, het slot en stoppen in leven (#613)', async () => {
+  const { STANDAARD, waakhondMs } = await import('../src/instellingen.js')
+  assert.ok(STANDAARD.proxyToetsMin * 60_000 < waakhondMs(STANDAARD))
+  const depot = fs.readFileSync(path.join(WORKER, 'postnl-sessie/src/depot.js'), 'utf8')
+  const lus = depot.slice(depot.indexOf('async function wachtOpProxy'), depot.indexOf("if (!(await slotHouden())) return { reden: 'stop' }"))
+  assert.match(lus, /levend\(POLL_MS\)/, 'hartslag per ronde')
+  assert.match(lus, /wekbaar \?\? klok\.slaap\)\(POLL_MS\)/, 'een ronde duurt hooguit POLL_MS, los van proxyToetsMin: de waakhond ziet voortgang en stoppen werkt')
+  assert.match(lus, /hartslag\?\.weg/, 'zonder slot niet doorwachten')
+})
+
 test('sluiten van een context krijgt de tijd om de video af te maken, binnen wat de hartslag dekt (#600)', async () => {
   const { CONTEXT_SLUIT_MS } = await import('../src/sessie.js')
   assert.ok(CONTEXT_SLUIT_MS >= 120_000, '06-11: 30 s was te kort, elk videosegment gaf een nieuwe login')

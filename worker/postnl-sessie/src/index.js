@@ -15,6 +15,7 @@ import { createClient } from '@supabase/supabase-js'
 import { getDepots } from '../../credentials-shared/src/index.js'
 import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekLog.js'
 import { login } from '../../credentials-shared/src/postnl/login.js'
+import { toetsProxy, huidigeProxy } from '../../credentials-shared/src/proxyPool.js'
 import { beschikbareKolommen } from '../../credentials-shared/src/postnl/schrijver.js'
 import { maakRitmonitor } from '../../postnl-ritmonitor/src/ritmonitor.js'
 import { maakOpslag } from './opslag.js'
@@ -55,7 +56,7 @@ process.on('unhandledRejection', (err) => log.error('Onverwachte fout (gaat door
 // Melding voor super_admin: db_fout_log → check_operationele_fouten() → push binnen 15 min.
 async function melden(m) {
   log.warn(`Melding ${m.soort}${m.depot ? ` [${m.depot}]` : ''}: ${m.detail ?? ''}`)
-  const { error } = await supabase.from('db_fout_log').insert({ bron: WORKER, melding: `${m.soort}${m.depot ? ` (${m.depot})` : ''}: ${m.detail ?? ''}`.slice(0, 500), context: { klant_id: KLANT_ID, ...m } })
+  const { error } = await supabase.from('db_fout_log').insert({ bron: m.bron ?? WORKER, melding: `${m.soort}${m.depot ? ` (${m.depot})` : ''}: ${m.detail ?? ''}`.slice(0, 500), context: { klant_id: KLANT_ID, ...m } })
   if (error) log.error(`Melden mislukt: ${error.message}`)
 }
 
@@ -196,6 +197,8 @@ async function main() {
         stop: () => stop || lus.stop,
         schatting: () => schattingen[depot.naam] ?? null,
         telRitmonitor: (d, r) => teller.tel(d, r),
+        toetsProxy,
+        huidigeProxy: () => huidigeProxy(supabase),
         handlers: HANDLERS,
         ctx: { supabase, klantId: KLANT_ID, depot, kolommen, ritmonitor, plannerSignaal: () => plannerSignaal, rvaSignaal: () => rvaSignaal, rvaStop: { om: 0 } },
         maakSessie: (d) => new Sessie({ depot: d, klantId: KLANT_ID, supabase, chromium, opslag, cfg, log, headless }),

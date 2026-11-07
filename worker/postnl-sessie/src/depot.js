@@ -12,6 +12,13 @@ import { SEL_PLANNING, opStartpagina, LOGIN_MAX_SEC } from '../../credentials-sh
 
 const MIN = 60_000
 const POLL_MS = 15_000   // vangnet: zo vaak kijken of er een planner-opdracht is (de wekker is meteen)
+// Eigen bron in db_fout_log (matransport#613): check_operationele_fouten dempt per bron 6 uur. Op de
+// gedeelde bron postnl-sessie zou een eerdere melding van die dag deze push stil tegenhouden. De push
+// toont de eerste bevinding (op bronnaam) en de eerste 100 tekens: daarom deze naam en een korte tekst.
+export const PROXY_BRON = 'decodo-proxy'
+// Wat de gebruiker ziet bij een opdracht die niet kon beginnen (matransport#613).
+export const REDEN_PROXY = 'Niet uitgevoerd: PostNL was niet bereikbaar (de verbinding via de proxy werd geweigerd). Probeer het opnieuw zodra dit is opgelost.'
+export const REDEN_LOGIN = 'Niet uitgevoerd: inloggen bij PostNL lukte steeds niet. Probeer het over een paar minuten opnieuw.'
 
 export function slotSleutel(klantId, depotNaam) { return `${klantId}:${depotNaam}` }
 
@@ -87,7 +94,9 @@ export async function draaiDepot(deps) {
   let laatsteVoortgang = klok.nu()
   let laatsteGegooidMelding = null
   let laatsteIngetrokkenMelding = null
+  let laatsteProxyMelding = null
   let rem = {}   // fouten per taak (taakrem.js)
+  let loginFoutenAchtereen = 0   // mislukte logins van dit depot, tot er weer een sessie is (matransport#613)
 
   // Hartslag: alleen zolang de lus binnen zijn eigen grens zit (zie startHartslag).
   // `klok.tijd` (zonder bijwerking): de productieklok telt elke klok.nu() als voortgang voor de
@@ -155,6 +164,78 @@ export async function draaiDepot(deps) {
 
   async function bewaar() {
     try { await opslag.bewaarDagstatus(depot.naam, dag) } catch (e) { log.error(`${label} ${e.message}`) }
+  }
+
+  // Opdrachten (planner, RVA) die niet kunnen beginnen: op mislukt met de reden en uit de rij
+  // (matransport#613). Andere aanvragen (depotUrl) blijven staan.
+  async function opdrachtenNietGestart(aanvragen, reden) {
+    let n = 0
+    for (const a of aanvragen) {
+      if (a.soort !== 'planner' && a.soort !== 'rva') continue
+      if (await opslag.opdrachtNietGestart?.(a.soort, a.id, reden)) {
+        n++
+        log.warn(`${label} ${a.soort}-opdracht ${a.id} niet uitgevoerd: ${reden}`)
+      }
+      dag = aanvraagKlaar(dag, a.id)
+    }
+    if (n) await bewaar()
+    return n
+  }
+
+  // De proxy-aanbieder weigert de login (407, alle IP's; 07-11 een mislukte betaling, matransport#613).
+  // Inloggen heeft dan geen zin: de sessie is al dicht. Eerst één toets, zodat een losse 407 geen alarm
+  // geeft. Weigert hij echt: één melding (hoogstens elke proxyMeldenElkeMin), wachtende en nieuwe
+  // opdrachten meteen niet uitgevoerd, en elke proxyToetsMin toetsen, zonder PostNL. Het slot blijft
+  // van ons: de losse scripts zouden hetzelfde zien. Elke POLL_MS een ronde, dus stoppen (noodknop,
+  // nieuwe code), een gemiste wekker en de waakhond werken gewoon. Getoetst wordt de proxy die een
+  // login nu zou krijgen: na een herstel kunnen poorten of login anders zijn.
+  async function wachtOpProxy(proxy, fout) {
+    const begin = klok.nu()
+    const toets = async () => {
+      const huidig = await Promise.resolve().then(() => deps.huidigeProxy?.()).catch((e) => { log.warn(`${label} ${e.message}`); return null })
+      return deps.toetsProxy(huidig ?? proxy)
+    }
+    // Alleen een antwoord dat geen 407 is: een time-out zegt niet dat de proxy weer werkt.
+    const werkt = (t) => t.status != null && !t.geweigerd
+    const meld = async () => {
+      if (laatsteProxyMelding && klok.nu() - laatsteProxyMelding < cfg.proxyMeldenElkeMin * MIN) return
+      laatsteProxyMelding = klok.nu()
+      const sinds = Math.round((klok.nu() - begin) / MIN)
+      await melden({ soort: 'proxy_geweigerd', bron: PROXY_BRON, depot: depot.naam, detail: `Decodo weigert de login (407), kijk de betaling na. Geldt voor alle IP's${sinds ? `, al ${sinds} min` : ''}; geen PostNL-login tot de proxy weer werkt (toets elke ${cfg.proxyToetsMin} min). Fout: ${String(fout?.message ?? '').split('\n')[0].slice(0, 160)}` })
+    }
+    let t = await toets()
+    // Alleen onder de loginrem: herstel() kijkt daar bij proxy_wacht niet naar. Blijft Chromium 407
+    // krijgen terwijl de toets lukt (flappende aanbieder), dan zou dit zonder rem blijven inloggen.
+    const inLaatsteUur = logins.filter(x => klok.nu() - x <= 60 * MIN).length
+    if (werkt(t) && inLaatsteUur < cfg.maxLoginsPerUur) {
+      log.warn(`${label} Losse 407: de proxy werkt (toets: ${t.status}); gewoon verder`)
+      return
+    }
+    await meld()
+    await opdrachtenNietGestart(dag.aanvragen ?? [], REDEN_PROXY)
+    let laatsteToets = klok.nu()
+    while (!stop() && !hartslag?.weg) {
+      levend(POLL_MS)
+      deps.bezig?.set(depot.naam, { taak: 'wachten op de proxy', fase: 'afhandeling', sinds: begin })
+      // Wekbaar: een nieuwe opdracht krijgt meteen antwoord, niet pas bij de volgende ronde.
+      await (klok.wekbaar ?? klok.slaap)(POLL_MS)
+      if (stop() || hartslag?.weg) break
+      const nieuwe = [
+        ...((await opslag.plannerOpdrachten(depot.naam)) ?? []).map(o => ({ id: o.id, soort: 'planner' })),
+        ...(cfg.rva && opslag.rvaOpdrachten ? ((await opslag.rvaOpdrachten(depot.naam)) ?? []).map(o => ({ id: o.id, soort: 'rva' })) : []),
+      ]
+      if (nieuwe.length) await opdrachtenNietGestart(nieuwe, REDEN_PROXY)
+      if (klok.nu() - laatsteToets < cfg.proxyToetsMin * MIN) continue
+      laatsteToets = klok.nu()
+      t = await toets()
+      if (werkt(t)) {
+        const min = Math.round((klok.nu() - begin) / MIN)
+        log.log(`${label} Proxy werkt weer (toets: ${t.status}) na ${min} min wachten`)
+        await melden({ soort: 'proxy_hersteld', bron: PROXY_BRON, depot: depot.naam, detail: `De proxy liet de verbinding weer toe (toets: ${t.status}) na ${min} min; de sessiehouder logt weer in` })
+        return
+      }
+      await meld()
+    }
   }
 
   if (!(await slotHouden())) return { reden: 'stop' }
@@ -293,8 +374,20 @@ export async function draaiDepot(deps) {
         startpagina = await kijkStart(page)
       }
       const herlogin = rvaTaak ? 0 : (sessie?.herloginTaak ?? 0)
-      const soort = !sessie ? (fout ? classificeer({ fout }) : 'gezond')
-        : classificeer({ url: page?.url?.() ?? '', depotHost: rvaTaak ? null : sessie.depotHost, fout, planningZichtbaar: fout ? planningZichtbaar : null, opStartpagina: startpagina, herlogin })
+      // Liet de proxy verzoeken niet door (bij het inloggen of midden in de taak)? Dan toetsen of de
+      // aanbieder de login weigert. 07-11 (matransport#613) gaf dat 10 uur lang lege pagina's en
+      // time-outs, en elke 11 min een nieuwe login, zonder dat ergens "proxy" stond.
+      // Een 407 is de aanbieder zelf; alleen een tunnelfout zonder 407 moet nog getoetst worden.
+      let proxyGeweigerd = Boolean(fout) && ((sessie?.proxy407 ?? 0) > 0 || (fout.proxy407 ?? 0) > 0)
+      const proxyVoorToets = fout?.proxy ?? sessie?.proxy?.proxy ?? null
+      const tunnelFout = fout?.proxyFout || (sessie?.tunnelFouten ?? 0) > 0 || (fout?.tunnelFouten ?? 0) > 0
+      if (fout && !proxyGeweigerd && fout.name !== 'ProxyGeweigerdError' && deps.toetsProxy && proxyVoorToets && tunnelFout) {
+        const t = await deps.toetsProxy(proxyVoorToets)
+        proxyGeweigerd = t.geweigerd === true
+        log.warn(`${label} ${taak}: de proxy liet verzoeken niet door; toets: ${t.status ?? t.fout}${proxyGeweigerd ? ', de aanbieder weigert de login' : ''}`)
+      }
+      const soort = !sessie ? (fout ? classificeer({ fout, proxyGeweigerd }) : 'gezond')
+        : classificeer({ url: page?.url?.() ?? '', depotHost: rvaTaak ? null : sessie.depotHost, fout, planningZichtbaar: fout ? planningZichtbaar : null, opStartpagina: startpagina, herlogin, proxyGeweigerd })
       let actie = herstel(soort, { recent, logins, nu: klok.nu(), cfg })
       recent.push({ soort, at: klok.nu() })
       if (recent.length > 20) recent.shift()
@@ -306,6 +399,16 @@ export async function draaiDepot(deps) {
         actie = logins.filter(t => klok.nu() - t <= 60 * MIN).length >= cfg.maxLoginsPerUur ? 'pauze' : 'nieuwe_login'
       }
       if (perTaak.melding) await melden({ ...perTaak.melding, depot: depot.naam })
+
+      // Inloggen mislukt steeds (geen sessie na een fout): na opdrachtMaxLoginFouten keer gaan de
+      // wachtende opdrachten op niet uitgevoerd, met uitleg, en elke nieuwe zolang dat zo blijft
+      // (matransport#613). Per depot, niet per opdracht: de fout geldt voor allemaal. Een geweigerde
+      // proxy handelt wachtOpProxy hieronder af.
+      if (sessie) {
+        loginFoutenAchtereen = 0
+      } else if (fout && soort !== 'proxy_geweigerd' && ++loginFoutenAchtereen >= cfg.opdrachtMaxLoginFouten) {
+        await opdrachtenNietGestart(dag.aanvragen ?? [], REDEN_LOGIN)
+      }
 
       // PostNL trekt de sessie vaak in (fout 460): iemand anders gebruikt waarschijnlijk deze login.
       // Hoogstens één melding per uur, met het aantal; de gebeurtenis telt mee voor de levensmeter.
@@ -367,6 +470,9 @@ export async function draaiDepot(deps) {
 
       if (actie === 'nieuwe_login') {
         await sluit(soort, { fout, uitkomst: soort === 'blokkade' ? 'blokkade' : undefined })
+      } else if (actie === 'proxy_wacht') {
+        await sluit('proxy_geweigerd', { fout })
+        await wachtOpProxy(proxyVoorToets, fout)
       } else if (actie === 'pauze') {
         await sluit(soort, { fout })
         // Met de oorzaak: hoeveel in het laatste uur, en wat er misging (#599).
@@ -384,9 +490,11 @@ export async function draaiDepot(deps) {
       }
 
       // Videosegment of browser vernieuwen (alleen tussen taken). Ook als een handler over zijn
-      // limiet niet stopte: met de context dicht faalt hij meteen, zonder nieuwe login.
+      // limiet niet stopte: met de context dicht faalt hij meteen, zonder nieuwe login. Loopt ffmpeg
+      // achter, dan is de context pas later dicht en faalt hij op zijn eigen time-outs.
       if (sessie && cfg.contextWissel && (handlerLooptNog || Date.now() - sessie.segmentOm >= cfg.segmentMin * MIN)) {
-        const segmentMs = 180_000 + 2 * LOGIN_MAX_SEC * 1000   // naarDepot en rvaOpenen kunnen elk inloggen
+        // Cookies 30 + trace 30 + twee tabbladen 60 + sluiten 150 s; naarDepot en rvaOpenen kunnen elk inloggen.
+        const segmentMs = 270_000 + 2 * LOGIN_MAX_SEC * 1000
         levend(segmentMs)
         deps.bezig?.set(depot.naam, { taak: 'nieuw videosegment', fase: 'afhandeling', sinds: klok.nu() })
         try {

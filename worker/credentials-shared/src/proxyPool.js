@@ -15,6 +15,7 @@
 //
 // Uitleg van de pool zelf: matransport worker/proxy-pool/PROXY_POOL.md.
 
+import { request as httpRequest } from 'node:http'
 import { decrypt } from './index.js'
 
 export function proxyPoolAan() {
@@ -28,6 +29,77 @@ export class ProxyBlokkadeError extends Error {
     super(melding)
     this.name = 'ProxyBlokkadeError'
   }
+}
+
+// De aanbieder zelf weigert de proxy-login (407): het account werkt niet, bv. een mislukte
+// betaling (07-11, matransport#613). Geldt voor alle IP's tegelijk, dus geen quarantaine van één IP
+// en geen ander IP proberen: wachten tot de proxy weer werkt.
+export class ProxyGeweigerdError extends Error {
+  constructor(melding) {
+    super(melding)
+    this.name = 'ProxyGeweigerdError'
+  }
+}
+
+// Een 407 komt alleen van een proxy. Gemeten (proef-lokaal, sporen van 07-11): page.goto gooit dan
+// NIET. Hij slaagt, met een response met status 407 en de header proxy-authenticate, en laat een
+// leeg document staan onder het gevraagde adres. Daarom bleef het 10 uur "Planning-menu niet
+// zichtbaar (url: …/index.html)". Elke navigatie moet dus naar de status kijken.
+export const isProxyWeigering = (response) => response?.status?.() === 407
+
+export function gooiBijProxyWeigering(response) {
+  if (isProxyWeigering(response)) throw new ProxyGeweigerdError('De proxy-aanbieder weigert de login (407)')
+}
+
+// Zo meldt Chromium een verzoek dat de proxy niet doorliet (requestfailed, of een fout uit goto als de
+// proxy zelf onbereikbaar is). Dit alleen bewijst nog niet dat de aanbieder weigert, de proxy kan
+// het doel ook niet bereiken: daarvoor toetsProxy.
+export const PROXY_NETWERKFOUT = /ERR_TUNNEL_CONNECTION_FAILED|ERR_PROXY_[A-Z_]+|ERR_NO_SUPPORTED_PROXIES/
+
+export const TOETS_DOEL = 'ip.decodo.com:443'
+
+// Eén CONNECT via de proxy, zonder browser en zonder PostNL: weigert de aanbieder de login?
+// Geeft { status, geweigerd, fout }. status 200 = de proxy werkt, 407 = de aanbieder weigert.
+// Nooit langer dan `ms`. Schuift de rij van de pool niet op en schrijft niets in proxy_gebruik_log.
+export function toetsProxy(proxy, { ms = 10_000, doel = TOETS_DOEL } = {}) {
+  if (!proxy?.server) return Promise.resolve({ status: null, geweigerd: false, fout: 'geen proxy' })
+  let url
+  try { url = new URL(proxy.server) } catch { return Promise.resolve({ status: null, geweigerd: false, fout: 'ongeldig proxy-adres' }) }
+  const headers = { host: doel }
+  if (proxy.username) headers['proxy-authorization'] = 'Basic ' + Buffer.from(`${proxy.username}:${proxy.password ?? ''}`).toString('base64')
+  return new Promise((klaar) => {
+    let gedaan = false
+    let klok = null
+    const eind = (uit) => { if (!gedaan) { gedaan = true; clearTimeout(klok); klaar(uit) } }
+    const req = httpRequest({ host: url.hostname, port: Number(url.port) || 80, method: 'CONNECT', path: doel, headers })
+    klok = setTimeout(() => { req.destroy(); eind({ status: null, geweigerd: false, fout: 'timeout' }) }, ms)
+    req.on('connect', (res, socket) => {
+      socket.destroy()
+      eind({ status: res.statusCode, geweigerd: res.statusCode === 407, fout: null })
+    })
+    // Sommige proxies antwoorden op een geweigerde CONNECT met een gewone response.
+    req.on('response', (res) => { res.resume(); eind({ status: res.statusCode, geweigerd: res.statusCode === 407, fout: null }) })
+    req.on('error', (err) => eind({ status: null, geweigerd: false, fout: err.code || err.message }))
+    req.end()
+  })
+}
+
+// De proxy die een login nu zou krijgen, zoals volgende_proxy() kiest, maar zonder de rij op te
+// schuiven en zonder rij in proxy_gebruik_log. Voor het toetsen tijdens het wachten: na een herstel
+// kunnen de poorten of de login anders zijn (07-11: nieuwe IP's), en dan blijft de oude ingang 407
+// geven. null = geen pool, of niets bruikbaars in de tabel: de aanroeper houdt zijn eigen proxy.
+export async function huidigeProxy(supabase) {
+  if (!proxyPoolAan()) return null
+  const key = process.env.CREDENTIALS_ENCRYPTION_KEY
+  if (!key) return null
+  const { data, error } = await supabase.from('proxy_servers')
+    .select('host, poort, gebruikersnaam, wachtwoord_encrypted')
+    .eq('status', 'actief').eq('laatste_check_ok', true)
+    .order('laatst_gebruikt_at', { ascending: true, nullsFirst: true }).order('poort').limit(1)
+  if (error) throw new Error(`Proxy lezen: ${error.message}`)
+  const p = data?.[0]
+  if (!p) return null
+  return { server: `http://${p.host}:${p.poort}`, username: p.gebruikersnaam, password: decrypt(p.wachtwoord_encrypted, key) }
 }
 
 // Herkent een Akamai-/WAF-blokkade aan de paginainhoud — overgenomen uit de

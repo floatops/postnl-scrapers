@@ -57,6 +57,13 @@ export const STANDAARD = Object.freeze({
   maxFoutenAchtereen: 3,          // zoveel gewone fouten achter elkaar = nieuwe login
   maxLoginsPerUur: 4,             // meer = pauze + melding (niet blijven hameren op PostNL)
   pauzeMin: 10,
+  // De aanbieder weigert de proxy (407, matransport#613): zo vaak de proxy toetsen (zonder PostNL-login)
+  // tot hij weer werkt, en hoogstens zo vaak per depot de melding proxy_geweigerd herhalen.
+  proxyToetsMin: 5,
+  proxyMeldenElkeMin: 120,
+  // Een opdracht (planner, RVA) waarvoor het inloggen zo vaak achter elkaar mislukt: niet uitgevoerd,
+  // met uitleg, in plaats van uren later alsnog (07-11: b277d836 wachtte 70 min, RVA 5 uur).
+  opdrachtMaxLoginFouten: 3,
   // Per taak (taakrem.js, matransport#598): zoveel keer achter elkaar mislukt = steeds langer
   // wachten (1, 2, 4 … tot taakRemMaxMin min) en één melding taak_faalt.
   taakFoutenRem: 5,
