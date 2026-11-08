@@ -7,8 +7,15 @@ import { execFileSync } from 'node:child_process'
 // postnl-rva sinds de RVA-taak (matransport#569): een RVA-commit geeft dus weer een herstart.
 export const MAPPEN = ['worker/postnl-sessie/', 'worker/credentials-shared/', 'worker/postnl-planner/', 'worker/postnl-ritmonitor/', 'worker/postnl-rva/']
 
+// Bestanden in die mappen die de sessiehouder nooit laadt: documentatie en tests. Op 08-11
+// herstartte een commit die alleen POSTNL_SESSIE.md wijzigde de sessiehouder op A en B (een login
+// per depot, minuten niet lezen; matransport#638). package.json en package-lock.json tellen wel.
+export function nietGeladen(pad) {
+  return /\.md$/i.test(pad) || /\/test\//.test(pad)
+}
+
 export function raaktSessiehouder(paden) {
-  return paden.some(p => MAPPEN.some(m => p.startsWith(m)))
+  return paden.some(p => MAPPEN.some(m => p.startsWith(m)) && !nietGeladen(p))
 }
 
 // Stack A en B delen één checkout (/opt/postnl-scrapers, van root); Stack B draait als

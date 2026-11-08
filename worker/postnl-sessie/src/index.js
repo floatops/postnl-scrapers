@@ -26,7 +26,7 @@ import { HANDLERS, planner, rva } from './handlers.js'
 import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
-import { beslisCode, codeVersie, codeVersieBijStart, codeVersieFout, gewijzigdePaden, headVerschovenOp } from './codeversie.js'
+import { beslisCode, codeVersie, codeVersieBijStart, codeVersieFout, gewijzigdePaden, headVerschovenOp, MAPPEN } from './codeversie.js'
 import { beoordeelGeheugen, beoordeelTotaal, geheugenTekst, meetTotaal, mapMb, vrijGb } from './geheugen.js'
 import { waakhondMs } from './instellingen.js'
 import { zetTijdInLog, tijdStempel } from '../../credentials-shared/src/tijdLog.js'
@@ -116,7 +116,8 @@ async function main() {
       return
     }
     if (besluit === 'geen_herstart') {
-      log.log(`Nieuwe code (${nu.slice(0, 7)}) raakt de sessiehouder niet: geen herstart`)
+      const geladenMap = (paden ?? []).filter(p => MAPPEN.some(m => p.startsWith(m)))
+      log.log(`Nieuwe code (${nu.slice(0, 7)}) raakt de sessiehouder niet: geen herstart (${paden?.length ?? 0} paden gewijzigd${geladenMap.length ? `, in zijn mappen alleen documentatie/tests: ${geladenMap.length}` : ', geen in zijn mappen'})`)
       versie = nu
       return
     }

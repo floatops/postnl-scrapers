@@ -15,6 +15,18 @@ test('code die de sessiehouder laadt, geeft wel een herstart', () => {
   }
 })
 
+// matransport#638: de commit van #637 wijzigde alleen POSTNL_SESSIE.md en herstartte toch de
+// sessiehouder op beide stacks (een login per depot).
+test('alleen documentatie of tests in een sessiehouder-map geeft geen herstart', () => {
+  assert.equal(raaktSessiehouder(['worker/postnl-sessie/POSTNL_SESSIE.md']), false)
+  assert.equal(raaktSessiehouder(['worker/postnl-rva/POSTNL_RVA.md', 'worker/credentials-shared/README.md']), false)
+  assert.equal(raaktSessiehouder(['worker/postnl-sessie/test/codeversie.test.mjs', 'worker/postnl-planner/test/logica.test.js']), false)
+  // maar zodra er ook code bij zit, wel
+  assert.equal(raaktSessiehouder(['worker/postnl-sessie/POSTNL_SESSIE.md', 'worker/postnl-sessie/src/depot.js']), true)
+  assert.equal(raaktSessiehouder(['worker/postnl-sessie/test/x.test.mjs', 'worker/postnl-sessie/package-lock.json']), true)
+  assert.equal(beslisCode('a', 'b', ['worker/postnl-sessie/POSTNL_SESSIE.md']), 'geen_herstart')
+})
+
 test('sinds de RVA-taak (matransport#569) laadt de sessiehouder ook postnl-rva: dan wel herstarten', () => {
   assert.equal(raaktSessiehouder(['worker/postnl-rva/src/scherm.js']), true)
 })
