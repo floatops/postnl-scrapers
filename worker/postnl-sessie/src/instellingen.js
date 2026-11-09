@@ -40,8 +40,8 @@ export const STANDAARD = Object.freeze({
   // RVA (Route Volgorde Applicatie, matransport#569): opdrachten uit de app in een tweede tabblad
   // van deze sessie, zelfde login. Standaard uit; per klant aanzetten in postnl_instellingen.
   // rvaAltijd: ook 's nachts en op zondag (de lus stopt dan niet). rvaWakkerMin: zo vaak het
-  // Rittenoverzicht in het RVA-tabblad verversen, zodat de sessie leeft. Echt opslaan in RVA alleen
-  // met RVA_ECHT=ja in de omgeving van de worker.
+  // Rittenoverzicht in het RVA-tabblad verversen, zodat de sessie leeft. Opslaan in RVA gebeurt altijd
+  // echt: er is geen proefstand (matransport#657).
   rva: false,
   rvaAltijd: true,
   rvaWakkerMin: 10,

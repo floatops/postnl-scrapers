@@ -13,11 +13,11 @@ De app maakt een rij in `planning_taken`; `planning-taak` roept `POST /run/postn
 - **Postcode per stop** (matransport#587): `stopNaarRij` bewaart ook `PostalCode` als `postcode` (zonder spatie, hoofdletters), voor de stops op de kaart van een rit. Het stopobject heeft geen coördinaten (trace van 04-11 nagelopen). Op een stack zonder de kolom (Stack B tot de promotie van de migratie) slaat `stopVelden()` hem over; die kijkt één keer per proces, en alleen fout 42703 ("kolom bestaat niet") telt. Daarna kan die controle eruit.
 - Dubbel uitvoeren kan niet: `verwerk` pakt een opdracht alleen op zolang hij op `wacht` staat (compare-and-set).
 
-## Proefstand: `PLANNER_ECHT`
+## Altijd echt, geen proefstand (matransport#657)
 
 **Alleen binnen dezelfde shift** (regel eigenaar 03-11): een verplaatsing naar een rit van een andere shift zet de worker op `overgeslagen` (`shiftReden`), vóór hij iets in PostNL opent. De app biedt alleen ritten van dezelfde shift aan.
 
-**Echt verplaatsen gebeurt alleen met `PLANNER_ECHT=ja` in de omgeving van de worker.** Zonder die instelling selecteert hij de stops, controleert hij alles, stopt hij vóór de dubbelklik en zet hij de verplaatsing op `overgeslagen` met de melding "Proefstand". Naar een **geautoriseerde** doelrit dubbelklikt hij altijd, ook met `PLANNER_ECHT=ja`: PostNL weigert dat zelf, en de melding komt in de app. Zet hem pas aan nadat een geslaagde verplaatsing op een toestel is gezien en op de opname is nagekeken.
+**De worker verplaatst altijd echt, op elke stack, zonder instelling.** Tot 09-11 was er een schakelaar `PLANNER_ECHT=ja`: die stond op Stack A wel en op Stack B niet, en daar voerde Plannen een hele ochtend niets door ("Proefstand … niet verplaatst"). De eigenaar besliste: weg, en nooit meer een proefstand. `test/invarianten.test.mjs` in postnl-sessie maakt elke `process.env.<X>_ECHT` en elke "Proefstand"-uitkomst in `worker/*/src` rood. Naar een **geautoriseerde** doelrit dubbelklikt hij ook: PostNL weigert dat zelf, en de melding komt in de app.
 
 ## De handeling in PostNL
 

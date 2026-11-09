@@ -110,7 +110,7 @@ test('rva-handler: opdracht staat al niet meer op wacht → niets doen, aanvraag
   assert.equal(db.updates.length, 0)
 })
 
-test('rva-handler: gelukt in het RVA-tabblad, regel-object wordt sleutel, proefstand zonder RVA_ECHT', async () => {
+test('rva-handler: gelukt in het RVA-tabblad, regel-object wordt sleutel, altijd echt zonder instelling (matransport#657)', async () => {
   delete process.env.RVA_ECHT
   let mee = null
   rva.laad = async () => ({
@@ -126,19 +126,19 @@ test('rva-handler: gelukt in het RVA-tabblad, regel-object wordt sleutel, proefs
   const s = nepSessie()
   const uit = await HANDLERS.rva({ sessie: s, supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
   assert.equal(mee.page.naam, 'rva-tab', 'in het tweede tabblad, geen nieuwe login')
-  assert.equal(mee.opties.echt, false)
+  assert.equal(mee.opties.echt, true, 'geen proefstand: altijd echt opslaan')
   assert.deepEqual(mee.o, { rit: 'proefrit', dag: 'Za', handelingen: [{ ...opdracht.handelingen[0], regel: '1234ab|appelstraat|1|9|oneven' }] })
-  assert.deepEqual(db.updates.map(u => [u.status ?? u.stap, u.voortgang]), [['bezig', 5], ['Wijziging 1 van 1', 20], ['klaar', 100]], 'voortgangsbalk: elke stap live')
-  assert.match(db.updates.at(-1).melding, /Proefstand/)
-  assert.equal(uit.bewaren, true, 'ook in de proefstand: opname 30 dagen bewaren')
+  assert.deepEqual(db.updates.map(u => [u.status ?? u.stap, u.voortgang]), [['bezig', 5], ['Wijziging 1 van 1', 20], ['Nieuwe stand lezen', 95], ['klaar', 100]], 'voortgangsbalk: elke stap live')
+  assert.equal(db.updates.at(-1).melding, 'Opgeslagen in RVA')
+  assert.equal(uit.bewaren, true, 'opname 30 dagen bewaren')
   assert.deepEqual(uit.dag.aanvragen, [])
   assert.equal(uit.dag.rva.wakkerOm, nu.toISOString())
   assert.equal(uit.run.status, 'ok')
   assert.equal(s.lezingen, 1)
 })
 
-test('rva-handler: RVA_ECHT=ja → echt opslaan, opname bewaren', async () => {
-  process.env.RVA_ECHT = 'ja'
+test('rva-handler: RVA_ECHT=nee verandert niets, er wordt echt opgeslagen (matransport#657)', async () => {
+  process.env.RVA_ECHT = 'nee'
   let echt = null
   rva.laad = async () => ({ regelSleutel: () => 'x', openRva: async () => ({ ingelogd: false }), voerUit: async (p, m, o, opties) => { echt = opties.echt; return { stappen: [], opgeslagen: true, na: [] } } })
   const db = nepDb(opdracht)
@@ -238,20 +238,18 @@ test('rva-handler ophalen: leest de rit-dag en zet hem in rva_regels, ook zonder
   assert.equal(uit.bewaren, false, 'alleen lezen: geen opname bewaren')
 })
 
-test('rva-handler kopieren in de proefstand: mislukt met uitleg, niets in RVA, niet gooien', async () => {
+test('rva-handler kopieren zonder instelling: kopieert gewoon echt (matransport#657)', async () => {
   delete process.env.RVA_ECHT
   let gekopieerd = false
-  rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), kopieerNaar: async () => { gekopieerd = true } })
+  rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), kopieerNaar: async (p, m, rit, d, naar, opties) => { gekopieerd = opties.echt; return { melding: 'gekopieerd' } } })
   const db = nepDbTabellen({ ...opdracht, soort: 'kopieren', handelingen: [], parameters: { naar: ['Di'] } })
   const uit = await HANDLERS.rva({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
-  assert.equal(gekopieerd, false)
-  assert.equal(db.updates.at(-1).status, 'mislukt')
-  assert.match(db.updates.at(-1).melding, /Proefstand/)
+  assert.equal(gekopieerd, true)
+  assert.equal(db.updates.at(-1).status, 'klaar')
   assert.deepEqual(uit.dag.aanvragen, [])
 })
 
 test('rva-handler kopieren echt: doeldagen als verouderd gemarkeerd', async () => {
-  process.env.RVA_ECHT = 'ja'
   rva.laad = async () => ({ openRva: async () => ({ ingelogd: false }), kopieerNaar: async (p, m, rit, d, naar) => { assert.deepEqual(naar, ['Di', 'Wo']); return { melding: 'De volgende weekdagen zijn succesvol gekopieerd' } } })
   const db = nepDbTabellen({ ...opdracht, soort: 'kopieren', handelingen: [], parameters: { naar: ['Di', 'Wo'] } })
   await HANDLERS.rva({ sessie: nepSessie(), supabase: db, klantId: 'k', nu }, dag(), { id: 'o1' })
@@ -261,7 +259,6 @@ test('rva-handler kopieren echt: doeldagen als verouderd gemarkeerd', async () =
 })
 
 test('rva-handler wijzigen echt: de nieuwe stand gaat meteen naar rva_regels; account toegevoegd staat in de melding', async () => {
-  process.env.RVA_ECHT = 'ja'
   rva.laad = async () => ({
     regelSleutel: () => 'x', openRva: async () => ({ ingelogd: false }),
     voerUit: async () => ({ stappen: [], opgeslagen: true, na: [1], rechtenToegevoegd: true }),

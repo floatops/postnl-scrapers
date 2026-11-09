@@ -139,8 +139,6 @@ async function schrijfRitten(ctx, r, rijen) {
 // Rit-dagen waarvan het bijlezen net mislukte: `klant|depot|rit|dag` → tot wanneer overslaan (ms).
 export const bijlezenMislukt = new Map()
 
-// Soorten die bij PostNL direct opslaan (geen Wijzig/Opslaan): alleen met RVA_ECHT=ja.
-const RVA_DIRECT = ['kopieren', 'revisie_terug', 'verantwoordelijken']
 
 // Alle shifts en ritten van een dag die al gekozen is (keuze van naarDag).
 async function leesDag(sessie, datum, keuze) {
@@ -197,25 +195,20 @@ export const HANDLERS = {
     if (!(await zetRva(ctx, id, { status: 'bezig', gestart_at: new Date().toISOString(), stap: 'RVA openen', voortgang: 5 }, 'wacht')).length) {
       return { dag: aanvraagKlaar(dag, id), run: null }
     }
-    const echt = process.env.RVA_ECHT === 'ja'
+    // Altijd echt opslaan, op elke stack: er is geen proefstand meer (matransport#657).
+    const echt = true
     const label = `[${sessie.depot.naam}] RVA`
     const log = { log: (...a) => sessie.log.log(label, ...a), warn: (...a) => sessie.log.warn(label, ...a) }
     // Voortgangsbalk in de app: elke stap live naar rva_opdrachten. Mislukt dat bijwerken, dan
     // gaat de opdracht gewoon door (alleen de balk loopt dan achter).
     const opStap = ({ stap, voortgang }) => zetRva(ctx, id, { stap, voortgang }).catch(e => sessie.log.warn(`${label}: voortgang niet bijgewerkt: ${e.message}`))
     const soort = o.soort ?? 'wijzigen'
-    // Kopiëren, een revisie terugzetten en verantwoordelijken slaan bij PostNL direct op: in de
-    // proefstand niets doen. Geen technische fout, dus niet gooien (geen herstel nodig).
-    if (RVA_DIRECT.includes(soort) && !echt) {
-      await zetRva(ctx, id, { status: 'mislukt', klaar_at: new Date().toISOString(), stap: null, melding: 'Proefstand: dit slaat in RVA direct op, en RVA_ECHT staat niet aan. Er is niets gewijzigd.' })
-      return { dag: klaar, run: null }
-    }
     const mendixVan = (page) => volgMendix(page)
     const klaarMet = async (melding, resultaat, gelezen = 0) => {
       await zetRva(ctx, id, { status: 'klaar', klaar_at: new Date().toISOString(), stap: null, voortgang: 100, melding, resultaat })
       sessie.lezingen++
       // bewaren: trace en video van elke RVA-opdracht 30 dagen op de VPS (fout/), ook als hij
-      // slaagt en ook in de proefstand: de eerste maand willen we alles kunnen terugkijken.
+      // slaagt: de eerste maand willen we alles kunnen terugkijken.
       return {
         dag: klaar, bewaren: soort !== 'ophalen', melding: `${o.rit} ${o.weekdag}: ${soort} — ${melding}`,
         run: { worker: 'postnl-rva', status: 'ok', depots_ok: 1, rijen_gelezen: gelezen, lezingen: { [sessie.depot.naam]: { opdracht: id, soort, ...resultaat } } },
@@ -275,8 +268,8 @@ export const HANDLERS = {
       // wijzigen. Een regel kan als sleutel of als object (postcode, straat, van, tm, evenOneven) komen.
       const handelingen = (o.handelingen ?? []).map(h => ({ ...h, regel: typeof h.regel === 'string' ? h.regel : r.regelSleutel(h.regel ?? {}) }))
       const uit = await r.voerUit(page, m, { rit: o.rit, dag: o.weekdag, handelingen }, { echt, log, opStap, gestopt: ctx.gestopt })
-      const regels = echt ? await naLezen(page) : null
-      const melding = (echt ? 'Opgeslagen in RVA' : 'Proefstand: alles gecontroleerd, niets opgeslagen (RVA_ECHT staat niet aan)')
+      const regels = await naLezen(page)
+      const melding = 'Opgeslagen in RVA'
         + (uit.rechtenToegevoegd ? '. Het account is eerst als ritverantwoordelijke toegevoegd.' : '')
       return await klaarMet(melding, { opgeslagen: uit.opgeslagen, stappen: uit.stappen, regels: regels ?? uit.na.length, rechtenToegevoegd: uit.rechtenToegevoegd === true }, uit.na.length)
     } catch (err) {

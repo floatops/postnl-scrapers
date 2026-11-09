@@ -12,7 +12,7 @@
 //       { soort: 'samenvoegen', regel, naar: 'onder'|'boven' },
 //       { soort: 'onderbreking', regel, minuten },
 //       { soort: 'onderbreking_weg', regel } ] }
-// <sleutel> = plan.regelSleutel(regel). Veiligheid: zonder `echt` eindigt alles met Annuleer.
+// <sleutel> = plan.regelSleutel(regel). Standaard echt (matransport#657); alleen de testscripts in scripts/ geven echt: false mee, dan eindigt alles met Annuleer.
 import { regelSleutel, zetOpPlek, knipDelen, verschillen, revisieTijdTekst, ritRijen } from './plan.js'
 import { meldingenOver, regelsUit, rittenUit, onderbrekingenUit, regelGuidsUit } from './lezen.js'
 import * as rva from './scherm.js'
@@ -42,7 +42,7 @@ const UITVOEREN = {
 // terug). Wijkt de stand van nu af van de actieve revisie, dan eerst Wijzig + Opslaan zonder
 // wijziging: een revisie van precies deze stand. Wijzig begint wél vanaf de stand van nu.
 // Geeft { basis: true } als er zo'n basisrevisie gemaakt is. Op de rit-dag-pagina aanroepen.
-export async function zorgVoorBasisRevisie(page, mendix, { echt = false, log = console } = {}) {
+export async function zorgVoorBasisRevisie(page, mendix, { echt = true, log = console } = {}) {
   const nu = await rva.leesRegels(page)
   const { revisies } = await rva.leesRevisies(page, mendix)
   const actief = revisies.find(r => r.actief)
@@ -60,7 +60,7 @@ export async function zorgVoorBasisRevisie(page, mendix, { echt = false, log = c
 // Voert de opdracht uit in de open RVA-pagina. Geeft per handeling wat er gebeurde. Een fout
 // midden in een handeling: geen herhaling, wel Annuleer (terug naar de basisrevisie), en dan gooien.
 // opStap({ stap, voortgang }) meldt elke stap (voor de voortgangsbalk in de app); mag niet gooien.
-export async function voerUit(page, mendix, opdracht, { echt = false, log = console, opStap = async () => {}, gestopt = () => false } = {}) {
+export async function voerUit(page, mendix, opdracht, { echt = true, log = console, opStap = async () => {}, gestopt = () => false } = {}) {
   const totaal = opdracht.handelingen.length
   const meld = (stap, voortgang) => Promise.resolve().then(() => opStap({ stap, voortgang })).catch(() => {})
   await meld('Rit-dag openen', 10)
@@ -100,7 +100,7 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
     throw err
   }
   const kladversie = await rva.leesRegels(page)
-  await meld(echt ? 'Opslaan in RVA' : 'Proefstand: terugdraaien', 90)
+  await meld(echt ? 'Opslaan in RVA' : 'Terugdraaien (alleen testscript)', 90)
   if (echt) await rva.opslaan(page, mendix)
   else await rva.annuleer(page, mendix)
   const na = await rva.leesRegels(page)
@@ -114,10 +114,10 @@ export async function voerUit(page, mendix, opdracht, { echt = false, log = cons
 
 // Alleen een ritverantwoordelijke ziet Wijzig. Staat het eigen account er niet bij, dan zet de
 // worker het er echt zelf bij (keuze eigenaar 03-11): de andere namen blijven, en daarna gaat
-// de rit-dag opnieuw open. In de proefstand niet: dan fout geen_rechten. Op de rit-dag-pagina.
-export async function zorgVoorRechten(page, mendix, rit, dag, { echt = false, log = console, meld = async () => {} } = {}) {
+// de rit-dag opnieuw open. Alleen een testscript met echt: false krijgt dan fout geen_rechten. Op de rit-dag-pagina.
+export async function zorgVoorRechten(page, mendix, rit, dag, { echt = true, log = console, meld = async () => {} } = {}) {
   if (await rva.magWijzigen(page)) return { toegevoegd: false }
-  if (!echt) throw new rva.RvaFout('geen_rechten', 'Het account staat niet als ritverantwoordelijke bij deze rit (proefstand: niet zelf toegevoegd)')
+  if (!echt) throw new rva.RvaFout('geen_rechten', 'Het account staat niet als ritverantwoordelijke bij deze rit (testscript zonder --echt: niet zelf toegevoegd)')
   const eigen = await rva.eigenAccount(page)
   if (!eigen) throw new rva.RvaFout('geen_rechten', 'Geen Wijzig-knop, en de naam van het eigen account is niet te lezen')
   await meld('Account toevoegen als ritverantwoordelijke', 12)
@@ -165,8 +165,7 @@ export async function leesRitDag(page, mendix, rit, dag, { revisies = true } = {
 }
 
 // Kopieer weekdag (slaat bij PostNL direct op). Controleert de melding van PostNL.
-export async function kopieerNaar(page, mendix, rit, dag, naar, { echt = false, log = console, meld = async () => {} } = {}) {
-  if (!echt) throw new rva.RvaFout('proefstand', 'Kopiëren slaat in RVA direct op; in de proefstand gebeurt er niets')
+export async function kopieerNaar(page, mendix, rit, dag, naar, { echt = true, log = console, meld = async () => {} } = {}) {
   await meld('Rit-dag openen', 20)
   await rva.openRitDag(page, mendix, rit, dag)
   if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
@@ -178,8 +177,7 @@ export async function kopieerNaar(page, mendix, rit, dag, naar, { echt = false, 
 }
 
 // Een revisie terugzetten (slaat bij PostNL direct op). `gemaaktOp` in ms, zoals in de app.
-export async function revisieTerug(page, mendix, rit, dag, gemaaktOp, { echt = false, log = console, meld = async () => {} } = {}) {
-  if (!echt) throw new rva.RvaFout('proefstand', 'Een revisie terugzetten slaat in RVA direct op; in de proefstand gebeurt er niets')
+export async function revisieTerug(page, mendix, rit, dag, gemaaktOp, { echt = true, log = console, meld = async () => {} } = {}) {
   await meld('Rit-dag openen', 20)
   await rva.openRitDag(page, mendix, rit, dag)
   if (await rva.inBewerkstand(page)) await rva.annuleer(page, mendix)
@@ -190,8 +188,7 @@ export async function revisieTerug(page, mendix, rit, dag, gemaaktOp, { echt = f
 
 // Ritverantwoordelijken zetten (elke klik slaat direct op). Het eigen account moet erbij blijven:
 // zonder kan dit account de rit niet meer bewerken, en de app dus ook niet.
-export async function zetVerantwoordelijkenVeilig(page, mendix, rit, dag, namen, { echt = false } = {}) {
-  if (!echt) throw new rva.RvaFout('proefstand', 'Ritverantwoordelijken slaan in RVA direct op; in de proefstand gebeurt er niets')
+export async function zetVerantwoordelijkenVeilig(page, mendix, rit, dag, namen, { echt = true } = {}) {
   const eigen = await rva.eigenAccount(page)
   if (!eigen) throw new rva.RvaFout('controle', 'De naam van het eigen account is niet te lezen; uit voorzorg niets gewijzigd')
   if (!namen.includes(eigen)) throw new rva.RvaFout('controle', 'Het eigen account moet ritverantwoordelijke blijven, anders kan FloatOps deze rit niet meer bewerken')

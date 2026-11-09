@@ -7,9 +7,9 @@
 // open sessie: hij importeert `verwerk` en geeft zijn eigen pagina mee (optie `metSessie`). Dit
 // script is dan alleen het vangnet (sessiehouder niet actief, vóór 05:25, na 23:00, zondag).
 //
-// Veiligheid: echt verplaatsen gebeurt alleen met PLANNER_ECHT=ja. Zonder die instelling
-// selecteert de worker de stops, controleert hij alles en stopt hij vóór de dubbelklik. Alleen
-// naar een geautoriseerde doelrit dubbelklikt hij wel: die weigert PostNL zelf.
+// Er is geen proefstand (matransport#657): de worker verplaatst altijd echt, op elke stack. Een
+// schakelaar als PLANNER_ECHT kwam op 09-11 niet mee naar Stack B, en daar voerde Plannen een hele
+// ochtend niets door. Voeg zo'n schakelaar nooit meer toe.
 import 'dotenv/config'
 import os from 'node:os'
 import path from 'node:path'
@@ -34,7 +34,6 @@ import { zetTijdInLog } from '../../credentials-shared/src/tijdLog.js'
 zetTijdInLog()   // datum en tijd op elke logregel (matransport#599)
 
 const WORKER = 'postnl-planner'
-const ECHT = process.env.PLANNER_ECHT === 'ja'
 const MAX_BLOKKADES = Number(process.env.PROXY_MAX_BLOKKADES || 3)
 const headless = String(process.env.POSTNL_HEADLESS ?? 'true').toLowerCase() !== 'false'
 
@@ -386,9 +385,6 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
   if (!await selecteer(page, mendix, gewenst)) {
     return { status: 'mislukt', melding: 'De stops konden niet exact geselecteerd worden. Er is niets verplaatst.' }
   }
-  if (!ECHT && !doelWeigertZelf) {
-    return { status: 'overgeslagen', melding: `Proefstand: ${gewenst.length} stop(s) geselecteerd, niet verplaatst naar ${doel.ritnaam}.` }
-  }
 
   await opStap(`Verplaatsen naar ${doel.ritnaam}`, 0.6)
   const meldingen = await verplaatsNaar(page, mendix, doel.shift, doel.ritnaam)
@@ -436,7 +432,6 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
     await werkRittenBij(taak, rit.ritnaam, v.chauffeur)
     return { status: 'gelukt', melding: 'Stond al op deze chauffeur.' }
   }
-  if (!ECHT) return { status: 'overgeslagen', melding: `Proefstand: ${rit.ritnaam} is niet gewisseld naar ${v.chauffeur}.` }
 
   const meldingen = await kiesChauffeur(page, mendix, v.chauffeur)
   const dialoog = await sluitDialoog(page, mendix)

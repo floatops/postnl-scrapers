@@ -210,3 +210,31 @@ test('sluiten van een context krijgt de tijd om de video af te maken, binnen wat
   assert.ok(!/levend\(120_000\)/.test(depot), 'de hartslag moet het sluiten dekken')
   assert.ok(CONTEXT_SLUIT_MS + 30_000 * 2 <= 240_000)
 })
+
+// Geen proefstand in productie (matransport#657). Op 09-11 ontbrak PLANNER_ECHT=ja op Stack B, en
+// voerde Plannen daar een hele ochtend niets door ("Proefstand … niet verplaatst"). Een schakelaar
+// die echt werk uitzet, komt bij een nieuwe stack of klant vroeg of laat niet mee. Daarom: geen
+// process.env.<X>_ECHT en geen "Proefstand"-uitkomst in de broncode die live draait (src/). Losse
+// testscripts in scripts/ (proef.mjs) vallen erbuiten. Elke schrijfwijze telt: process.env.X_ECHT,
+// process.env['X_ECHT'], vereis('X_ECHT'), { X_ECHT } = process.env, een DRY_RUN/PROEF-naam, een
+// melding met "proefstand" in welke vorm ook, en een default of vaste waarde echt = false.
+const PROEFSTAND = [
+  /\b\w*_ECHT\b/,
+  /\b(DRY_?RUN|PROEF(STAND)?|\w+_PROEF)\b/,
+  /['"`][^'"`]*proefstand/i,
+  /\becht\s*[=:]\s*false\b/,
+]
+test('geen proefstand-schakelaar in de broncode van een worker (#657)', () => {
+  const fout = []
+  for (const w of fs.readdirSync(WORKER, { withFileTypes: true }).filter(d => d.isDirectory())) {
+    for (const f of bestanden(path.join(WORKER, w.name, 'src'))) {
+      fs.readFileSync(f, 'utf8').split('\n').forEach((regel, i) => {
+        if (/^\s*\/\//.test(regel)) return
+        if (PROEFSTAND.some(p => p.test(regel))) {
+          fout.push(`${path.relative(WORKER, f).split(path.sep).join('/')}:${i + 1}: ${regel.trim()}`)
+        }
+      })
+    }
+  }
+  assert.deepEqual(fout, [], 'werk gaat altijd echt; geen schakelaar die het uitzet')
+})
