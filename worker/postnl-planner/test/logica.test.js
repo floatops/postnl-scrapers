@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, rittenUit,
-  selectieKlopt, stopNaarRij, stopsUit, tvi, tviTijd, volgordeAfwijkingen, uniekeMeldingen, verschil, zonderVelden, STOP_VELDEN, OPTIONELE_STOP_VELDEN,
+  selectieKlopt, stopNaarRij, stopsUit, tvi, tviTijd, volgordeAfwijkingen, isPostnlPunt, schoonToevoeging, uniekeMeldingen, verschil, zonderVelden, STOP_VELDEN, OPTIONELE_STOP_VELDEN,
 } from '../src/logica.js'
 
 const attrs = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { value: v }]))
@@ -94,7 +94,7 @@ test('stop naar rij bevat alleen wat de app toont', () => {
   const rij = stopNaarRij(stop, { klantId: 'k', depot: 'd', datum: '2026-11-02', shift: '02', ritId: 'R1', opgehaaldAt: 't' })
   assert.deepEqual(rij, {
     klant_id: 'k', depot: 'd', datum: '2026-11-02', shift: '02', rit_id: 'R1', stop_id: '1',
-    straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, postcode: '2676AA', stuks: 1, volume: 0.019, tvi_tijd: '2026-10-31T17:18:00.000Z', opgehaald_at: 't',
+    straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, postcode: '2676AA', stuks: 1, volume: 0.019, postnl_punt: false, tvi_tijd: '2026-10-31T17:18:00.000Z', opgehaald_at: 't',
   })
 })
 
@@ -312,7 +312,7 @@ test('schoonAdres: een vreemd huisnummer laat de lezing nooit crashen (#600)', a
 
 test('schoonToevoeging: een witte lijst, want het veld bevat ook namen en plaatsen (#600, verzonnen)', async () => {
   const { schoonToevoeging: t } = await import('../src/logica.js')
-  const goed = [['A', 'A'], ['22', '22'], ['K101', 'K101'], ['BU 3', 'BU3'], ['A- 2', 'A2'], ['A 39', 'A39'], ['APP 8', '8'], ['AP-03', '3'], ['APP 022', '22'], ['KAMER 321', '321'], ['UNIT C1243', 'C1243'], ['PBA', 'PBA'], ['BU2', 'BU2']]
+  const goed = [['A', 'A'], ['22', '22'], ['K101', 'K101'], ['BU 3', 'BU3'], ['A- 2', 'A2'], ['A 39', 'A39'], ['APP 8', '8'], ['AP-03', '3'], ['APP 022', '22'], ['KAMER 321', '321'], ['UNIT C1243', 'C1243'], ['BU2', 'BU2']]
   for (const [in_, uit] of goed) assert.equal(t(in_), uit, in_)
   // Een dubbele letter bestaat niet in het adresregister.
   for (const [in_, uit] of [['AA', 'A'], ['B B', 'B'], ['dd', 'D']]) assert.equal(t(in_), uit, in_)
@@ -463,4 +463,22 @@ test('gebouwnummer in de straat: "Teststraat 22-A" nr 8 wordt 22 + A8, alleen al
   assert.deepEqual(adresParen({ Street: 'Teststraat 22-A', BuildingNumber: '8', PostalCode: '1234AB' }), ['1234AB|8', '1234AB|22'])
   assert.deepEqual(adresParen({ Street: 'Teststraat', BuildingNumber: '8', PostalCode: '1234AB' }), ['1234AB|8'])
   assert.deepEqual(adresParen({ Street: 'Teststraat 22-A', BuildingNumber: '8', PostalCode: '0000FF' }), [])
+})
+
+test('PBA is geen toevoeging maar de vlag postnl_punt (matransport#603)', () => {
+  assert.equal(schoonToevoeging('PBA', '142'), null)
+  assert.equal(isPostnlPunt('PBA'), true)
+  assert.equal(isPostnlPunt(' pba '), true)
+  for (const nee of [null, '', 'A', 'BU2', 'PB']) assert.equal(isPostnlPunt(nee), false)
+  const opties = { klantId: 'k', depot: 'd', datum: '2026-11-10', shift: '01', ritId: 'R1', opgehaaldAt: 't' }
+  const rij = stopNaarRij({ guid: '1', Street: 'Choorstraat', BuildingNumber: '1', BuildingNumberExtension: 'PBA', PostalCode: '2681AN' }, opties)
+  assert.equal(rij.postnl_punt, true)
+  assert.equal(rij.toevoeging, null)
+  assert.equal(stopNaarRij({ guid: '2', Street: 'X', BuildingNumber: '1' }, opties).postnl_punt, false)
+})
+
+test('toevoeging gelijk aan het huisnummer met leestekens of voorloopnullen gaat weg (matransport#603)', () => {
+  for (const t of ['-29', '29.', '029', '29']) assert.equal(schoonToevoeging(t, '29'), null, t)
+  assert.equal(schoonToevoeging('A', '29'), 'A')
+  assert.equal(schoonToevoeging('29', '30'), '29')
 })

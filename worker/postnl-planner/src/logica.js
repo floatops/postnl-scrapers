@@ -84,15 +84,20 @@ const regexVeilig = (t) => String(t).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 // "1E"). Het adresregister kent niets anders. Daarom een witte lijst: wat niet zo oogt gaat weg, want
 // een vrij veld bevat ook namen van mensen ("T.A.V. ..."), bedrijven en plaatsen.
 // Letters alleen tot twee ("A", "BG"); met cijfers in de vorm van het register ("BU3", "K101",
-// "DC3A", "1E"). "PBA" is de enige uitzondering. "BV", "NV" zijn bedrijfsvormen, geen toevoeging.
-const isToevoeging = (t) => t === 'PBA' || (!['BV', 'NV'].includes(t) && /^([A-Z]{1,2}|[A-Z]{1,3}\d{1,4}[A-Z]?|\d{1,4}[A-Z]{0,2})$/.test(t))
+// "DC3A", "1E"). "BV", "NV" zijn bedrijfsvormen, geen toevoeging. "PBA" (PostNL-punt) is ook geen
+// toevoeging: die wordt een vlag, zie isPostnlPunt (matransport#603).
+const isToevoeging = (t) => !['BV', 'NV'].includes(t) && /^([A-Z]{1,2}|[A-Z]{1,3}\d{1,4}[A-Z]?|\d{1,4}[A-Z]{0,2})$/.test(t)
+
+// PostNL geeft een PostNL-punt (winkel die pakketten aanneemt) aan met toevoeging "PBA". Dat adres
+// heeft die toevoeging niet in het register (14 van 14 nagekeken, 10-11): het is een label.
+export const isPostnlPunt = (waarde) => /^PBA\b/i.test(String(waarde ?? '').trim())
 const zonderNullen = (t) => (/^\d+$/.test(t) ? t.replace(/^0+(?=\d)/, '') : t)
 
 // De toevoeging zoals een adres hem nodig heeft. In PostNL is dit een vrij veld (matransport#600): op
 // 06-11 stonden er losse tekens, hele postcodes, COA-nummers van bewoners, namen, bedrijven en
 // plaatsen in. "APP 8" wordt "8", "BU 3" wordt "BU3", "55 PLAATSNAAM" wordt "55". Een dubbele letter
 // ("AA", "B B") bestaat niet in het register: bij elk nagekeken adres stond daar "A" of "B". "PBA"
-// blijft: zo geeft PostNL een PostNL-punt aan. Alleen voor het opslaan: het terugvinden op het scherm
+// gaat eruit: dat is de vlag postnl_punt (matransport#603). Alleen voor het opslaan: het terugvinden op het scherm
 // gebruikt de ruwe waarde van PostNL (stopSleutel, adresSleutel).
 export function schoonToevoeging(waarde, huisnummer = null) {
   let t = String(waarde ?? '').trim().replace(/\s+/g, ' ')
@@ -104,6 +109,8 @@ export function schoonToevoeging(waarde, huisnummer = null) {
   t = t.replace(/^(APPARTEMENT|APP|AP|KAMER|UNIT)[\s.:-]*(?=[A-Z0-9])/, '')
   // Samenvoegen alleen tussen letter en cijfer ("BU 3"): "1-2" wordt anders "12", een ander adres.
   const samen = /\d[\s\-–/.]+\d/.test(t) ? t : t.replace(/[\s\-–/.]/g, '')
+  // Het huisnummer nog eens, maar met leestekens of voorloopnullen ("-29", "29.", "029" bij nr 29).
+  if (huisnummer && zonderNullen(samen) === zonderNullen(String(huisnummer).trim().toUpperCase())) return null
   if (/^([A-Z])\1$/.test(samen)) return samen[0]
   if (isToevoeging(samen)) return zonderNullen(samen)
   // Eerst de echte toevoeging, daarna een plaats of straat ("C PLAATSNAAM", "1E ETAGE").
@@ -303,6 +310,7 @@ export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaa
     postcode,
     stuks: Math.round(getal(stop.Pieces)),
     volume: getal(stop.Volume),
+    postnl_punt: isPostnlPunt(stop.BuildingNumberExtension),
     // Zonder het attribuut (een gedeeltelijk stopobject) het veld weglaten: dan slaat verschil() het
     // over en blijft de bekende tijd staan, in plaats van elke ronde null en weer terug te schrijven.
     ...('PlannedStopTime' in stop ? { tvi_tijd: tviTijd(stop.PlannedStopTime) } : {}),
@@ -493,11 +501,11 @@ export function teOudeTraces(namen, nu = new Date(), dagen = TRACE_BEWAAR_DAGEN)
 // veranderde, en een ronde zonder wijziging schrijft niets. Vergelijkt de inhoud, niet opgehaald_at.
 export const RIT_VELDEN = ['shift', 'ritnaam', 'chauffeur', 'chauffeur_wijzigbaar', 'chauffeur_opties', 'geautoriseerd',
   'bewerkbaar', 'geblokkeerd', 'stops', 'stuks', 'volume', 'deadline', 'stops_gelezen']
-export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'postcode', 'stuks', 'volume', 'tvi_tijd', 'tvi_volgorde']
+export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'postcode', 'stuks', 'volume', 'tvi_tijd', 'tvi_volgorde', 'postnl_punt']
 // Kolommen die op een stack nog kunnen ontbreken tot de migratie daar is gepromoot (één checkout
 // draait voor A en B): postcode (matransport#587), tvi_tijd (matransport#603). Zonder zo'n kolom
 // bewaart de worker de stops zonder dat veld, in plaats van elke upsert te laten mislukken.
-export const OPTIONELE_STOP_VELDEN = ['postcode', 'tvi_tijd', 'tvi_volgorde']
+export const OPTIONELE_STOP_VELDEN = ['postcode', 'tvi_tijd', 'tvi_volgorde', 'postnl_punt']
 export function zonderVelden(rij, weg) {
   if (!weg.size) return rij
   return Object.fromEntries(Object.entries(rij).filter(([k]) => !weg.has(k)))
