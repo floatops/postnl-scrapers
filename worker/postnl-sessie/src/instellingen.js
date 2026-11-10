@@ -6,6 +6,14 @@ import { LOGIN_MAX_SEC } from '../../credentials-shared/src/postnl/login.js'
 export const STANDAARD = Object.freeze({
   // Werktijden
   ochtendVanaf: '05:30',          // vanaf wanneer de nieuwe dag in PostNL staat
+  // Nachtlezing (matransport#690): één keer om nachtlezingOm de Plannen-tab vullen (ritten en
+  // stops van alle shifts), zodat de planning 's nachts al klaarstaat om voor te bereiden. Op 11-11
+  // stond de dag om 00:07 al in OOM PD. Alleen Plannen (planning_ritten/planning_stops): geen ritten
+  // aanmaken, geen deadlines vastleggen, dus geen pushmelding naar chauffeurs. De ochtendlezing en
+  // de rest van de dag blijven zoals altijd, ook de vaste herstart om 03:00 (fris beginnen).
+  // Staat de dag er nog niet, dan elke dagNietBeschikbaarWachtMin opnieuw, uiterlijk tot ochtendVanaf.
+  nachtlezing: true,
+  nachtlezingOm: '00:10',
   ritmonitorUiterlijk: '08:00',   // vangnet: ritmonitor start hoe dan ook om deze tijd
   eindtijd: '23:00',              // daarna gaat de sessie dicht
   rustdagen: [0],                 // 0 = zondag
@@ -110,7 +118,7 @@ export const STANDAARD = Object.freeze({
   taakAfbouwSchrijfSec: 90,
   // Elke taak uit taken.js hoort hier (test/invarianten.test.mjs). gisteren ontbrak tot #599 en
   // kreeg zo stil de standaard van 300 s, terwijl hij een hele dag leest zoals ochtend.
-  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, rva: 900, rvaWakker: 120, rvaBijlezen: 180, gisteren: 900 },
+  taakLimietSec: { ochtend: 900, definitief: 420, ritmonitor: 150, planner: 1500, depotUrl: 300, wakker: 120, plannen: 300, nacht: 900, rva: 900, rvaWakker: 120, rvaBijlezen: 180, gisteren: 900 },
 })
 
 // Hoe lang de waakhond (index.js) een lus zonder voortgang toelaat: de langste taak, plus twee

@@ -7,8 +7,9 @@ import { TAAK } from '../src/taken.js'
 import { STANDAARD, mergeInstellingen as mergeInstellingenEcht } from '../src/instellingen.js'
 
 // De taak 'gisteren' (nalezen van de vorige werkdag) heeft eigen tests; hier staat hij uit.
-const mergeInstellingen = (c = {}, ...rest) => mergeInstellingenEcht({ gisterenNalezen: false, ...c }, ...rest)
-import { nieuweDag, voorDatum, naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, voegAanvraagToe, aanvraagKlaar } from '../src/dagstatus.js'
+// De nachtlezing (matransport#690) heeft eigen tests onderaan; hier staat hij uit.
+const mergeInstellingen = (c = {}, ...rest) => mergeInstellingenEcht({ gisterenNalezen: false, nachtlezing: false, ...c }, ...rest)
+import { nieuweDag, voorDatum, naOchtend, naOchtendNietBeschikbaar, naNacht, naNachtNietBeschikbaar, naDefinitief, naRitmonitor, voegAanvraagToe, aanvraagKlaar } from '../src/dagstatus.js'
 
 // De taak 'plannen' heeft eigen tests onderaan; de rest gaat over de andere taken.
 const CFG = mergeInstellingen({ plannenVerversen: false })
@@ -304,7 +305,7 @@ test('gisteren: na 00:30 één keer de vorige werkdag nalezen (zondag overgeslag
   const { vorigeWerkdag } = await import('../src/taken.js')
   assert.equal(vorigeWerkdag('2026-11-04'), '2026-11-03')
   assert.equal(vorigeWerkdag('2026-11-02'), '2026-10-31', 'maandag: de zaterdag, zondag is een rustdag')
-  const cfg = mergeInstellingenEcht({ plannenVerversen: false, gisterenNalezen: true })
+  const cfg = mergeInstellingenEcht({ plannenVerversen: false, gisterenNalezen: true, nachtlezing: false })
   const dag = nieuweDag('2026-11-04')
   const k1 = kies(dag, new Date('2026-11-04T00:10:00+01:00'), cfg)
   assert.equal(k1.taak, undefined, 'vóór 00:30 nog niet')
@@ -343,4 +344,34 @@ test('plannen: een laatste lezing die steeds stopt, blokkeert de open shift niet
   assert.deepEqual(TAAK.plannen.volgende(dag, nu, cfg).args, { soort: 'stops', shifts: ['07'] }, 'net geprobeerd: de open shift is aan de beurt')
   const later = { ...dag, plannen: { ...dag.plannen, stopsOm: { '01': op(5), '07': op(1) }, rittenOm: op(1) } }
   assert.equal(TAAK.plannen.volgende(later, nu, cfg).args.naAutorisatie, true, 'daarna weer de laatste lezing')
+})
+
+// Nachtlezing (matransport#690): één keer om 00:10 de Plannen-tab vullen, los van de ochtendlezing.
+test('nacht: om 00:10 één keer, na een herstart niet opnieuw, na 5 min opnieuw als de dag er nog niet is', () => {
+  const cfg = mergeInstellingenEcht({})
+  const v = (dag, hhmm, c = cfg, datum = '2026-11-02') => TAAK.nacht.volgende(dag, om(hhmm, datum), c)
+  const dag = nieuweDag('2026-11-02')
+  assert.equal(cfg.nachtlezingOm, '00:10')
+  assert.equal(v(dag, '00:05').om.getTime(), om('00:10').getTime(), 'vóór 00:10: wachten tot 00:10')
+  assert.deepEqual(v(dag, '00:10'), { nu: true, args: {} })
+  const gelezen = naNacht(dag, { nu: om('00:12') })
+  assert.equal(v(gelezen, '00:20'), null, 'één keer per dag')
+  // Herstart om 03:00: de opgeslagen dagstatus van dezelfde dag gaat mee.
+  assert.equal(v(voorDatum(JSON.parse(JSON.stringify(gelezen)), '2026-11-02'), '03:02'), null, 'na de herstart niet opnieuw')
+  const nog = naNachtNietBeschikbaar(dag, { nu: om('00:10'), cfg })
+  assert.equal(v(nog, '00:12').om.getTime(), om('00:15').getTime(), 'dag nog niet in PostNL: na 5 min opnieuw')
+  assert.deepEqual(v(nog, '00:15'), { nu: true, args: {} })
+  assert.equal(nog.ochtend.gelezenOm, undefined, 'raakt de ochtendlezing niet')
+  assert.equal(v(dag, '05:30'), null, 'vanaf ochtendVanaf niet meer')
+  assert.equal(v(dag, '00:10', cfg, '2026-11-01'), null, 'zondag niet')
+  assert.equal(v(dag, '00:10', mergeInstellingenEcht({ nachtlezing: false })), null, 'uit')
+})
+
+test('nacht: de ochtendlezing om 05:30 blijft zoals altijd, ook na de nachtlezing', () => {
+  const cfg = mergeInstellingenEcht({ gisterenNalezen: false, plannenVerversen: false })
+  const gelezen = naNacht(nieuweDag('2026-11-02'), { nu: om('00:12') })
+  assert.equal(kies(gelezen, om('00:30'), cfg).taak, undefined, 'na de nachtlezing niets tot de ochtend')
+  assert.equal(TAAK.ochtend.volgende(gelezen, om('00:30'), cfg).om.getTime(), om('05:30').getTime())
+  assert.equal(kies(gelezen, om('05:30'), cfg).taak.naam, 'ochtend')
+  assert.equal(kies(nieuweDag('2026-11-02'), om('00:10'), cfg).taak.naam, 'nacht')
 })

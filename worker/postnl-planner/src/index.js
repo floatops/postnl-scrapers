@@ -5,7 +5,7 @@
 //
 // Draait de sessiehouder (postnl-sessie, matransport#562), dan voert die de opdracht uit in zijn
 // open sessie: hij importeert `verwerk` en geeft zijn eigen pagina mee (optie `metSessie`). Dit
-// script is dan alleen het vangnet (sessiehouder niet actief, vóór 05:25, na 23:00, zondag).
+// script is dan alleen het vangnet (sessiehouder niet actief, vóór 00:05, na 23:00, zondag).
 //
 // Er is geen proefstand (matransport#657): de worker verplaatst altijd echt, op elke stack. Een
 // schakelaar als PLANNER_ECHT kwam op 09-11 niet mee naar Stack B, en daar voerde Plannen een hele
@@ -623,15 +623,21 @@ let tellingDoorvoer = {}
 // de gegeven shifts; soort 'stops': ook de stops van die ritten. Geeft het aantal verschillen.
 // `stoppen()`: true = tussen twee ritten ophouden, want er wacht een Plannen-opdracht (matransport#578).
 // `naDeadline`: ook ritten voorbij hun deadline, voor de laatste lezing na de autorisatie (matransport#600).
+// `shifts: null` = alle shifts die PostNL toont (nachtlezing van de sessiehouder, matransport#690).
 export async function verversPlanning(page, mendix, { depot, datum, soort, shifts, nu = new Date(), stoppen = () => false, naDeadline = false }) {
   const taak = { id: null, depot, datum }
-  const open = (r) => shifts.includes(r.shift) && (naDeadline || !r.deadline || new Date(r.deadline) > nu)
+  const open = (r) => (!shifts || shifts.includes(r.shift)) && (naDeadline || !r.deadline || new Date(r.deadline) > nu)
   await kiesDag(page, mendix, dagLabel(datum))
-  const ritten = (await leesRitten(page, mendix, taak, { shifts })).filter(open)
+  const gelezen = await leesRitten(page, mendix, taak, { shifts })
+  // Alle shifts gevraagd en niets gelezen: dan stond het scherm niet klaar of is de dag er nog niet.
+  // Vóór bewaarRitten, dat anders alle ritten van de dag weghaalt (matransport#690). De tekst
+  // valt onder DAG_NIET_IN_PLANNING: de nachtlezing probeert het dan over 5 min opnieuw.
+  if (!shifts && !gelezen.length) throw new Error(`Op ${datum} geen ritten gelezen: lezing niet vertrouwd, de dag staat niet in de PostNL-planning.`)
+  const ritten = gelezen.filter(open)
   const uit = { ritten: null, stops: null, gestopt: false }
   if (soort === 'stops') {
     uit.stops = { nieuw: 0, gewijzigd: 0, weg: 0 }
-    for (const shift of shifts) {
+    for (const shift of shifts ?? [...new Set(ritten.map(r => r.shift))].sort()) {
       const t = await leesStopsVanShift(page, mendix, taak, shift, ritten, undefined, { stoppen, heleShift: naDeadline })
       for (const k of Object.keys(uit.stops)) uit.stops[k] += t[k]
       if (t.gestopt) { uit.gestopt = true; break }

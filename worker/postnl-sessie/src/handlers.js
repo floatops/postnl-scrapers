@@ -5,10 +5,10 @@ import { openDagplanning, login, opStartpagina } from '../../credentials-shared/
 import { dagplanningRitten, hoortBijShift } from '../../credentials-shared/src/postnl/ritten.js'
 import { schrijfDagplanning } from '../../credentials-shared/src/postnl/schrijver.js'
 import { deadlineUitTekst } from '../../credentials-shared/src/postnl/tekst.js'
-import { leesDeadlineTekst, volgMendix } from '../../postnl-planner/src/mendix.js'
+import { leesDeadlineTekst, volgMendix, DAG_NIET_IN_PLANNING } from '../../postnl-planner/src/mendix.js'
 import { kiesDag, dagVenster, shiftsOpScherm, kiesShift } from '../../credentials-shared/src/postnl/dagplanningScherm.js'
 import { gaNaarMetProxyControle } from '../../credentials-shared/src/proxyPool.js'
-import { naOchtend, naOchtendNietBeschikbaar, naDefinitief, naRitmonitor, aanvraagKlaar } from './dagstatus.js'
+import { naOchtend, naOchtendNietBeschikbaar, naNacht, naNachtNietBeschikbaar, naDefinitief, naRitmonitor, aanvraagKlaar } from './dagstatus.js'
 
 const dagLabel = (datum) => { const [j, m, d] = datum.split('-'); return `${d}-${m}-${j}` }
 
@@ -426,6 +426,39 @@ export const HANDLERS = {
     // de opdracht en zijn run-log al afgesloten (alGelogd).
     if (uit.fout) throw Object.assign(uit.fout, { alGelogd: true, gebeurtenis, plannerRun: uit.runId, bewaren: doorvoer })
     return { dag: { ...aanvraagKlaar(dag, id), plannerOm: ctx.nu.toISOString() }, run: null, gebeurtenis, plannerRun: uit.runId, bewaren: doorvoer, melding: doorvoer ? `doorvoer ${JSON.stringify(uit.telling)}` : 'ophalen' }
+  },
+
+  // Nachtlezing (matransport#690): één keer de Plannen-tab vullen met de ritten en stops van alle
+  // shifts (verversPlanning zonder shiftlijst). Alleen planning_ritten/planning_stops; geen ritten,
+  // geen deadlines. Loopt er een Plannen-opdracht, dan eerst die (zelfde regel als 'plannen').
+  async nacht(ctx, dag) {
+    const { sessie, supabase, nu } = ctx
+    const { data: lopend, error } = await supabase.from('planning_taken').select('id')
+      .eq('klant_id', ctx.klantId).in('status', ['wacht', 'bezig']).limit(1)
+    // Elke uitkomst zonder lezing: over 5 min opnieuw. Ook bij een fout, zodat de taakrem hem telt.
+    const straks = naNachtNietBeschikbaar(dag, { nu, cfg: ctx.cfg })
+    if (error) throw Object.assign(new Error(`Plannen-opdrachten niet gelezen: ${error.message}`), { database: true, dag: straks })
+    if (lopend?.length) {
+      // Toch op de Dagplanning eindigen: na een verse login staat de sessie op de startpagina, en
+      // dat telt na de taak als eruit gegooid (zelfde regel als 'plannen', matransport#578).
+      if (await opStartpagina(sessie.page).catch(() => false)) await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+      return { dag: straks, run: null, melding: 'Plannen-opdracht loopt: nachtlezing straks' }
+    }
+    const stoppen = stopBijPlannerOpdracht(ctx, Date.now(), { rva: true })
+    let uit
+    try {
+      await openDagplanning(sessie.page, sessie.depot, { log: sessie.log })
+      const { verversPlanning } = await planner.laad()
+      uit = await verversPlanning(sessie.page, volgMendix(sessie.page), { depot: sessie.depot.naam, datum: dag.datum, soort: 'stops', shifts: null, nu, stoppen })
+    } catch (err) {
+      if (DAG_NIET_IN_PLANNING.test(err?.message ?? '')) return { dag: straks, run: null, melding: 'dag nog niet in PostNL' }
+      throw Object.assign(err, { dag: straks })
+    }
+    sessie.lezingen++
+    // Onderbroken door een Plannen-opdracht: wat gelezen is blijft staan, straks opnieuw vanaf de eerste rit.
+    if (uit.gestopt) return { dag: naNachtNietBeschikbaar(dag, { nu, cfg: ctx.cfg }), run: null, melding: 'nachtlezing onderbroken door een opdracht: straks opnieuw' }
+    const t = (x) => (x ? `${x.nieuw} nieuw, ${x.gewijzigd} gewijzigd, ${x.weg} weg` : '-')
+    return { dag: naNacht(dag, { nu }), run: null, melding: `nachtlezing: ritten ${t(uit.ritten)}; stops ${t(uit.stops)}` }
   },
 
   // Volle lezing: alle shifts, ritten aanmaken, deadline per shift één keer vastleggen.

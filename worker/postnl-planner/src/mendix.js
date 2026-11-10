@@ -139,6 +139,9 @@ function ritRij(page, grid, ritnaam) {
 
 const isGeselecteerd = (rij) => rij.evaluate(el => el.classList.contains('selected'))
 
+// De fout als de dag (nog) niet in de keuzelijst staat; de nachtlezing herkent hem (matransport#690).
+export const DAG_NIET_IN_PLANNING = /staat niet in de PostNL-planning/
+
 export async function kiesDag(page, mendix, label) {
   const dag = page.locator(SCHERM.dag).first()
   await dag.waitFor({ state: 'visible', timeout: 30_000 })
@@ -148,7 +151,7 @@ export async function kiesDag(page, mendix, label) {
     const el = document.querySelector(sel)
     return el && [...el.options].some(o => o.label.trim() === l)
   }, { sel: SCHERM.dag, l: label }, { timeout: 20_000 }).then(() => true, () => false)
-  if (!bestaat) throw new Error(`Dag ${label} staat niet in de PostNL-planning.`)
+  if (!bestaat) throw new Error(`Dag ${label} staat niet in de PostNL-planning.`)   // DAG_NIET_IN_PLANNING
   await mendix.actie(() => dag.selectOption({ label }))
   await page.locator(`${SCHERM.shiftsLinks} tbody tr td`).first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {})
   await mendix.wacht()

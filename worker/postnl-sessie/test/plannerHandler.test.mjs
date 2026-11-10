@@ -119,3 +119,53 @@ test('plannen-handler: de laatste lezing telt pas als de ronde helemaal klaar is
   assert.equal(nog.dag.plannen.stopsDefinitiefOm?.['07'], undefined, 'gestopt: de volgende keer opnieuw')
   assert.equal(nog.dag.plannen.stopsOm['07'], nu.toISOString(), 'wel de tijd, voor de beurtrol')
 })
+
+// Nachtlezing (matransport#690): alleen een geslaagde, complete lezing telt als gelezen.
+const nepPagina = () => ({ locator: () => ({ first: () => ({ isVisible: async () => true, waitFor: async () => {}, click: async () => {} }) }), url: () => 'https://x/', goto: async () => null, waitForLoadState: async () => {}, getByText: () => ({ first: () => ({ waitFor: async () => {} }) }), on() {}, waitForTimeout: async () => {} })
+const nachtCtx = (supabase = supabaseGeenOpdrachten()) => ({ sessie: { ...sessie(), page: nepPagina(), log: { log() {}, warn() {} } }, supabase, klantId: 'k', nu: new Date('2026-11-03T23:10:00Z'), cfg: { dagNietBeschikbaarWachtMin: 5 } })
+const nachtDag = nieuweDag('2026-11-04')
+
+test('nacht-handler: geslaagd telt als gelezen, alle shifts, ochtend en shifts blijven leeg', async () => {
+  let opties
+  planner.laad = async () => ({ verversPlanning: async (p, m, o) => { opties = o; return { ritten: { nieuw: 26, gewijzigd: 0, weg: 0 }, stops: { nieuw: 3500, gewijzigd: 0, weg: 0 }, gestopt: false } } })
+  const uit = await HANDLERS.nacht(nachtCtx(), nachtDag)
+  assert.equal(opties.shifts, null, 'alle shifts')
+  assert.equal(opties.soort, 'stops')
+  assert.ok(uit.dag.nacht.gelezenOm)
+  assert.deepEqual(uit.dag.ochtend, {}, 'de ochtendlezing van 05:30 blijft staan')
+  assert.deepEqual(uit.dag.shifts, {}, 'geen deadlines vastgelegd')
+})
+
+test('nacht-handler: dag nog niet in PostNL of een lege lezing: over 5 min opnieuw, niet gelezen', async () => {
+  for (const tekst of ['Dag wo 04 nov staat niet in de PostNL-planning.', 'Op 2026-11-04 geen ritten gelezen: lezing niet vertrouwd, de dag staat niet in de PostNL-planning.']) {
+    planner.laad = async () => ({ verversPlanning: async () => { throw new Error(tekst) } })
+    const ctx = nachtCtx()
+    const uit = await HANDLERS.nacht(ctx, nachtDag)
+    assert.equal(uit.dag.nacht.gelezenOm, undefined, tekst)
+    assert.equal(uit.dag.nacht.nietBeschikbaarTot, new Date(ctx.nu.getTime() + 5 * 60_000).toISOString())
+  }
+})
+
+test('nacht-handler: onderbroken door een opdracht telt niet als gelezen', async () => {
+  planner.laad = async () => ({ verversPlanning: async () => ({ ritten: null, stops: { nieuw: 1, gewijzigd: 0, weg: 0 }, gestopt: true }) })
+  const uit = await HANDLERS.nacht(nachtCtx(), nachtDag)
+  assert.equal(uit.dag.nacht.gelezenOm, undefined)
+  assert.ok(uit.dag.nacht.nietBeschikbaarTot)
+})
+
+test('nacht-handler: een lopende Plannen-opdracht gaat voor', async () => {
+  let aangeroepen = false
+  planner.laad = async () => ({ verversPlanning: async () => { aangeroepen = true } })
+  const supabase = { from: () => ({ select: () => ({ eq: () => ({ in: () => ({ limit: async () => ({ data: [{ id: 'x' }], error: null }) }) }) }) }) }
+  const uit = await HANDLERS.nacht(nachtCtx(supabase), nachtDag)
+  assert.equal(aangeroepen, false)
+  assert.equal(uit.dag.nacht.gelezenOm, undefined)
+  assert.ok(uit.dag.nacht.nietBeschikbaarTot)
+})
+
+test('nacht-handler: een andere fout of databasefout gooit, met de dag erbij voor de 5 min rust', async () => {
+  planner.laad = async () => ({ verversPlanning: async () => { throw new Error('PostNL reageerde niet') } })
+  await assert.rejects(HANDLERS.nacht(nachtCtx(), nachtDag), (e) => e.message === 'PostNL reageerde niet' && !!e.dag.nacht.nietBeschikbaarTot)
+  const kapot = { from: () => ({ select: () => ({ eq: () => ({ in: () => ({ limit: async () => ({ data: null, error: { message: 'weg' } }) }) }) }) }) }
+  await assert.rejects(HANDLERS.nacht(nachtCtx(kapot), nachtDag), (e) => e.database === true && !!e.dag.nacht.nietBeschikbaarTot)
+})

@@ -5,6 +5,7 @@
 // {
 //   datum: 'JJJJ-MM-DD',
 //   ochtend:   { gelezenOm, nietBeschikbaarTot, pogingen },
+//   nacht:     { gelezenOm, nietBeschikbaarTot, pogingen },   (nachtlezing, matransport#690)
 //   shifts:    { '03': { deadline, laatsteControleOm, geautoriseerdOm, definitiefOm, vangnet } },
 //   ritmonitor:{ laatsteOm, gestartOm, reden },
 //   aanvragen: [{ id, soort: 'planner'|'depotUrl', ... }],
@@ -40,6 +41,14 @@ export function naOchtend(dag, { nu, shifts }) {
     }
   }
   return uit
+}
+
+// Nachtlezing (matransport#690): los van de ochtendlezing, zodat die om 05:30 gewoon draait.
+export function naNacht(dag, { nu }) {
+  return { ...dag, nacht: { ...dag.nacht, gelezenOm: iso(nu), nietBeschikbaarTot: null } }
+}
+export function naNachtNietBeschikbaar(dag, { nu, cfg }) {
+  return { ...dag, nacht: { ...dag.nacht, nietBeschikbaarTot: iso(nu.getTime() + cfg.dagNietBeschikbaarWachtMin * MIN), pogingen: (dag.nacht?.pogingen ?? 0) + 1 } }
 }
 
 export function naOchtendNietBeschikbaar(dag, { nu, cfg }) {

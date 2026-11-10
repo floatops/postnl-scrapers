@@ -191,6 +191,19 @@ export const TAKEN = [
     },
   },
   {
+    // Nachtlezing (matransport#690): één keer om nachtlezingOm de Plannen-tab vullen met de ritten en
+    // stops van alle shifts. Raakt dag.ochtend en dag.shifts niet: de ochtendlezing van 05:30 doet
+    // daarna alles zoals altijd. Na ochtendVanaf niet meer (dan neemt 'plannen' het over).
+    naam: 'nacht', prioriteit: 40, worker: null,
+    volgende: (dag, nu, cfg) => {
+      if (!cfg.nachtlezing || rustdag(nu, cfg) || dag.nacht?.gelezenOm || !voorTijd(nu, cfg.ochtendVanaf)) return null
+      if (voorTijd(nu, cfg.nachtlezingOm)) return { om: opTijd(nu, cfg.nachtlezingOm) }
+      const wacht = dag.nacht?.nietBeschikbaarTot ? new Date(dag.nacht.nietBeschikbaarTot) : null
+      if (wacht && wacht > nu) return { om: wacht }
+      return { nu: true, args: {} }
+    },
+  },
+  {
     // Na middernacht de vorige werkdag nog één keer helemaal lezen (#562): alles is dan geautoriseerd,
     // dus de cijfers liggen vast. Alleen verschillen gaan naar ritten. Eén keer per dag.
     naam: 'gisteren', prioriteit: 45, worker: 'postnl-dagplanning',
