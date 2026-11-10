@@ -376,3 +376,47 @@ test('controleUitkomst: niets gelezen van de doelrit is iets anders dan stops di
   assert.match(half.melding, /^1 stop\(s\) staan na de actie niet in 0712 Berkel Vogelbuurt \(PostNL: Let op\)/)
   assert.equal(controleUitkomst({ gewenst, inDoel: new Set(gewenst.map(adresSleutel)), gelezen: true, doel }), null)
 })
+
+test('gebouwnummer in de straat: "Teststraat 22-A" nr 8 wordt 22 + A8, alleen als het register het zo kent (matransport#667, verzonnen)', async () => {
+  const { stopNaarRij, gebouwUitStraat, woningenUitRegister, adresParen } = await import('../src/logica.js')
+  const register = [
+    { postcode: '1234AB', huisnummer: '22', weergavenaam: 'Teststraat 22A-16, 1234AB Proefdorp' },
+    { postcode: '1234AB', huisnummer: '22', weergavenaam: 'Teststraat 22A-4, 1234AB Proefdorp' },
+    { postcode: '1234AB', huisnummer: '40', weergavenaam: 'Teststraat 40, 1234AB Proefdorp' },
+    // Hoekpand: twee straatnamen, dus geen officiële straat, maar het adres bestaat wel.
+    { postcode: '1234AB', huisnummer: '6', weergavenaam: 'Teststraat 6, 1234AB Proefdorp' },
+    { postcode: '1234AB', huisnummer: '6', weergavenaam: 'Zijweg 6, 1234AB Proefdorp' },
+  ]
+  const gevonden = woningenUitRegister(register)
+  assert.deepEqual([...gevonden.get('1234AB|22').letters], ['A'])
+  assert.deepEqual([...gevonden.get('1234AB|40').letters], [])
+  // Zoals vulStraten ze vult: elk opgezocht paar staat erin, zonder rij als null.
+  const opgezocht = ['1234AB|22', '1234AB|40', '1234AB|6', '1234AB|8', '1234AB|5']
+  const woningen = new Map(opgezocht.map(p => [p, gevonden.get(p) ?? null]))
+  const straten = new Map([['1234AB|22', 'Teststraat'], ['1234AB|40', 'Teststraat'], ['1234AB|6', null], ['1234AB|8', null], ['1234AB|5', null]])
+  const rij = (Street, BuildingNumber, BuildingNumberExtension = null, w = woningen) => {
+    const r = stopNaarRij({ guid: 'g', Street, BuildingNumber, BuildingNumberExtension, PostalCode: '1234 AB' }, { klantId: 'k', depot: 'd', datum: '2026-11-10', shift: '02', ritId: 'R', opgehaaldAt: 't', straten, woningen: w })
+    return [r.straat, r.huisnummer, r.toevoeging]
+  }
+  assert.deepEqual(rij('TESTSTRAAT 22-A', '8'), ['Teststraat', '22', 'A8'])
+  assert.deepEqual(rij('Teststraat 22A', '8'), ['Teststraat', '22', 'A8'])
+  assert.deepEqual(rij('Teststraat 22 a,', '5'), ['Teststraat', '22', 'A5'])
+  // Niet: het huisnummer heeft zelf een rij (ook een hoekpand), het gebouw heeft geen woningen met die
+  // letter, er is al een toevoeging, of het paar is niet opgezocht.
+  assert.deepEqual(rij('Teststraat 22-A', '6'), ['Teststraat 22-A', '6', null])
+  assert.equal(rij('Teststraat 22-A', '40')[1], '40')
+  assert.equal(rij('Teststraat 22-B', '8')[1], '8')
+  assert.equal(rij('Teststraat 40-A', '8')[1], '8')
+  assert.equal(rij('Teststraat 22-A', '8', 'C')[1], '8')
+  assert.equal(rij('Teststraat 22-A', '8', null, new Map([['1234AB|22', gevonden.get('1234AB|22')]]))[1], '8')
+  // Wat er niet doorheen komt.
+  assert.equal(gebouwUitStraat('Teststraat 54', '54'), null)
+  assert.equal(gebouwUitStraat('Teststraat 12', '30'), null, 'zonder letter: kan een tikfout zijn')
+  assert.equal(gebouwUitStraat('Plein 1957', '4'), null)
+  assert.equal(gebouwUitStraat('Teststraat 00 A', '54'), null)
+  assert.equal(gebouwUitStraat('Teststraat', '8'), null)
+  assert.equal(gebouwUitStraat('22 A', '8'), null)
+  assert.deepEqual(adresParen({ Street: 'Teststraat 22-A', BuildingNumber: '8', PostalCode: '1234AB' }), ['1234AB|8', '1234AB|22'])
+  assert.deepEqual(adresParen({ Street: 'Teststraat', BuildingNumber: '8', PostalCode: '1234AB' }), ['1234AB|8'])
+  assert.deepEqual(adresParen({ Street: 'Teststraat 22-A', BuildingNumber: '8', PostalCode: '0000FF' }), [])
+})

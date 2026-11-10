@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, adresPaar, bronNietGelezen, controleUitkomst, kiesGewenst, schoonAdres, schoonPostcode, straatUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -178,6 +178,9 @@ const zonderPostcode = ({ postcode, ...rij }) => rij
 // STRATEN_MS, dan blijft de opgeschoonde straat van de afzender staan en is het de volgende keer weer
 // aan de beurt.
 const STRATEN = new Map()
+// Per adres (postcode|nummer) wat het register ervan weet (woningenUitRegister), uit dezelfde rijen;
+// null = opgezocht, geen rij. Voor een gebouwnummer in de straat ("22-A", nr 8, matransport#667).
+const WONINGEN = new Map()
 const STRATEN_MAX = 100_000
 const STRATEN_MS = 10_000
 // Na één time-out of fout 10 minuten niet meer vragen: anders wacht elke rit opnieuw 10 s, en een
@@ -198,15 +201,16 @@ async function haalStraten(paren) {
       if (data.length < 1000) break
     }
     const gevonden = straatUitRegister(rijen)
-    for (const p of stuk) STRATEN.set(p, gevonden.get(p) ?? null)
+    const woningen = woningenUitRegister(rijen)
+    for (const p of stuk) { STRATEN.set(p, gevonden.get(p) ?? null); WONINGEN.set(p, woningen.get(p) ?? null) }
   }
 }
 async function vulStraten(stops) {
-  const paren = [...new Set(stops.map(s => adresPaar(schoonPostcode(s.PostalCode), schoonAdres(s).huisnummer)))].filter(p => p && !STRATEN.has(p))
+  const paren = [...new Set(stops.flatMap(adresParen))].filter(p => !STRATEN.has(p))
   if (!paren.length) return
   if (Date.now() < stratenUitTot) { stratenOvergeslagen++; return }
   if (stratenOvergeslagen) { console.log(`Officiële straten weer gelezen; ${stratenOvergeslagen} rit(ten) zonder overgeslagen`); stratenOvergeslagen = 0 }
-  if (STRATEN.size + paren.length > STRATEN_MAX) STRATEN.clear()
+  if (STRATEN.size + paren.length > STRATEN_MAX) { STRATEN.clear(); WONINGEN.clear() }
   let timer
   try {
     await Promise.race([haalStraten(paren), new Promise((_, nee) => { timer = setTimeout(() => nee(new Error(`geen antwoord binnen ${STRATEN_MS / 1000} s`)), STRATEN_MS) })])
@@ -245,7 +249,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
     bestaand.push(...stuk)
     if (stuk.length < 1000) break
   }
-  const oudeStraat = new Map(bestaand.map(s => [s.stop_id, s.straat]))
+  const oudAdres = new Map(bestaand.map(s => [s.stop_id, s]))
   const gelezenRitten = new Set()
   const gezien = []
   const telling = { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
@@ -269,18 +273,24 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
         continue
       }
       await vulStraten(eigenStops)
-      const alle = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu, straten: STRATEN }))
+      const alle = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu, straten: STRATEN, woningen: WONINGEN }))
       // Kon het register niet gelezen worden, dan de straat die er al stond: anders wisselt hij elke
       // keer tussen officieel en opgeschoond, en schrijft elke ronde alle stops opnieuw. Vóór het
       // weglaten van de postcodekolom: de sleutel heeft de postcode nodig.
-      for (const r of alle) {
+      // Zo ook huisnummer en toevoeging als er een gebouwnummer in de straat staat (matransport#667):
+      // anders wisselt "22 A8" met "8" zolang het register niet te lezen is.
+      alle.forEach((r, i) => {
         // Zonder geldig postcode-huisnummerpaar is er niets op te zoeken: dan geldt de opgeschoonde
         // straat, niet voor altijd de ruwe van vóór de schoonmaak.
-        const paar = adresPaar(r.postcode, r.huisnummer)
-        if (!paar || STRATEN.has(paar)) continue
-        const oud = oudeStraat.get(r.stop_id)
-        if (oud) r.straat = oud
-      }
+        const paren = adresParen(eigenStops[i])
+        if (!paren.length || paren.every(p => STRATEN.has(p))) return
+        const oud = oudAdres.get(r.stop_id)
+        if (!oud) return
+        if (oud.straat) r.straat = oud.straat
+        // Alleen als het oude nummer nog bij de ruwe waarde past (het huisnummer of het gebouwnummer).
+        if (paren.length > 1 && paren.some(p => p.split('|')[1] === oud.huisnummer)) { r.huisnummer = oud.huisnummer; r.toevoeging = oud.toevoeging }
+      })
+      const gebouwen = eigenStops.filter(s => gebouwAdres(s, { straten: STRATEN, woningen: WONINGEN })).length
       const rijen = alle.map(r => (postcodeKolom ? r : zonderPostcode(r)))
       gezien.push(...rijen)
       // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is. Alleen wat anders is.
@@ -293,7 +303,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
       }
       rit.stops_gelezen = eigenStops.length
       const opScherm = (await leesStopTabel(page).catch(() => [])).length
-      console.log(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord ${eigenStops.length}, scherm ${opScherm}`)
+      console.log(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord ${eigenStops.length}, scherm ${opScherm}${gebouwen ? `, gebouwadres ${gebouwen}` : ''}`)
       // De deadline kan per rit verschillen; de tekst bij de open rit gaat voor.
       const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum)
       if (deadline) rit.deadline = deadline

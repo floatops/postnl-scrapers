@@ -224,6 +224,61 @@ export function controleUitkomst({ gewenst, inDoel, gelezen, doel, dialoog = nul
   return null
 }
 
+// Een gebouwnummer in de straat (matransport#667): "Teststraat 22-A" met huisnummer 8 is gebouw 22A,
+// woning 8 (register "22A-8"). Geeft { straat, gebouw, letter } of null. Of het echt zo is, beslist
+// gebouwAdres met het register. Alleen met een letter: "Teststraat 12" met nummer 30 kan net zo goed
+// een tikfout zijn, en ongeveer 16% van de adressen staat niet in de cache, dus "30 onbekend" bewijst
+// dan niets. "Plein 1957" en "Teststraat 54" (nr 54) komen hier niet doorheen.
+export function gebouwUitStraat(waarde, huisnummer) {
+  if (!huisnummer) return null
+  const ruw = String(waarde ?? '').trim().replace(/\s+/g, ' ')
+  const m = /^(.+?)\s+([1-9]\d{0,4})\s*[-–]?\s*([A-Za-z])[\s\-–_/.,]*$/.exec(ruw)
+  if (!m || m[2] === huisnummer || !/[A-Za-z]{2}/.test(m[1])) return null
+  return { straat: m[1], gebouw: m[2], letter: m[3].toUpperCase() }
+}
+
+// Per adres (postcode|huisnummer) wat het register ervan weet: `letters` van gebouwen met losse
+// woningen ("Teststraat 22A-16, 1234AB" geeft bij 1234AB|22 de letter 'A'). Elk paar met een rij staat
+// erin, ook een hoekpand met twee straatnamen of een rij die niet te ontleden is: dat adres bestaat.
+export function woningenUitRegister(rijen) {
+  const uit = new Map()
+  for (const r of rijen) {
+    const paar = adresPaar(r.postcode, r.huisnummer)
+    if (!paar) continue
+    if (!uit.has(paar)) uit.set(paar, { letters: new Set() })
+    const m = /^(.+?),\s*(\d{4}[A-Z]{2})\b/.exec(String(r.weergavenaam ?? ''))
+    if (!m || m[2] !== r.postcode) continue
+    const w = new RegExp(`\\s${regexVeilig(r.huisnummer)}([A-Za-z])-\\d+$`).exec(m[1])
+    if (w) uit.get(paar).letters.add(w[1].toUpperCase())
+  }
+  return uit
+}
+
+// De paren die het register moet kennen om dit adres goed op te slaan: het adres zelf, en een
+// gebouwnummer in de straat als dat er staat.
+export function adresParen(stop) {
+  const postcode = schoonPostcode(stop.PostalCode)
+  const { huisnummer } = schoonAdres(stop)
+  const g = gebouwUitStraat(stop.Street, huisnummer)
+  return [adresPaar(postcode, huisnummer), g && adresPaar(postcode, g.gebouw)].filter(Boolean)
+}
+
+// Huisnummer = gebouw, toevoeging = letter + woning, alleen als het register zegt dat het zo zit: het
+// gebouw heeft woningen met die letter, en het huisnummer zelf heeft in het register geen enkele rij.
+// Niet als er al een toevoeging is. Anders null en blijft het adres zoals de afzender het gaf.
+// `straten`/`woningen` zoals vulStraten ze vult: elk opgezocht paar staat erin (zonder rij: null); een
+// paar dat niet is opgezocht telt als onbekend (dan ook null).
+export function gebouwAdres(stop, { straten, woningen }) {
+  const postcode = schoonPostcode(stop.PostalCode)
+  const { huisnummer, toevoeging } = schoonAdres(stop)
+  const g = gebouwUitStraat(stop.Street, huisnummer)
+  if (!g || !postcode || toevoeging || !straten || !woningen) return null
+  const eigen = adresPaar(postcode, huisnummer)
+  const gebouw = adresPaar(postcode, g.gebouw)
+  if (!woningen.has(eigen) || woningen.get(eigen) || !woningen.get(gebouw)?.letters.has(g.letter)) return null
+  return { straat: straten.get(gebouw) ?? schoonStraat(g.straat).straat ?? '(onbekend)', huisnummer: g.gebouw, toevoeging: `${g.letter}${huisnummer}` }
+}
+
 // Welke van de gevraagde stops staan er nog? `nietMeer`: hoeveel niet, de rest kan gewoon door.
 export function kiesGewenst(stops, stopIds) {
   const gewenst = stops.filter(s => stopIds.includes(s.guid))
@@ -233,15 +288,16 @@ export function kiesGewenst(stops, stopIds) {
 // Voor de app: alleen wat daar nodig is. Verder niets, het zijn adressen. De postcode
 // (matransport#587) is voor de stops op de kaart van een rit: met huisnummer + toevoeging het adres.
 // De stoplijst bevat geen StopID en RideID: de guid is het vaste kenmerk, en de rit is die we open hebben.
-export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt, straten = null }) {
-  const adres = schoonAdres(stop)
+export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt, straten = null, woningen = null }) {
   const postcode = schoonPostcode(stop.PostalCode)
+  const gebouw = gebouwAdres(stop, { straten, woningen })
+  const adres = gebouw ?? schoonAdres(stop)
   return {
     klant_id: klantId, depot, datum, shift,
     rit_id: ritId,
     stop_id: stop.guid,
     ...adres,
-    straat: straten?.get(adresPaar(postcode, adres.huisnummer)) ?? adres.straat,
+    straat: gebouw?.straat ?? straten?.get(adresPaar(postcode, adres.huisnummer)) ?? adres.straat,
     postcode,
     stuks: Math.round(getal(stop.Pieces)),
     volume: getal(stop.Volume),
