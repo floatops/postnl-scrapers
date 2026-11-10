@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, OPTIONELE_STOP_VELDEN, zonderVelden, volgordeAfwijkingen, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, OPTIONELE_STOP_VELDEN, zonderVelden, volgordeAfwijkingen, verhuisdeStops, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -306,6 +306,21 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
       const schrijf = [...v.nieuw, ...v.gewijzigd]
       telling.nieuw += v.nieuw.length
       telling.gewijzigd += v.gewijzigd.length
+      // Naar een andere rit verhuisd: eerst weghalen, dan opnieuw invoegen (matransport#603). Een
+      // update van rit_id ziet de kaart van de oude rit nooit (live gefilterd op rit_id); een delete
+      // wel. Mislukt het invoegen, dan staat de stop de volgende ronde als nieuw op de lijst.
+      const verhuisd = verhuisdeStops(bestaand, v.gewijzigd)
+      // Uit een andere shift verhuisd: die staat niet in `bestaand` (per shift gelezen) en lijkt dus
+      // nieuw. Daarom de 'nieuwe' stops één keer opzoeken; staat er een in een andere rit, ook weghalen.
+      for (let i = 0; i < v.nieuw.length; i += 200) {
+        const ids = v.nieuw.slice(i, i + 200).map(r => r.stop_id)
+        const elders = await db(supabase.from('planning_stops').select('stop_id, rit_id').eq('klant_id', KLANT_ID).in('stop_id', ids), 'nieuwe stops opzoeken')
+        verhuisd.push(...verhuisdeStops(elders, v.nieuw))
+      }
+      if (verhuisd.length) console.log(`Rit ${rit.ritnaam.slice(0, 4)}: ${verhuisd.length} stop(s) uit een andere rit, weggehaald en opnieuw ingevoegd`)
+      for (let i = 0; i < verhuisd.length; i += 200) {
+        await db(supabase.from('planning_stops').delete().eq('klant_id', KLANT_ID).in('stop_id', verhuisd.slice(i, i + 200)), 'verhuisde stops weghalen')
+      }
       if (schrijf.length) {
         await db(supabase.from('planning_stops').upsert(schrijf, { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
       }

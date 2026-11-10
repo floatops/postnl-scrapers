@@ -482,3 +482,10 @@ test('toevoeging gelijk aan het huisnummer met leestekens of voorloopnullen gaat
   assert.equal(schoonToevoeging('A', '29'), 'A')
   assert.equal(schoonToevoeging('29', '30'), '29')
 })
+
+test('een stop in een andere rit telt als verhuisd, een andere wijziging niet (matransport#603)', async () => {
+  const { verhuisdeStops } = await import('../src/logica.js')
+  const bestaand = [{ stop_id: 'a', rit_id: 'R1' }, { stop_id: 'b', rit_id: 'R1' }]
+  assert.deepEqual(verhuisdeStops(bestaand, [{ stop_id: 'a', rit_id: 'R2' }, { stop_id: 'b', rit_id: 'R1', stuks: 3 }, { stop_id: 'c', rit_id: 'R2' }]), ['a'])
+  assert.deepEqual(verhuisdeStops(bestaand, []), [])
+})

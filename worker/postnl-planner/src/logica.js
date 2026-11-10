@@ -535,3 +535,12 @@ export function verschil(bestaand, gelezen, sleutel, velden) {
   }
   return { nieuw, gewijzigd, weg: bestaand.filter(o => !gezien.has(o[sleutel])).map(o => o[sleutel]) }
 }
+
+// Stops die in deze lezing in een andere rit staan dan in de database (matransport#603). Die worden
+// weggehaald en opnieuw ingevoegd in plaats van bijgewerkt: de kaart van een rit luistert live op
+// rit_id, en een update die de stop uit die rit haalt komt daar nooit binnen; een delete wel.
+// De aanroeper verwijdert ze in stukken van 200, zoals de oude stops.
+export function verhuisdeStops(bestaand, gewijzigd) {
+  const oud = new Map(bestaand.map(s => [s.stop_id, s.rit_id]))
+  return gewijzigd.filter(r => oud.has(r.stop_id) && r.rit_id && oud.get(r.stop_id) !== r.rit_id).map(r => r.stop_id)
+}
