@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, rittenUit,
-  selectieKlopt, stopNaarRij, stopsUit, tvi, uniekeMeldingen, verschil, STOP_VELDEN,
+  selectieKlopt, stopNaarRij, stopsUit, tvi, tviTijd, volgordeAfwijkingen, uniekeMeldingen, verschil, zonderVelden, STOP_VELDEN, OPTIONELE_STOP_VELDEN,
 } from '../src/logica.js'
 
 const attrs = (o) => Object.fromEntries(Object.entries(o).map(([k, v]) => [k, { value: v }]))
@@ -94,8 +94,52 @@ test('stop naar rij bevat alleen wat de app toont', () => {
   const rij = stopNaarRij(stop, { klantId: 'k', depot: 'd', datum: '2026-11-02', shift: '02', ritId: 'R1', opgehaaldAt: 't' })
   assert.deepEqual(rij, {
     klant_id: 'k', depot: 'd', datum: '2026-11-02', shift: '02', rit_id: 'R1', stop_id: '1',
-    straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, postcode: '2676AA', stuks: 1, volume: 0.019, opgehaald_at: 't',
+    straat: 'Abel Tasmanstraat', huisnummer: '8', toevoeging: null, postcode: '2676AA', stuks: 1, volume: 0.019, tvi_tijd: '2026-10-31T17:18:00.000Z', opgehaald_at: 't',
   })
+})
+
+test('TVI-tijd per stop als ISO-tijd, leeg of onzin wordt null (matransport#603)', () => {
+  assert.equal(tviTijd(1793467080000), '2026-10-31T17:18:00.000Z')
+  assert.equal(tviTijd('1793467080000'), '2026-10-31T17:18:00.000Z')
+  for (const leeg of [null, undefined, '', 0, -5, 'abc']) assert.equal(tviTijd(leeg), null)
+})
+
+test('gewijzigde TVI-tijd telt als wijziging, dezelfde tijd in een andere notatie niet (matransport#603)', () => {
+  const oud = { stop_id: 's1', rit_id: 'r1', shift: '01', straat: 'X', huisnummer: '1', toevoeging: null, postcode: '2676AA', stuks: 1, volume: 0.1, tvi_tijd: null }
+  const nu = { ...oud, tvi_tijd: '2026-10-31T17:18:00.000Z' }
+  assert.equal(verschil([oud], [nu], 'stop_id', STOP_VELDEN).gewijzigd.length, 1)
+  assert.equal(verschil([{ ...oud, tvi_tijd: '2026-10-31T17:18:00+00:00' }], [nu], 'stop_id', STOP_VELDEN).gewijzigd.length, 0)
+})
+
+test('stopobject zonder PlannedStopTime laat tvi_tijd weg, zodat de bekende tijd blijft (matransport#603)', () => {
+  const rij = stopNaarRij({ guid: '1', Street: 'X' }, { klantId: 'k', depot: 'd', datum: '2026-11-10', shift: '01', ritId: 'R1', opgehaaldAt: 't' })
+  assert.equal('tvi_tijd' in rij, false)
+  const oud = { stop_id: '1', tvi_tijd: '2026-10-31T17:18:00+00:00' }
+  assert.equal(verschil([oud], [{ stop_id: '1' }], 'stop_id', ['tvi_tijd']).gewijzigd.length, 0)
+})
+
+test('volgorde uit de stoplijst wordt tvi_volgorde, zonder volgorde geen veld (matransport#603)', () => {
+  const opties = { klantId: 'k', depot: 'd', datum: '2026-11-10', shift: '01', ritId: 'R1', opgehaaldAt: 't' }
+  assert.equal(stopNaarRij({ guid: '1', Street: 'X' }, { ...opties, volgorde: 3 }).tvi_volgorde, 3)
+  assert.equal('tvi_volgorde' in stopNaarRij({ guid: '1', Street: 'X' }, opties), false)
+  assert.equal('tvi_volgorde' in stopNaarRij({ guid: '1', Street: 'X' }, { ...opties, volgorde: 0 }), false)
+})
+
+test('volgorde van het antwoord naast het scherm: plekken die anders zijn (matransport#603)', () => {
+  const t = Date.UTC(2026, 10, 10, 12, 10)
+  const stops = [{ Street: 'A', BuildingNumber: '1', PlannedStopTime: t }, { Street: 'B', BuildingNumber: '2', PlannedStopTime: t }]
+  const rij = (s) => ({ tijd: tvi(s.PlannedStopTime), straat: s.Street, nummer: s.BuildingNumber, toevoeging: '' })
+  assert.equal(volgordeAfwijkingen(stops, stops.map(rij)), 0)
+  assert.equal(volgordeAfwijkingen(stops, [rij(stops[1]), rij(stops[0])]), 2)
+  assert.equal(volgordeAfwijkingen(stops, [rij(stops[0])]), 1)
+  assert.equal(volgordeAfwijkingen(stops, []), null)
+})
+
+test('ontbrekende kolom gaat uit de rij, de rest blijft (matransport#603)', () => {
+  const rij = { stop_id: 's1', postcode: '2676AA', tvi_tijd: 't', straat: 'X' }
+  assert.equal(zonderVelden(rij, new Set()), rij)
+  assert.deepEqual(zonderVelden(rij, new Set(['tvi_tijd'])), { stop_id: 's1', postcode: '2676AA', straat: 'X' })
+  for (const v of OPTIONELE_STOP_VELDEN) assert.ok(STOP_VELDEN.includes(v))
 })
 
 test('postcode zonder spatie en in hoofdletters, leeg blijft leeg (matransport#587)', () => {

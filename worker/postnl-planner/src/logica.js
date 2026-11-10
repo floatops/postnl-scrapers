@@ -288,7 +288,9 @@ export function kiesGewenst(stops, stopIds) {
 // Voor de app: alleen wat daar nodig is. Verder niets, het zijn adressen. De postcode
 // (matransport#587) is voor de stops op de kaart van een rit: met huisnummer + toevoeging het adres.
 // De stoplijst bevat geen StopID en RideID: de guid is het vaste kenmerk, en de rit is die we open hebben.
-export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt, straten = null, woningen = null }) {
+// volgorde: de plek van de stop in de stoplijst zoals OOM PD hem geeft (1 = eerste), het nummer op
+// de pin in de kaart van een rit (matransport#603). Niet uit de tijd: die is op hele minuten afgerond.
+export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaaldAt, straten = null, woningen = null, volgorde = null }) {
   const postcode = schoonPostcode(stop.PostalCode)
   const gebouw = gebouwAdres(stop, { straten, woningen })
   const adres = gebouw ?? schoonAdres(stop)
@@ -301,8 +303,22 @@ export function stopNaarRij(stop, { klantId, depot, datum, shift, ritId, opgehaa
     postcode,
     stuks: Math.round(getal(stop.Pieces)),
     volume: getal(stop.Volume),
+    // Zonder het attribuut (een gedeeltelijk stopobject) het veld weglaten: dan slaat verschil() het
+    // over en blijft de bekende tijd staan, in plaats van elke ronde null en weer terug te schrijven.
+    ...('PlannedStopTime' in stop ? { tvi_tijd: tviTijd(stop.PlannedStopTime) } : {}),
+    ...(Number.isInteger(volgorde) && volgorde > 0 ? { tvi_volgorde: volgorde } : {}),
     opgehaald_at: opgehaaldAt,
   }
+}
+
+// De geplande stoptijd van PostNL (PlannedStopTime, ms sinds 1970) als ISO-tijd voor
+// planning_stops.tvi_tijd (matransport#603): de tijd bij het adres op de kaart van een rit, en
+// gesorteerd per rit de TVI-volgorde. Leeg of onzin wordt null, nooit 1970.
+export function tviTijd(planned) {
+  if (planned === null || planned === undefined || planned === '') return null
+  const ms = Number(planned)
+  if (!Number.isFinite(ms) || ms <= 0) return null
+  return new Date(ms).toISOString()
 }
 
 // Ritten van een shift: Ride (status) + RideNumber (totalen, verwijst naar de Ride).
@@ -358,6 +374,17 @@ export function tvi(planned) {
 
 export function stopSleutel(stop) {
   return rijSleutel({ tijd: tvi(stop.PlannedStopTime), straat: stop.Street, nummer: stop.BuildingNumber, toevoeging: stop.BuildingNumberExtension })
+}
+
+// Hoeveel plekken van de stoplijst (volgorde van het antwoord) anders zijn dan de tabel op het
+// scherm (matransport#603). 0 = tvi_volgorde is precies wat de planner in OOM PD ziet. Alleen om te
+// loggen: een verschil houdt de lezing niet tegen.
+export function volgordeAfwijkingen(stops, tabel) {
+  if (!tabel?.length) return null
+  let anders = Math.abs(stops.length - tabel.length)
+  const n = Math.min(stops.length, tabel.length)
+  for (let i = 0; i < n; i++) if (stopSleutel(stops[i]) !== rijSleutel(tabel[i])) anders++
+  return anders
 }
 
 // Adres zonder tijd: na een verplaatsing berekent PostNL de tijd opnieuw, en mogelijk ook de StopID.
@@ -466,7 +493,15 @@ export function teOudeTraces(namen, nu = new Date(), dagen = TRACE_BEWAAR_DAGEN)
 // veranderde, en een ronde zonder wijziging schrijft niets. Vergelijkt de inhoud, niet opgehaald_at.
 export const RIT_VELDEN = ['shift', 'ritnaam', 'chauffeur', 'chauffeur_wijzigbaar', 'chauffeur_opties', 'geautoriseerd',
   'bewerkbaar', 'geblokkeerd', 'stops', 'stuks', 'volume', 'deadline', 'stops_gelezen']
-export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'postcode', 'stuks', 'volume']
+export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'postcode', 'stuks', 'volume', 'tvi_tijd', 'tvi_volgorde']
+// Kolommen die op een stack nog kunnen ontbreken tot de migratie daar is gepromoot (één checkout
+// draait voor A en B): postcode (matransport#587), tvi_tijd (matransport#603). Zonder zo'n kolom
+// bewaart de worker de stops zonder dat veld, in plaats van elke upsert te laten mislukken.
+export const OPTIONELE_STOP_VELDEN = ['postcode', 'tvi_tijd', 'tvi_volgorde']
+export function zonderVelden(rij, weg) {
+  if (!weg.size) return rij
+  return Object.fromEntries(Object.entries(rij).filter(([k]) => !weg.has(k)))
+}
 
 const ISO = /^\d{4}-\d{2}-\d{2}T/
 function zelfde(a, b) {

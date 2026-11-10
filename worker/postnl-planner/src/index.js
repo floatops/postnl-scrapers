@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, OPTIONELE_STOP_VELDEN, zonderVelden, volgordeAfwijkingen, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -158,20 +158,28 @@ async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
   return { nieuw: v.nieuw.length, gewijzigd: v.gewijzigd.length, weg: v.weg.length }
 }
 
-// planning_stops.postcode (matransport#587) komt op Stack B pas met de volgende promotie, en deze
-// checkout draait voor beide stacks. Zonder die kolom bewaart de worker de stops zoals voorheen.
-// Eén keer per proces gevraagd; alleen "kolom bestaat niet" (42703) telt, elke andere fout is luid.
-let postcodeKolom = null
+// Een nieuwe kolom van planning_stops (postcode #587, tvi_tijd #603) komt op Stack B pas met de
+// volgende promotie, en deze checkout draait voor beide stacks. Zonder die kolom bewaart de worker de
+// stops zonder dat veld. Eén keer per proces per kolom gevraagd; alleen "kolom bestaat niet" (42703)
+// telt, elke andere fout is luid. Het proces (de sessiehouder) leeft tot een dag en een matransport-
+// promotie herstart het niet: komt de migratie later binnen, dan blijft de kolom leeg tot de volgende
+// herstart (een scrapers-commit of de nachtelijke). Daarom eerst de migratie, dan de scrapers-commit.
+let ontbrekendeKolommen = null
 async function stopVelden() {
-  if (postcodeKolom === null) {
-    const { error } = await supabase.from('planning_stops').select('postcode').limit(1)
-    if (error && error.code !== '42703') throw new Error(`stops lezen: ${error.message}`)
-    postcodeKolom = !error
-    if (!postcodeKolom) console.warn('planning_stops.postcode bestaat nog niet op deze stack: stops zonder postcode bewaard')
+  if (ontbrekendeKolommen === null) {
+    const weg = new Set()
+    for (const kolom of OPTIONELE_STOP_VELDEN) {
+      const { error } = await supabase.from('planning_stops').select(kolom).limit(1)
+      if (error && error.code !== '42703') throw new Error(`stops lezen (${kolom}): ${error.message}`)
+      if (error) {
+        weg.add(kolom)
+        console.warn(`planning_stops.${kolom} bestaat nog niet op deze stack: stops zonder ${kolom} bewaard`)
+      }
+    }
+    ontbrekendeKolommen = weg
   }
-  return postcodeKolom ? STOP_VELDEN : STOP_VELDEN.filter(v => v !== 'postcode')
+  return STOP_VELDEN.filter(v => !ontbrekendeKolommen.has(v))
 }
-const zonderPostcode = ({ postcode, ...rij }) => rij
 
 // De officiële straat per adres, uit geocode_cache (matransport#600). Per proces onthouden: de
 // planning leest dezelfde adressen elke ronde. Mag een lezing nooit tegenhouden: lukt het niet binnen
@@ -273,7 +281,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
         continue
       }
       await vulStraten(eigenStops)
-      const alle = eigenStops.map(s => stopNaarRij(s, { klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu, straten: STRATEN, woningen: WONINGEN }))
+      const alle = eigenStops.map((s, i) => stopNaarRij(s, { volgorde: i + 1, klantId: KLANT_ID, depot: taak.depot, datum: taak.datum, shift, ritId: rit.rit_id, opgehaaldAt: nu, straten: STRATEN, woningen: WONINGEN }))
       // Kon het register niet gelezen worden, dan de straat die er al stond: anders wisselt hij elke
       // keer tussen officieel en opgeschoond, en schrijft elke ronde alle stops opnieuw. Vóór het
       // weglaten van de postcodekolom: de sleutel heeft de postcode nodig.
@@ -291,7 +299,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
         if (paren.length > 1 && paren.some(p => p.split('|')[1] === oud.huisnummer)) { r.huisnummer = oud.huisnummer; r.toevoeging = oud.toevoeging }
       })
       const gebouwen = eigenStops.filter(s => gebouwAdres(s, { straten: STRATEN, woningen: WONINGEN })).length
-      const rijen = alle.map(r => (postcodeKolom ? r : zonderPostcode(r)))
+      const rijen = alle.map(r => zonderVelden(r, ontbrekendeKolommen))
       gezien.push(...rijen)
       // Per rit wegschrijven: de planner ziet elke rit zodra hij gelezen is. Alleen wat anders is.
       const v = verschil(bestaand, rijen, 'stop_id', velden)
@@ -302,8 +310,11 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
         await db(supabase.from('planning_stops').upsert(schrijf, { onConflict: 'klant_id,stop_id' }), 'stops bewaren')
       }
       rit.stops_gelezen = eigenStops.length
-      const opScherm = (await leesStopTabel(page).catch(() => [])).length
-      console.log(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord ${eigenStops.length}, scherm ${opScherm}${gebouwen ? `, gebouwadres ${gebouwen}` : ''}`)
+      const tabel = await leesStopTabel(page).catch(() => [])
+      const opScherm = tabel.length
+      // tvi_volgorde volgt het antwoord; wijkt het scherm af, dan staat dat hier (matransport#603).
+      const afwijkend = volgordeAfwijkingen(eigenStops, tabel)
+      console.log(`Rit ${rit.ritnaam.slice(0, 4)}: kop ${rit.stops}, antwoord ${eigenStops.length}, scherm ${opScherm}${gebouwen ? `, gebouwadres ${gebouwen}` : ''}${afwijkend ? `, volgorde anders dan scherm op ${afwijkend} plekken` : ''}`)
       // De deadline kan per rit verschillen; de tekst bij de open rit gaat voor.
       const deadline = deadlineUitTekst(await leesDeadlineTekst(page), taak.datum)
       if (deadline) rit.deadline = deadline
