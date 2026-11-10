@@ -51,9 +51,14 @@ export function geheugenTekst({ heapMb, limietMb, rssMb, totaal = null, werkMapM
 // wat erbuiten (malloc, Playwright-buffers, code). Elke minuut en per taak een regel in het
 // dagbestand (maakGeheugenLog), rapport met scripts/geheugen-rapport.mjs.
 
-// Soort proces uit /proc/<pid>/cmdline (argumenten gescheiden door \0).
+// Argumenten uit /proc/<pid>/cmdline. Normaal gescheiden door \0, maar Chromium herschrijft bij
+// processen uit de zygote (tabbladen, gpu) zijn argv als één tekst met spaties (gemeten op de VPS
+// 10-11). Daarom op beide splitsen; de paden van Playwright bevatten geen spaties.
+const argDelen = (cmdline) => String(cmdline ?? '').split(/[\0\s]+/).filter(Boolean)
+
+// Soort proces uit /proc/<pid>/cmdline.
 export function soortUitCmdline(cmdline) {
-  const args = String(cmdline ?? '').split('\0').filter(Boolean)
+  const args = argDelen(cmdline)
   const exe = path.basename(args[0] ?? '')
   const type = args.find(a => a.startsWith('--type='))?.slice(7) ?? null
   if (/ffmpeg/i.test(exe)) return 'video'
@@ -67,7 +72,7 @@ export function soortUitCmdline(cmdline) {
 }
 
 export function depotUitCmdline(cmdline) {
-  const a = String(cmdline ?? '').split('\0').find(x => x.startsWith('--floatops-depot='))
+  const a = argDelen(cmdline).find(x => x.startsWith('--floatops-depot='))
   return a ? a.slice('--floatops-depot='.length) || null : null
 }
 

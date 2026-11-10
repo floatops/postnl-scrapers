@@ -78,6 +78,14 @@ test('soortUitCmdline herkent de Chromium-processen en ffmpeg', () => {
   assert.equal(soortUitCmdline(''), 'overig')
 })
 
+test('soortUitCmdline: zygote-kinderen met herschreven argv (spaties, geen \\0) worden herkend', () => {
+  // Zo staat het op de VPS (10-11): één tekst, geen NUL tussen de argumenten.
+  assert.equal(soortUitCmdline(`${CHROME} --type=renderer --headless=old --no-sandbox`), 'tabblad')
+  assert.equal(soortUitCmdline(`${CHROME} --type=gpu-process --no-sandbox\0`), 'gpu')
+  assert.equal(soortUitCmdline(`${CHROME} --type=zygote --no-sandbox --headless`), 'zygote')
+  assert.equal(depotUitCmdline(`${CHROME} --type=renderer --floatops-depot=den-hoorn`), 'den-hoorn')
+})
+
 test('depotUitCmdline leest het merk van sessie.js', () => {
   assert.equal(depotUitCmdline(cmd(CHROME, '--floatops-depot=den-hoorn')), 'den-hoorn')
   assert.equal(depotUitCmdline(cmd(CHROME, '--type=renderer')), null)
