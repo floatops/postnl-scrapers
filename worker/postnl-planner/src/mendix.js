@@ -1,6 +1,6 @@
 // Bedienen van de Dagplanning van OOM PD Process. Alle schermnamen staan hier bij elkaar;
 // uitleg en valkuilen: ../POSTNL_PLANNER.md.
-import { stopsUit, rittenUit, uniekeMeldingen } from './logica.js'
+import { stopsUit, rittenUit, uniekeMeldingen, postcodesOpnieuwZetten } from './logica.js'
 
 export const SCHERM = {
   dag: 'select.form-control',
@@ -9,6 +9,7 @@ export const SCHERM = {
   shiftsRechts: '.mx-name-Shift_Grid2',
   rittenRechts: '.mx-name-Rit_Grid1',
   postcodesNee: 'div.mx-name-radioButtons1 input[type="radio"][value="false"]',
+  postcodesJa: 'div.mx-name-radioButtons1 input[type="radio"][value="true"]',
   stops: '.mx-name-dataGrid21',
   // Mendix heeft meldingen (.mx-dialog) en pop-up-pagina's (.mx-window/.modal-dialog).
   dialoog: '.mx-dialog:visible, .mx-window:visible, .modal-dialog:visible',
@@ -189,6 +190,18 @@ export async function openRit(page, mendix, ritnaam) {
   const nee = page.locator(SCHERM.postcodesNee).first()
   await nee.waitFor({ state: 'attached', timeout: 15_000 })
   if (!(await nee.isChecked())) {
+    antwoorden.push(...await mendix.actie(() => nee.check({ force: true })))
+    if (!(await nee.isChecked())) throw new Error(`Postcodes kon bij ${ritnaam} niet op Nee`)
+  } else if (postcodesOpnieuwZetten({ stops: stopsUit(antwoorden).length, rijen: await page.locator(`${SCHERM.stops} [role="row"]`).count() })) {
+    // Het rondje staat op Nee, maar PostNL toont de postcodeblokken (gezien 10-11, matransport#666):
+    // na een verplaatsing of chauffeurwissel maakt PostNL een nieuw hulpobject met Postcodes = Ja,
+    // en het rondje op het scherm blijft het oude. Nee aanklikken doet dan niets. Daarom even Ja
+    // en terug naar Nee. Beide roepen alleen de OnChange-nanoflow OCh_DisplayPlanning_SwitchPostalCodeStop
+    // aan, dezelfde die al bij elke rit draait die op Ja openging (trace 10-11): de weergave, geen
+    // selectie of verplaatsing.
+    console.warn(`Rit ${String(ritnaam).slice(0, 4)}: Postcodes stond op Nee maar er kwamen geen stops: opnieuw op Nee gezet`)
+    const ja = page.locator(SCHERM.postcodesJa).first()
+    antwoorden.push(...await mendix.actie(() => ja.check({ force: true })))
     antwoorden.push(...await mendix.actie(() => nee.check({ force: true })))
     if (!(await nee.isChecked())) throw new Error(`Postcodes kon bij ${ritnaam} niet op Nee`)
   }

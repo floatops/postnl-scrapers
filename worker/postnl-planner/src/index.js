@@ -23,7 +23,7 @@ import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, 
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, adresPaar, kiesGewenst, schoonAdres, schoonPostcode, straatUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, adresPaar, bronNietGelezen, controleUitkomst, kiesGewenst, schoonAdres, schoonPostcode, straatUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -372,6 +372,13 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
   const doelWeigertZelf = doel?.geautoriseerd === true
   if (reden && !doelWeigertZelf) return { status: 'overgeslagen', melding: reden }
 
+  // Geen enkele stop gelezen terwijl de kop er wel noemt: een mislukte lezing, niet "alles al weg".
+  const nietGelezen = bronNietGelezen(bron, stops)
+  if (nietGelezen) {
+    console.warn(`Rit ${bron.ritnaam.slice(0, 4)}: kop ${bron.stops}, antwoord leeg: verplaatsing niet gestart`)
+    return { status: 'overgeslagen', melding: nietGelezen }
+  }
+
   const { gewenst, nietMeer } = kiesGewenst(stops, v.stop_ids)
   // Staat een deel er niet meer (al verplaatst, of door PostNL verschoven): de rest gewoon doen, dat
   // wilde de planner. Tot #600 ging dan de hele verplaatsing niet door (06-11: 5 keer 15-31 stops om 1 of 2).
@@ -394,12 +401,18 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
 
   await opStap('Controleren', 0.8)
   // Controle: staan de adressen nu ook echt in de doelrit? De StopID kan veranderen.
-  await kiesShift(page, mendix, doel.shift)
-  const inDoel = new Set((await openRit(page, mendix, doel.ritnaam)).map(adresSleutel))
-  const missen = gewenst.filter(s => !inDoel.has(adresSleutel(s)))
-  if (missen.length) {
-    return { status: 'mislukt', melding: `${missen.length} stop(s) staan na de actie niet in ${doel.ritnaam}${dialoog ? ` (PostNL: ${dialoog})` : ''}. Controleer dit in PostNL.` }
+  // Kwam er niets binnen, dan nog één keer lezen (alleen lezen, geen tweede dubbelklik).
+  let gelezenDoel = []
+  for (let poging = 1; poging <= 2 && !gelezenDoel.length; poging++) {
+    await kiesShift(page, mendix, doel.shift)
+    gelezenDoel = await openRit(page, mendix, doel.ritnaam)
+    if (!gelezenDoel.length) console.warn(`Controle ${doel.ritnaam.slice(0, 4)}: poging ${poging} gaf geen stops`)
   }
+  const inDoel = new Set(gelezenDoel.map(adresSleutel))
+  const fout = controleUitkomst({ gewenst, inDoel, gelezen: gelezenDoel.length > 0, doel, dialoog })
+  // naKlik: de dubbelklik is gegeven, dus bron en doel na afloop toch opnieuw lezen (anders toont
+  // de app de stops tot de volgende verversing nog in de bronrit).
+  if (fout) return { ...fout, naKlik: true }
   return { status: 'gelukt', melding: nietMeer ? `${gewenst.length} stop(s) verplaatst; ${nietMeer} stond(en) al niet meer in ${bron.ritnaam}.` : null }
 }
 
@@ -477,10 +490,11 @@ async function voerDoorvoerenUit(page, mendix, taak, gestopt = () => false) {
       uitkomst = { status: 'mislukt', melding: 'Technische fout tijdens deze verplaatsing. Controleer deze stops in PostNL.' }
       await sluitDialoog(page, mendix).catch(() => {})
     }
-    await zetVerplaatsing(v.id, uitkomst)
+    const { naKlik, ...velden } = uitkomst
+    await zetVerplaatsing(v.id, velden)
     tellingDoorvoer[uitkomst.status] = (tellingDoorvoer[uitkomst.status] ?? 0) + 1
     console.log(`Wijziging ${klaar + 1}/${lijst.length}: ${uitkomst.status}`)
-    if (uitkomst.status === 'gelukt') {
+    if (uitkomst.status === 'gelukt' || naKlik) {
       geraakt.add(v.shift); if (v.naar_shift) geraakt.add(v.naar_shift)
       geraakteRitten.add(v.van_rit_id); if (v.naar_rit_id) geraakteRitten.add(v.naar_rit_id)
     }

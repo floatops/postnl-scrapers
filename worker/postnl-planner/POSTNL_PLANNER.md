@@ -22,7 +22,7 @@ De app maakt een rij in `planning_taken`; `planning-taak` roept `POST /run/postn
 ## De handeling in PostNL
 
 1. Dag kiezen, shift links kiezen, rit links kiezen.
-2. Postcodes op **Nee**. Die keuze staat nooit in de app.
+2. Postcodes op **Nee**. Die keuze staat nooit in de app. **Valkuil (10-11, matransport#666):** na een verplaatsing of chauffeurwissel opent PostNL een rit soms met de postcodeblokken (`.mx-name-dataGrid22`), terwijl het rondje op het scherm nog op Nee staat (nieuw hulpobject `PostalCodeSelectionHelper`, oud rondje). Nee aanklikken doet dan niets en er komen geen stops. `openRit` zet Postcodes daarom even op Ja en terug op Nee als er geen stops binnenkwamen en de stoptabel leeg is (`postcodesOpnieuwZetten`, logregel "Postcodes stond op Nee maar er kwamen geen stops"). Het rondje omzetten start alleen de OnChange-nanoflow `OCh_DisplayPlanning_SwitchPostalCodeStop` (gemeten in de trace van 10-11; dezelfde die al draait bij elke rit die op Ja openging), geen selectie of verplaatsing. Mislukt de controle ná de dubbelklik, dan leest de doorvoer bron en doel na afloop toch opnieuw (`naKlik`), zodat de app de echte stand ziet. Gevolgen vóór de fix: een gelukte verplaatsing van 56 stops gemeld als "staan na de actie niet in 0712", 60 stops "staan niet meer in 0218" terwijl ze er nog stonden, en 22 keer "antwoord leeg: stops ongemoeid" bij het verversen.
 3. Stops selecteren in de tabel.
 4. Rechts de shift kiezen en de doelrit **dubbelklikken** (geen slepen).
 5. PostNL voert het uit als achtergrondtaak en geeft eventueel een melding terug.
@@ -71,7 +71,8 @@ De tekst "Ritten kunnen tot HH:MM uur worden aangepast." op de pagina is de offi
 - **Selecteren vergrendelt stops bij PostNL** (`OperationalPlanning.Lock`). Aan het eind meldt de worker zich af.
 - **Dialogen alleen met het kruisje sluiten**, nooit met de hoofdknop: die kan een bevestigingsvraag met ja beantwoorden.
 - **Geen automatische herhaling** na een fout tijdens een verplaatsing. De dubbelklik kan al gegeven zijn.
-- **Controle achteraf op adres**, niet op `StopID`: daar zit het ritnummer in, dus die kan veranderen.
+- **Controle achteraf op adres**, niet op `StopID`: daar zit het ritnummer in, dus die kan veranderen. Geeft de doelrit geen enkele stop terug, dan leest hij hem nog één keer (alleen lezen); lukt dat weer niet, dan zegt de melding dat de controle mislukte, niet dat de stops ontbreken (`controleUitkomst`).
+- **Lege lezing van de bronrit = niets doen** (`bronNietGelezen`): noemt de kop stops maar komt er geen binnen, dan "konden niet gelezen worden, er is niets verplaatst", niet "staan niet meer in".
 
 ## Chauffeur wisselen
 

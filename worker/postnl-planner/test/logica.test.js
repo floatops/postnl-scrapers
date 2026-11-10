@@ -346,3 +346,33 @@ test('stopNaarRij: de officiële straat gaat voor wat de afzender typte (#600)',
   assert.equal(stopNaarRij({ ...stop, Street: 'Onbekend', PostalCode: '0000FF' }, ctx).straat, '(onbekend)')
   assert.equal(stopNaarRij({ ...stop, PostalCode: '0000FF' }, ctx).postcode, null)
 })
+
+test('postcodesOpnieuwZetten: alleen als er geen stops binnenkwamen en de tabel leeg is (matransport#666)', async () => {
+  const { postcodesOpnieuwZetten } = await import('../src/logica.js')
+  assert.equal(postcodesOpnieuwZetten({ stops: 0, rijen: 0 }), true)
+  assert.equal(postcodesOpnieuwZetten({ stops: 222, rijen: 0 }), false)
+  assert.equal(postcodesOpnieuwZetten({ stops: 0, rijen: 12 }), false)
+})
+
+test('bronNietGelezen: kop met stops en een lege lezing = niets verplaatsen, geen "staan niet meer" (matransport#666)', async () => {
+  const { bronNietGelezen } = await import('../src/logica.js')
+  const bron = { ritnaam: '0218 wat hoofdstad', stops: 220 }
+  assert.match(bronNietGelezen(bron, []), /konden niet gelezen worden\. Er is niets verplaatst/)
+  assert.equal(bronNietGelezen(bron, [{ guid: 'a' }]), null)
+  // Een rit die echt leeg is (kop 0): dan gewoon de gewone weg ("staan niet meer").
+  assert.equal(bronNietGelezen({ ritnaam: '0218', stops: 0 }, []), null)
+})
+
+test('controleUitkomst: niets gelezen van de doelrit is iets anders dan stops die ontbreken (matransport#666)', async () => {
+  const { controleUitkomst, adresSleutel } = await import('../src/logica.js')
+  const s = (n) => ({ PostalCode: '2651AB', Street: 'Straat', BuildingNumber: String(n), BuildingNumberExtension: '' })
+  const gewenst = [s(1), s(2)]
+  const doel = { ritnaam: '0712 Berkel Vogelbuurt' }
+  const niets = controleUitkomst({ gewenst, inDoel: new Set(), gelezen: false, doel })
+  assert.equal(niets.status, 'mislukt')
+  assert.match(niets.melding, /is gegeven, maar die rit kon daarna niet gelezen worden/)
+  assert.doesNotMatch(niets.melding, /staan na de actie niet/)
+  const half = controleUitkomst({ gewenst, inDoel: new Set([adresSleutel(s(1))]), gelezen: true, doel, dialoog: 'Let op' })
+  assert.match(half.melding, /^1 stop\(s\) staan na de actie niet in 0712 Berkel Vogelbuurt \(PostNL: Let op\)/)
+  assert.equal(controleUitkomst({ gewenst, inDoel: new Set(gewenst.map(adresSleutel)), gelezen: true, doel }), null)
+})

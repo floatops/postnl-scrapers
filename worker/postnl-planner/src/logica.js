@@ -193,6 +193,37 @@ export function straatUitRegister(rijen) {
   return new Map([...namen].filter(([, s]) => s.size === 1).map(([p, s]) => [p, [...s][0]]))
 }
 
+// Het rondje Postcodes staat op Nee, en toch kwamen er geen stops binnen en staat de stoptabel er
+// niet: dan toont PostNL de postcodeblokken met een oud rondje (10-11, matransport#666), en moet
+// Postcodes even naar Ja en terug. Een rit met alleen postcodeblokken krijgt dat ook; dat kan geen
+// kwaad (alleen de weergave), hij blijft daarna gewoon leeg.
+export function postcodesOpnieuwZetten({ stops, rijen }) {
+  return stops === 0 && rijen === 0
+}
+
+// De bronrit had volgens de kop stops, maar er kwam er geen binnen: dan is de lezing mislukt, niet
+// "alles al weg". Niets verplaatsen (matransport#666: 10-11 Den Hoorn, 60 stops ten onrechte
+// "staan niet meer in 0218").
+export function bronNietGelezen(bron, stops) {
+  if (stops.length || !(Number(bron?.stops) > 0)) return null
+  return `De stops van ${bron.ritnaam} konden niet gelezen worden. Er is niets verplaatst. Probeer het opnieuw.`
+}
+
+// Uitkomst van de controle na de dubbelklik. Kwam er van de doelrit niets binnen, dan is de controle
+// mislukt, niet per se de verplaatsing: zeg dat (matransport#666: 10-11 Waddinxveen, 56 stops
+// "staan niet in 0712" terwijl ze erin stonden). null = gelukt.
+export function controleUitkomst({ gewenst, inDoel, gelezen, doel, dialoog = null }) {
+  const extra = dialoog ? ` (PostNL: ${dialoog})` : ''
+  if (!gelezen) {
+    return { status: 'mislukt', melding: `De verplaatsing naar ${doel.ritnaam} is gegeven, maar die rit kon daarna niet gelezen worden${extra}. Controleer in PostNL of de ${gewenst.length} stop(s) erin staan.` }
+  }
+  const missen = gewenst.filter(s => !inDoel.has(adresSleutel(s)))
+  if (missen.length) {
+    return { status: 'mislukt', melding: `${missen.length} stop(s) staan na de actie niet in ${doel.ritnaam}${extra}. Controleer dit in PostNL.` }
+  }
+  return null
+}
+
 // Welke van de gevraagde stops staan er nog? `nietMeer`: hoeveel niet, de rest kan gewoon door.
 export function kiesGewenst(stops, stopIds) {
   const gewenst = stops.filter(s => stopIds.includes(s.guid))
