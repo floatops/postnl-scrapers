@@ -80,6 +80,14 @@ export const STANDAARD = Object.freeze({
   browserVernieuwenUur: 4,
   levensduurMargeMin: 15,         // vóór een planner-opdracht: vernieuwen als de sessie zo dicht bij haar einde is
   codeCheckMin: 5,
+  // Vaste herstart elke nacht, na de lopende taak (herstart.js, matransport#668): in plaats van het
+  // wisselende moment van het vangnet op de VPS. Kost één login per depot per nacht.
+  dagelijkseHerstart: true,
+  dagelijkseHerstartOm: '03:00',
+  // Geheugenmeting (geheugen.js, matransport#668): per taak en elke minuut een regel in
+  // <logmap>/geheugen-<klant>-<dag>.jsonl (VPS ruimt na 14 dagen op). Alleen meten, verandert niets.
+  geheugenMeten: true,
+  geheugenTaakLogMb: 100,         // sprong per taak vanaf zoveel MB ook in het gewone log
   // Geheugenwacht (geheugen.js, matransport#578): deel van de V8-heapgrens (~4 GB op de VPS).
   // De crashes van 04-11 kwamen bij ~3,3 GB. Herstarten gebeurt ná de lopende taak (tot 15 min bij
   // RVA), dus ruim op tijd.

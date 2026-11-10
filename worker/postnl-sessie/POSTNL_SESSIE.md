@@ -145,6 +145,26 @@ Per klant: `postnl_instellingen.actief = true` (migratie). Tot dan doet de sessi
 
 `index.js` vangt SIGTERM en SIGINT zelf op en stopt na de lopende taak (sessies dicht met reden `herstart`). Daarom start de browser met `handleSIGTERM: false` en `handleSIGINT: false`: met de standaard van Playwright sluit die bij een SIGTERM meteen de browser, en faalde de lopende taak als `browser_weg` (gezien bij de storingsproef van 07-11, matransport#613). Zo stopt ook de noodknop (`PROXY_POOL`) en de bewaker.
 
+## Vaste herstart 's nachts (matransport#668)
+
+Elke nacht om `dagelijkseHerstartOm` (03:00 NL) stopt het proces zelf, na de lopende taak, met **exit 0** (`herstart.js`, `dagelijkseHerstartNu`, met test). De wrapper houdt dan op en de bewaker-cron start hem binnen 2 min opnieuw, met een nieuw logbestand voor de dag. Draait hij om 03:00, dan staat RVA aan voor de klant, en start de bewaker hem dus ook 's nachts. Het kost één login per depot per nacht. Start hij minder dan een uur vóór 03:00 (na een crash), dan slaat hij die nacht over. Uit met `dagelijkseHerstart: false` in `postnl_instellingen`.
+
+**Waarom:** tot 10-11 herstartte hij alleen doordat de VPS hem na 19 uur stopte (`timeoutSec` in matransport `worker/vps-server`). Dat moment schoof elke dag op (10-11: 05:01, vlak voor de ochtendlezing) en kon zo midden in de ochtend van Plannen vallen. De timeout is nu 26 uur, alleen nog een vangnet. **Waarom niet om 00:00 voor het geheugen:** het geheugen groeit niet met de tijd maar door het ochtendwerk (zie § Geheugen meten); 's nachts is het al laag.
+
+**Waarom exit 0 en niet 42:** bij 42 start de wrapper hem meteen, maar met het logbestand van de dag waarop de wrapper begon (`LOG` staat vast). Bij 0 begint alles vers.
+
+## Geheugen meten (matransport#668)
+
+Alleen meten, het gedrag verandert niet. De vraag: waar gaat het geheugen in de ochtendpiek naartoe (10-11: M&A 4,5-5,5 GB tussen 05:30 en 10:00, Bezorg Snel 2,6-2,9 GB; na de ochtend blijft het proces op ±1,1 GB).
+
+- **Elke browser draagt een merk**: `--floatops-depot=<slug>` op de commandoregel (Chromium negeert onbekende vlaggen). Zo hoort elk Chromium-proces bij de browser van zijn depot.
+- **Verdeling** (`meetTotaal` in `geheugen.js`, PSS uit `/proc`): het Node-proces (`node`: heap, heap totaal, extern, buffers, rss, `buitenV8Mb` = rss min de V8-heap: malloc, buffers van Playwright, code), en per browser `browser` (hoofdproces), `tabblad` (renderers, met `tabbladen` = aantal), `gpu`, `hulp` (netwerk en andere hulpprocessen), `zygote`, `overig`. ffmpeg (video's) start Playwright vanuit Node zelf: `videoMb`. Een browser zonder merk valt onder `overigMb`.
+- **Dagbestand** `${LOG_ROOT}/postnl/geheugen-<klant 8 tekens>-<NL-dag>.jsonl` (de VPS ruimt de logmap na 14 dagen op). Elke minuut een regel `soort: 'minuut'` met de verdeling en wat elk depot op dat moment doet (`bezig`). Per taak een regel `soort: 'taak'`: depot, taak, duur, `login` (in deze taak ingelogd: dan telt een nieuwe browser mee), `uitkomst`, `trace`, `verschil` (totaal, proces, heap, browser van dat depot, tabbladen) en de stand vóór en na. **Het proces delen de depots:** liepen er twee taken tegelijk, dan zit de ander in `procesMb`/`heapMb`; `browserMb` is wel van dit depot alleen. Vóór de taak gemeten vóór het inloggen, na de taak ná het opslaan van de trace.
+- **In het gewone log**: een sprong per taak vanaf `geheugenTaakLogMb` (100 MB): "[depot] Geheugen plannen: +420 MB in 85 s (browser +380, waarvan tabbladen +350; proces +40, heap +12), nu 3900 MB". De kwartierregel noemt nu ook de verdeling per browser.
+- **Rapport**: `node scripts/geheugen-rapport.mjs <dagbestand(en)>` (op de VPS in `/opt/postnl-scrapers/worker/postnl-sessie`): per uur het hoogste totaal en de verdeling, per taak de som en het gemiddelde van de verschillen, en de grootste sprongen. `--json` voor de ruwe cijfers.
+- **Grenzen**: een meting wacht hooguit 5 s (`metGrens`), gooit nooit, en een mislukte schrijfactie geeft hoogstens één waarschuwing per uur. Uit met `geheugenMeten: false`.
+- **Hoe lezen:** groeit `tabblad` per taak en zakt het niet, dan houdt de pagina van PostNL (Mendix) het vast: een tabblad af en toe vers laden helpt. Groeit `buitenV8Mb` terwijl de heap gelijk blijft, dan houdt malloc het vast: `MALLOC_ARENA_MAX=2` proberen. Groeit de heap, dan houdt onze code iets vast (antwoorden, traces). Pas iets aan als de worker een paar dagen stabiel draait (besluit eigenaar 10-11).
+
 ## Herstart bij nieuwe code
 
 Elke 5 min kijkt het proces naar `git HEAD` van de checkout. Nieuwe code: de lopende taken afmaken, sessies sluiten (reden `herstart`), exit 42; de wrapper op de VPS start meteen opnieuw (één nieuwe login per depot). Bij de start staat de versie in het log ("Codeversie bij de start: …"). Alleen wijzigingen in de mappen die hij laadt tellen (`MAPPEN` in `codeversie.js`), en daarin **niet** documentatie (`.md`) en tests (`/test/`): op 08-11 herstartte een commit met alleen dit document hem op A en B (matransport#638). `package.json` en `package-lock.json` tellen wel.

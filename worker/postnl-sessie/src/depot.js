@@ -306,6 +306,10 @@ export async function draaiDepot(deps) {
       let fout = null
       let lopend = null                       // de handler, ook als metLimiet al is teruggekomen
       const stopsein = { gestopt: false }     // ctx.gestopt(): de handler moet ophouden (over de limiet)
+      // Geheugen vóór en na de taak (matransport#668): alleen meten. deps.geheugen wacht hooguit 5 s en
+      // gooit nooit (index.js). Vóór het inloggen: een nieuwe browser telt mee bij deze taak (login).
+      const geheugenVoor = deps.geheugen ? await deps.geheugen.meet() : null
+      const taakBeginMs = tijd()
       try {
         // Inloggen valt ook binnen de hartslag: OOM PD en het RVA-tabblad, elk hooguit LOGIN_MAX_SEC.
         // Stopt de hartslag tijdens een trage login, dan logt het vangnet ertussendoor in.
@@ -430,6 +434,7 @@ export async function draaiDepot(deps) {
       }
       // Een doorvoer (planner) wijzigt PostNL: trace en video altijd 30 dagen bewaren (fout/).
       const tracePad = sessie ? await sessie.taakEinde(taak, { incident: incident || Boolean(uitkomst?.bewaren || fout?.bewaren), tab: k.taak.tab ?? 'oompd' }) : null
+      if (deps.geheugen) await deps.geheugen.naTaak({ depot: depot.naam, taak, voor: geheugenVoor, duurMs: tijd() - taakBeginMs, login: Boolean(sessie?.ingelogdOm && sessie.ingelogdOm >= taakBeginMs), soort, trace: Boolean(tracePad) })
       if (incident) {
         log.warn(`${label} ${taak}: ${soort}${fout ? ` (${String(fout.message).split('\n')[0]})` : ''} → ${actie}`)
         const herloginsUur = sessie?.fouten460?.length ?? 0

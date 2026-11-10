@@ -4,7 +4,7 @@
 //
 // Draait per klant als één proces op de VPS (setsid + flock, gestart door de cronjob
 // postnl-sessie-bewaker; zie matransport worker/vps-server). Exitcodes:
-//   0   gestopt (signaal of einde dag)
+//   0   gestopt (signaal, einde dag of de vaste herstart 's nachts; de bewaker start hem opnieuw)
 //   42  nieuwe code in de checkout: de wrapper start meteen opnieuw
 //   1   fout; de bewaker start hem binnen 2 minuten opnieuw, de oude scripts vangen het op
 import 'dotenv/config'
@@ -27,7 +27,9 @@ import { schatLevensduur } from './levensduur.js'
 import { maakRitmonitorTeller } from './runlog.js'
 import { maakDepotBeheer } from './depots.js'
 import { beslisCode, codeVersie, codeVersieBijStart, codeVersieFout, gewijzigdePaden, headVerschovenOp, MAPPEN } from './codeversie.js'
-import { beoordeelGeheugen, beoordeelTotaal, geheugenTekst, meetTotaal, mapMb, vrijGb } from './geheugen.js'
+import { beoordeelGeheugen, beoordeelTotaal, compact, geheugenTekst, maakGeheugenLog, meetTotaal, metGrens, mapMb, verschilTaak, vrijGb } from './geheugen.js'
+import { dagelijkseHerstartNu } from './herstart.js'
+import { depotSlug } from '../../credentials-shared/src/sessieVideo.js'
 import { waakhondMs } from './instellingen.js'
 import { zetTijdInLog, tijdStempel } from '../../credentials-shared/src/tijdLog.js'
 import fs from 'node:fs/promises'
@@ -137,14 +139,26 @@ async function main() {
   let geheugenGelogd = 0
   let schijfGemeld = 0
   let hoogste = 0
+  const bezig = new Map()   // depot → { taak, fase, sinds } (depot.js); ook in de geheugenregel per minuut
+  // Dagbestand met de verdeling (matransport#668): elke minuut en per taak een regel, naast het
+  // logbestand van de VPS (die ruimt het na 14 dagen op). Lokaal (zonder LOG) niets.
+  const geheugenLog = maakGeheugenLog({ map: process.env.LOG ? path.dirname(process.env.LOG) : null, klantId: KLANT_ID, log })
+  // Eén meting tegelijk, elk deel begrensd (matransport#668): een hangende /proc- of schijflezing mag
+  // de wacht niet stil laten stoppen, en tikken mogen zich niet opstapelen.
+  let meetLoopt = false
   const geheugenCheck = setInterval(async () => {
+    if (meetLoopt) return
+    meetLoopt = true
     try {
       const m = process.memoryUsage()
-      const meting = { heapMb: m.heapUsed / 1048576, limietMb, rssMb: m.rss / 1048576, totaal: await meetTotaal() }
+      const meting = { heapMb: m.heapUsed / 1048576, limietMb, rssMb: m.rss / 1048576, totaal: await metGrens(meetTotaal(), 10_000) }
       hoogste = Math.max(hoogste, meting.totaal?.totaalMb ?? 0)
+      if (cfg.geheugenMeten && meting.totaal) {
+        await geheugenLog({ soort: 'minuut', ...compact(meting.totaal), bezig: Object.fromEntries([...bezig].map(([d, b]) => [depotSlug(d), `${b.taak} (${b.fase})`])) })
+      }
       if (Date.now() - geheugenGelogd >= cfg.geheugenLogMin * 60_000) {
         geheugenGelogd = Date.now()
-        const volledig = { ...meting, werkMapMb: await mapMb(werkMap), vrijGb: await vrijGb() }
+        const volledig = { ...meting, werkMapMb: await metGrens(mapMb(werkMap), 10_000), vrijGb: await metGrens(vrijGb(), 10_000) }
         log.log(`Geheugen: ${geheugenTekst(volledig)}, hoogste sinds start ${hoogste} MB`)
         const schijfTe = volledig.vrijGb != null && volledig.vrijGb < cfg.schijfVrijMinGb
         if ((schijfTe || volledig.werkMapMb > cfg.werkMapMaxMb) && Date.now() - schijfGemeld >= 3600_000) {
@@ -166,8 +180,37 @@ async function main() {
       }
     } catch (e) {
       log.warn(`Geheugenmeting mislukt (volgende minuut opnieuw): ${e.message}`)
+    } finally {
+      meetLoopt = false
     }
   }, 60_000)
+
+  // Vaste herstart elke nacht (herstart.js, matransport#668): na de lopende taak, exit 0. De
+  // bewaker-cron start hem binnen 2 min opnieuw (draait hij 's nachts, dan staat RVA aan).
+  const herstartCheck = setInterval(() => {
+    if (stop || !cfg.dagelijkseHerstart) return
+    if (!dagelijkseHerstartNu({ nuMs: Date.now(), startMs, om: cfg.dagelijkseHerstartOm })) return
+    log.log(`Vaste herstart (${cfg.dagelijkseHerstartOm}): stoppen na de lopende taak, de bewaker start opnieuw`)
+    stop = true; exitCode = 0
+  }, 60_000)
+
+  // Geheugen per taak (depot.js, matransport#668). Hooguit 5 s per meting, gooit nooit.
+  const geheugenPerTaak = {
+    meet: () => (cfg.geheugenMeten ? metGrens(meetTotaal(), 5_000) : null),
+    naTaak: async ({ depot, taak, voor, duurMs, login, soort, trace }) => {
+      try {
+        if (!cfg.geheugenMeten || !voor) return
+        const na = await metGrens(meetTotaal(), 5_000)
+        const slug = depotSlug(depot)
+        const verschil = verschilTaak(voor, na, slug)
+        await geheugenLog({ soort: 'taak', depot: slug, taak, duurMs, login, uitkomst: soort, trace, verschil, voor: { totaalMb: voor.totaalMb, procesMb: voor.procesMb, heapMb: voor.node?.heapMb, browser: voor.browsers?.[slug] ?? null }, na: compact(na) })
+        if (verschil && Math.abs(verschil.totaalMb ?? 0) >= cfg.geheugenTaakLogMb) {
+          const t = (x) => (x == null ? '?' : `${x > 0 ? '+' : ''}${x}`)
+          log.log(`[${depot}] Geheugen ${taak}${login ? ' (met login)' : ''}: ${t(verschil.totaalMb)} MB in ${Math.round(duurMs / 1000)} s (browser ${t(verschil.browserMb)}, waarvan tabbladen ${t(verschil.tabbladMb)}; proces ${t(verschil.procesMb)}, heap ${t(verschil.heapMb)}), nu ${na.totaalMb} MB`)
+        }
+      } catch (e) { log.warn(`Geheugen per taak niet gemeten: ${e.message}`) }
+    },
+  }
 
   // Gemeten levensduur per depot, elk uur ververst.
   const schattingen = {}
@@ -182,7 +225,6 @@ async function main() {
   // anders opnieuw een melding. waakhondMs per tik: de limieten kunnen per klant wijzigen.
   let voortgang = Date.now()
   let waakhondAf = false
-  const bezig = new Map()   // depot → { taak, sinds } (depot.js)
   const waakhond = setInterval(async () => {
     if (waakhondAf || !(Date.now() - voortgang > waakhondMs(cfg))) return
     waakhondAf = true
@@ -233,7 +275,7 @@ async function main() {
     startLus: (depot, lus) => {
       teller.depot(depot.naam)
       return draaiDepot({
-        depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun, bezig,
+        depot, klantId: KLANT_ID, cfg, opslag, klok, log, houder, melden, naRun, bezig, geheugen: geheugenPerTaak,
         stop: () => stop || lus.stop,
         schatting: () => schattingen[depot.naam] ?? null,
         telRitmonitor: (d, r) => teller.tel(d, r),
@@ -304,7 +346,7 @@ async function main() {
   await beheer.wacht()
   clearInterval(wekkerCheck); clearInterval(plannerCheck); clearInterval(rvaCheck); clearInterval(uurCheck)
   await teller.flush()
-  clearInterval(codeCheck); clearInterval(geheugenCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
+  clearInterval(codeCheck); clearInterval(geheugenCheck); clearInterval(herstartCheck); clearInterval(schattingTimer); clearInterval(waakhond); teller.stop()
 }
 
 main()

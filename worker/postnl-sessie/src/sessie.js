@@ -108,7 +108,9 @@ export class Sessie {
     // handleSIGTERM/SIGINT uit: anders sluit Playwright bij een SIGTERM meteen de browser, en faalt de
     // lopende taak (07-11 22:12, proef matransport#613: Waddinxveen "browser_weg"). index.js stopt zelf
     // netjes na de lopende taak. Valt het proces hard weg, dan sluit Chromium vanzelf: de pipe is dicht.
-    const opties = { headless: this.headless, args: ['--disable-dev-shm-usage'], tracesDir: this.tracesDir, handleSIGTERM: false, handleSIGINT: false }
+    // --floatops-depot: Chromium negeert onbekende vlaggen; de geheugenmeting herkent er de browser van
+    // dit depot aan (geheugen.js, matransport#668).
+    const opties = { headless: this.headless, args: ['--disable-dev-shm-usage', `--floatops-depot=${depotSlug(this.depot.naam)}`], tracesDir: this.tracesDir, handleSIGTERM: false, handleSIGINT: false }
     if (process.env.CHROMIUM_EXECUTABLE_PATH) opties.executablePath = process.env.CHROMIUM_EXECUTABLE_PATH
     if (this.proxy) opties.proxy = this.proxy.proxy
     try {
