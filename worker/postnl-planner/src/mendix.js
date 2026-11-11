@@ -257,20 +257,33 @@ export async function leesChauffeurKeuze(page) {
 }
 
 // PostNL slaat de keuze meteen op en vraagt dan of de chauffeur ook aan de komende ritten van
-// het scenario gekoppeld moet worden (gezien op 02-11). Altijd "alleen vandaag": een wissel uit
-// Plannen mag nooit andere dagen raken. Een ander venster dan dit: fout, niets aanklikken.
+// het scenario gekoppeld moet worden (gezien op 02-11; venster ChangeDefaultDriverForRide_Edit,
+// teksten uit de trace van 11-11). De planner kiest dat in de app (matransport#707, kolom
+// planning_verplaatsingen.chauffeur_ook_komend); standaard "alleen vandaag". Een ander venster dan
+// dit: fout, niets aanklikken.
 export const CHAUFFEUR_VRAAG = 'Wijzig chauffeur'
 export const ALLEEN_VANDAAG = /alleen voor de rit van vandaag/i
+export const OOK_KOMEND = /koppel chauffeur voor deze .*nog komende ritten/i
 
-export async function kiesChauffeur(page, mendix, naam) {
+export const antwoordKnop = ookKomend => (ookKomend ? OOK_KOMEND : ALLEEN_VANDAAG)
+
+export async function kiesChauffeur(page, mendix, naam, { ookKomend = false } = {}) {
   const antwoorden = await mendix.actie(() => page.locator(SCHERM.chauffeur).first().selectOption({ label: naam }), 60_000)
   // Op de knop zelf zoeken: welk soort venster PostNL gebruikt, maakt dan niet uit (02-11: het
   // was geen .mx-dialog, en de vraag bleef open staan).
-  const nee = page.getByRole('button', { name: ALLEEN_VANDAAG }).first()
-  const gevraagd = await nee.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
+  // Eerst wachten op een van beide knoppen, dan de gekozen klikken: zo is "de vraag kwam niet"
+  // te onderscheiden van "de vraag kwam, maar zonder de knop die we zoeken".
+  const eenVanBeide = page.getByRole('button', { name: new RegExp(`${ALLEEN_VANDAAG.source}|${OOK_KOMEND.source}`, 'i') }).first()
+  const gevraagd = await eenVanBeide.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
   if (gevraagd) {
-    antwoorden.push(...await mendix.actie(() => nee.click(), 60_000))
-    await nee.waitFor({ state: 'hidden', timeout: 15_000 })
+    const knop = page.getByRole('button', { name: antwoordKnop(ookKomend) }).first()
+    if (!(await knop.isVisible().catch(() => false))) {
+      throw new Error(`PostNL toonde bij de chauffeurwissel de knop voor ${ookKomend ? 'de komende ritten' : 'alleen vandaag'} niet`)
+    }
+    antwoorden.push(...await mendix.actie(() => knop.click(), 60_000))
+    await knop.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => {
+      throw new Error('De vraag van PostNL bij de chauffeurwissel ging niet dicht')
+    })
   } else if (await page.getByText(CHAUFFEUR_VRAAG).first().isVisible().catch(() => false)) {
     throw new Error('PostNL stelde een onbekende vraag bij de chauffeurwissel')
   }

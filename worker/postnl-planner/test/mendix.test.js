@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { volgMendix, VERWEESD_MS } from '../src/mendix.js'
+import { volgMendix, VERWEESD_MS, antwoordKnop } from '../src/mendix.js'
 
 // Genoeg van een Playwright-pagina voor volgMendix: events, geen voortgangsbalk, korte timeouts.
 function nepPagina() {
@@ -108,4 +108,17 @@ test('volgMendix: na een nieuw hoofddocument wordt niet meer op oude bodies gewa
     page.emit('response', { url: () => 'https://x/index.html', request: () => ({ isNavigationRequest: () => true, resourceType: () => 'document' }), frame: () => frame })
   }, 30_000)
   assert.ok(Date.now() - begin < 2_000, 'meteen klaar: het oude document is weg')
+})
+
+test('chauffeurvraag: de knop past op de echte teksten van PostNL (matransport#707, trace 11-11)', () => {
+  const ja = 'Ja, koppel chauffeur voor deze &  nog komende ritten van dit scenario'
+  const nee = 'Nee, koppel de chauffeur alleen voor de rit van vandaag'
+  assert.ok(antwoordKnop(true).test(ja))
+  assert.ok(!antwoordKnop(true).test(nee))
+  assert.ok(antwoordKnop(false).test(nee))
+  assert.ok(!antwoordKnop(false).test(ja))
+  // Bij een lege chauffeur stelt PostNL een andere vraag (verwijderen): daar past geen van beide.
+  for (const t of ['Ja, verwijder chauffeur voor deze &  nog komende ritten van dit scenario', 'Nee, verwijder de chauffeur alleen bij de rit van vandaag']) {
+    assert.ok(!antwoordKnop(true).test(t) && !antwoordKnop(false).test(t))
+  }
 })

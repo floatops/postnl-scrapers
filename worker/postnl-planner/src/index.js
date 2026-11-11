@@ -477,12 +477,15 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
   const keuze = await leesChauffeurKeuze(page)
   if (!keuze.wijzigbaar) return { status: 'overgeslagen', melding: `PostNL staat bij ${rit.ritnaam} geen chauffeurwissel meer toe.` }
   if (!keuze.opties.includes(v.chauffeur)) return { status: 'overgeslagen', melding: `${v.chauffeur} staat niet in de PostNL-lijst.` }
+  const ookKomend = v.chauffeur_ook_komend === true
   if (keuze.huidig === v.chauffeur) {
     await werkRittenBij(taak, rit.ritnaam, v.chauffeur)
-    return { status: 'gelukt', melding: 'Stond al op deze chauffeur.' }
+    // PostNL stelt de vraag alleen bij een echte wissel: de komende ritten zijn dan niet geraakt.
+    return { status: 'gelukt', melding: ookKomend ? `${rit.ritnaam} stond vandaag al op deze chauffeur; de komende ritten zijn niet aangepast.` : 'Stond al op deze chauffeur.' }
   }
 
-  const meldingen = await kiesChauffeur(page, mendix, v.chauffeur)
+  // matransport#707: de planner koos 'alleen vandaag' of 'ook de komende ritten van dit scenario'.
+  const meldingen = await kiesChauffeur(page, mendix, v.chauffeur, { ookKomend })
   const dialoog = await sluitDialoog(page, mendix)
   const weigering = meldingen.find(isWeigering)
   if (weigering) return { status: 'mislukt', melding: weigering.tekst }
@@ -494,7 +497,8 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
     return { status: 'mislukt', melding: `De chauffeur staat na de actie op ${na.huidig ?? 'niemand'}${dialoog ? ` (PostNL: ${dialoog})` : ''}. Controleer dit in PostNL.` }
   }
   await werkRittenBij(taak, rit.ritnaam, v.chauffeur)
-  return { status: 'gelukt', melding: null }
+  // De nacontrole ziet alleen vandaag; dat de komende ritten volgen, zegt PostNL niet terug.
+  return { status: 'gelukt', melding: ookKomend ? `${v.chauffeur} is ook aan de komende ritten van ${rit.ritnaam} gekoppeld (alleen vandaag nagekeken).` : null }
 }
 
 async function voerDoorvoerenUit(page, mendix, taak, gestopt = () => false) {
@@ -523,7 +527,10 @@ async function voerDoorvoerenUit(page, mendix, taak, gestopt = () => false) {
     } catch (err) {
       console.error('Verplaatsing faalde:', err.message)
       // Onzeker: de dubbelklik kan al gegeven zijn. Daarom niet automatisch opnieuw.
-      uitkomst = { status: 'mislukt', melding: 'Technische fout tijdens deze verplaatsing. Controleer deze stops in PostNL.' }
+      uitkomst = v.soort === 'chauffeur'
+        // PostNL slaat de gekozen chauffeur meteen op, ook als de vraag erna misgaat (matransport#707).
+        ? { status: 'mislukt', melding: `${foutVoorPlanner(err.message)} Controleer de chauffeur van deze rit in PostNL.` }
+        : { status: 'mislukt', melding: 'Technische fout tijdens deze verplaatsing. Controleer deze stops in PostNL.' }
       await sluitDialoog(page, mendix).catch(() => {})
     }
     const { naKlik, ...velden } = uitkomst

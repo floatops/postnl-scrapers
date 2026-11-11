@@ -81,7 +81,7 @@ De keuzelijst `.mx-name-referenceSelector1 select` bij de open rit. Bij een geau
 
 ### De vraag na het kiezen (gezien op 02-11)
 
-PostNL slaat de gekozen chauffeur **direct** op en toont dan "Wijzig chauffeur: Wilt u de gekozen chauffeur voor de nog komende ritten van dit scenario koppelen?". De worker kiest altijd **"Nee, koppel de chauffeur alleen voor de rit van vandaag"**: een wissel uit Plannen raakt nooit andere dagen. Een ander venster op dat moment = fout, de worker klikt dan niets aan. Tot deze fix bleef de vraag open staan en liep de worker vast, terwijl de wissel zelf al was opgeslagen.
+PostNL slaat de gekozen chauffeur **direct** op en toont dan "Wijzig chauffeur: Wilt u de gekozen chauffeur voor de nog komende ritten van dit scenario koppelen?" (Mendix-pagina `ChangeDefaultDriverForRide_Edit`). Knoppen: "Ja, koppel chauffeur voor deze & nog komende ritten van dit scenario" (groen) en "Nee, koppel de chauffeur alleen voor de rit van vandaag" (rood). Bij een lege chauffeur is de vraag "Wilt u gekoppelde chauffeurs voor de nog komende ritten van dit scenario verwijderen?" met "Ja, verwijder…"/"Nee, verwijder de chauffeur alleen bij de rit van vandaag"; Plannen kan geen chauffeur leegmaken, dus die komt niet voor. **De planner kiest sinds matransport#707 zelf** (`planning_verplaatsingen.chauffeur_ook_komend`): true = de Ja-knop, anders (ook als de kolom op een stack nog ontbreekt) de Nee-knop, alleen vandaag. Teksten vastgelegd in `antwoordKnop()` met een test. Een ander venster op dat moment = fout, de worker klikt dan niets aan. Tot deze fix bleef de vraag open staan en liep de worker vast, terwijl de wissel zelf al was opgeslagen.
 
 ## Playwright-trace (aan, zonder einddatum)
 

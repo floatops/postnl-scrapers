@@ -507,3 +507,9 @@ test('een stop in een andere rit telt als verhuisd, een andere wijziging niet (m
   assert.deepEqual(verhuisdeStops(bestaand, [{ stop_id: 'a', rit_id: 'R2' }, { stop_id: 'b', rit_id: 'R1', stuks: 3 }, { stop_id: 'c', rit_id: 'R2' }]), ['a'])
   assert.deepEqual(verhuisdeStops(bestaand, []), [])
 })
+
+test('foutVoorPlanner: een fout bij de chauffeurvraag blijft leesbaar (matransport#707)', () => {
+  for (const t of ['PostNL toonde bij de chauffeurwissel de knop voor de komende ritten niet', 'De vraag van PostNL bij de chauffeurwissel ging niet dicht', 'PostNL stelde een onbekende vraag bij de chauffeurwissel']) {
+    assert.equal(foutVoorPlanner(t), t)
+  }
+})
