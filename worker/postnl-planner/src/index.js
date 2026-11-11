@@ -485,7 +485,8 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
   }
 
   // matransport#707: de planner koos 'alleen vandaag' of 'ook de komende ritten van dit scenario'.
-  const meldingen = await kiesChauffeur(page, mendix, v.chauffeur, { ookKomend })
+  const gekozen = await kiesChauffeur(page, mendix, v.chauffeur, { ookKomend })
+  const { meldingen } = gekozen
   const dialoog = await sluitDialoog(page, mendix)
   const weigering = meldingen.find(isWeigering)
   if (weigering) return { status: 'mislukt', melding: weigering.tekst }
@@ -497,8 +498,13 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
     return { status: 'mislukt', melding: `De chauffeur staat na de actie op ${na.huidig ?? 'niemand'}${dialoog ? ` (PostNL: ${dialoog})` : ''}. Controleer dit in PostNL.` }
   }
   await werkRittenBij(taak, rit.ritnaam, v.chauffeur)
-  // De nacontrole ziet alleen vandaag; dat de komende ritten volgen, zegt PostNL niet terug.
-  return { status: 'gelukt', melding: ookKomend ? `${v.chauffeur} is ook aan de komende ritten van ${rit.ritnaam} gekoppeld (alleen vandaag nagekeken).` : null }
+  // De nacontrole ziet alleen vandaag; dat de komende ritten volgen, zegt PostNL niet terug. Lukte
+  // de keuze voor de komende ritten niet, dan is de wissel van vandaag toch gelukt (matransport#707).
+  const notities = [
+    ...(gekozen.ookKomend === true ? [`${v.chauffeur} is ook aan de komende ritten van ${rit.ritnaam} gekoppeld (alleen vandaag nagekeken).`] : []),
+    ...gekozen.opmerkingen,
+  ]
+  return { status: 'gelukt', melding: notities.length ? notities.join(' ') : null }
 }
 
 async function voerDoorvoerenUit(page, mendix, taak, gestopt = () => false) {

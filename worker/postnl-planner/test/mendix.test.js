@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { volgMendix, VERWEESD_MS, antwoordKnop } from '../src/mendix.js'
+import { volgMendix, VERWEESD_MS, antwoordKnop, kiesChauffeur } from '../src/mendix.js'
 
 // Genoeg van een Playwright-pagina voor volgMendix: events, geen voortgangsbalk, korte timeouts.
 function nepPagina() {
@@ -121,4 +121,83 @@ test('chauffeurvraag: de knop past op de echte teksten van PostNL (matransport#7
   for (const t of ['Ja, verwijder chauffeur voor deze &  nog komende ritten van dit scenario', 'Nee, verwijder de chauffeur alleen bij de rit van vandaag']) {
     assert.ok(!antwoordKnop(true).test(t) && !antwoordKnop(false).test(t))
   }
+})
+
+// Nagemaakt venster "Wijzig chauffeur" (matransport#707): knoppen met de echte teksten, en per knop
+// wat een klik doet ('dicht' = venster weg, 'hangt' = klik gooit, venster blijft, 'niets' = blijft open).
+const JA = 'Ja, koppel chauffeur voor deze &  nog komende ritten van dit scenario'
+const NEE = 'Nee, koppel de chauffeur alleen voor de rit van vandaag'
+function nepVraag({ knoppen = [JA, NEE], gedrag = {}, kruisje = 'dicht' } = {}) {
+  const st = { open: true, geklikt: [] }
+  const zichtbaar = re => st.open && knoppen.some(k => re.test(k))
+  const loc = re => ({
+    first() { return this },
+    isVisible: async () => zichtbaar(re),
+    waitFor: async ({ state }) => { if ((state === 'visible') !== zichtbaar(re)) throw new Error('timeout') },
+    click: async () => {
+      const k = knoppen.find(x => re.test(x))
+      st.geklikt.push(k === JA ? 'ja' : 'nee')
+      const g = gedrag[k === JA ? 'ja' : 'nee'] ?? 'dicht'
+      if (g === 'hangt') throw new Error('Timeout 10000ms exceeded')
+      if (g === 'dicht') st.open = false
+    },
+  })
+  const page = {
+    getByRole: (_r, { name }) => loc(name),
+    getByText: () => ({ first: () => ({ isVisible: async () => st.open }) }),
+    locator: sel => ({
+      first: () => ({
+        selectOption: async () => {},
+        isVisible: async () => st.open,
+        innerText: async () => 'Wijzig chauffeur',
+        click: async () => { st.geklikt.push('kruisje'); if (kruisje === 'dicht') st.open = false },
+      }),
+    }),
+  }
+  const mendix = { actie: async (fn) => { await fn(); return [] } }
+  return { page, mendix, st }
+}
+
+test('chauffeurvraag: ook de komende ritten klikt Ja (matransport#707)', async () => {
+  const { page, mendix, st } = nepVraag()
+  const uit = await kiesChauffeur(page, mendix, 'X', { ookKomend: true })
+  assert.deepEqual(st.geklikt, ['ja'])
+  assert.equal(uit.ookKomend, true)
+  assert.deepEqual(uit.opmerkingen, [])
+})
+
+test('chauffeurvraag: standaard alleen vandaag', async () => {
+  const { page, mendix, st } = nepVraag()
+  const uit = await kiesChauffeur(page, mendix, 'X')
+  assert.deepEqual(st.geklikt, ['nee'])
+  assert.equal(uit.ookKomend, false)
+})
+
+test('chauffeurvraag: geen Ja-knop = terug op alleen vandaag, met reden, zonder fout', async () => {
+  const { page, mendix, st } = nepVraag({ knoppen: [NEE] })
+  const uit = await kiesChauffeur(page, mendix, 'X', { ookKomend: true })
+  assert.deepEqual(st.geklikt, ['nee'])
+  assert.equal(uit.ookKomend, false)
+  assert.match(uit.opmerkingen.join(' '), /komende ritten zijn niet aangepast/)
+})
+
+test('chauffeurvraag: klik op Ja hangt en het venster blijft = alleen vandaag, zonder fout', async () => {
+  const { page, mendix, st } = nepVraag({ gedrag: { ja: 'hangt' } })
+  const uit = await kiesChauffeur(page, mendix, 'X', { ookKomend: true })
+  assert.deepEqual(st.geklikt, ['ja', 'nee'])
+  assert.equal(uit.ookKomend, false)
+  assert.match(uit.opmerkingen.join(' '), /reageerde niet/)
+})
+
+test('chauffeurvraag: geen knop doet iets = dicht met het kruisje, zonder fout', async () => {
+  const { page, mendix, st } = nepVraag({ gedrag: { ja: 'niets', nee: 'niets' } })
+  const uit = await kiesChauffeur(page, mendix, 'X', { ookKomend: true })
+  assert.equal(st.geklikt.at(-1), 'kruisje')
+  assert.equal(uit.ookKomend, false)
+  assert.match(uit.opmerkingen.join(' '), /kruisje/)
+})
+
+test('chauffeurvraag: venster gaat ook met het kruisje niet dicht = fout (volgende wijziging zou vastlopen)', async () => {
+  const { page, mendix } = nepVraag({ gedrag: { ja: 'niets', nee: 'niets' }, kruisje: 'niets' })
+  await assert.rejects(kiesChauffeur(page, mendix, 'X', { ookKomend: true }), /ging niet dicht/)
 })

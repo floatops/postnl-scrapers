@@ -267,27 +267,64 @@ export const OOK_KOMEND = /koppel chauffeur voor deze .*nog komende ritten/i
 
 export const antwoordKnop = ookKomend => (ookKomend ? OOK_KOMEND : ALLEEN_VANDAAG)
 
+// Geeft { meldingen, ookKomend, opmerkingen }. ookKomend: true = de Ja-knop is geklikt, false =
+// alleen vandaag, null = onzeker (de klik op Ja liep vast, maar de vraag ging wel dicht).
+// De keuze "ook de komende ritten" mag Plannen nooit stuk maken (matransport#707, eigenaar 11-11):
+// lukt die knop niet, dan valt hij terug op "alleen vandaag" (de chauffeur van vandaag is dan al
+// opgeslagen) en staat de reden in opmerkingen. Blijft de vraag open staan, dan gaat hij dicht
+// met het kruisje, zodat de volgende wijziging van de opdracht een vrij scherm heeft.
 export async function kiesChauffeur(page, mendix, naam, { ookKomend = false } = {}) {
   const antwoorden = await mendix.actie(() => page.locator(SCHERM.chauffeur).first().selectOption({ label: naam }), 60_000)
+  const opmerkingen = []
   // Op de knop zelf zoeken: welk soort venster PostNL gebruikt, maakt dan niet uit (02-11: het
-  // was geen .mx-dialog, en de vraag bleef open staan).
-  // Eerst wachten op een van beide knoppen, dan de gekozen klikken: zo is "de vraag kwam niet"
-  // te onderscheiden van "de vraag kwam, maar zonder de knop die we zoeken".
+  // was geen .mx-dialog, en de vraag bleef open staan). Eerst wachten op een van beide knoppen,
+  // zodat "de vraag kwam niet" iets anders is dan "de vraag kwam, maar zonder de knop die we zoeken".
   const eenVanBeide = page.getByRole('button', { name: new RegExp(`${ALLEEN_VANDAAG.source}|${OOK_KOMEND.source}`, 'i') }).first()
   const gevraagd = await eenVanBeide.waitFor({ state: 'visible', timeout: 10_000 }).then(() => true, () => false)
-  if (gevraagd) {
-    const knop = page.getByRole('button', { name: antwoordKnop(ookKomend) }).first()
-    if (!(await knop.isVisible().catch(() => false))) {
-      throw new Error(`PostNL toonde bij de chauffeurwissel de knop voor ${ookKomend ? 'de komende ritten' : 'alleen vandaag'} niet`)
+  if (!gevraagd) {
+    if (await page.getByText(CHAUFFEUR_VRAAG).first().isVisible().catch(() => false)) {
+      throw new Error('PostNL stelde een onbekende vraag bij de chauffeurwissel')
     }
-    antwoorden.push(...await mendix.actie(() => knop.click(), 60_000))
-    await knop.waitFor({ state: 'hidden', timeout: 15_000 }).catch(() => {
-      throw new Error('De vraag van PostNL bij de chauffeurwissel ging niet dicht')
-    })
-  } else if (await page.getByText(CHAUFFEUR_VRAAG).first().isVisible().catch(() => false)) {
-    throw new Error('PostNL stelde een onbekende vraag bij de chauffeurwissel')
+    return { meldingen: uniekeMeldingen(antwoorden), ookKomend: false, opmerkingen }
   }
-  return uniekeMeldingen(antwoorden)
+
+  const ja = page.getByRole('button', { name: OOK_KOMEND }).first()
+  const nee = page.getByRole('button', { name: ALLEEN_VANDAAG }).first()
+  let uitkomst = false
+  if (ookKomend) {
+    if (!(await ja.isVisible().catch(() => false))) {
+      opmerkingen.push('De komende ritten zijn niet aangepast: PostNL toonde die keuze niet. Alleen vandaag is gewijzigd.')
+    } else {
+      try {
+        antwoorden.push(...await mendix.actie(() => ja.click({ timeout: 10_000 }), 60_000))
+        uitkomst = true
+      } catch (err) {
+        console.error('Chauffeurvraag: klik op "komende ritten" faalde:', err.message)
+        uitkomst = null
+      }
+    }
+  }
+  // Nog open en (nog) geen gelukte klik op Ja: "alleen vandaag", het veilige antwoord.
+  if (uitkomst !== true && await nee.isVisible().catch(() => false)) {
+    if (uitkomst === null) opmerkingen.push('De komende ritten zijn niet aangepast: PostNL reageerde niet op die keuze. Alleen vandaag is gewijzigd.')
+    try {
+      antwoorden.push(...await mendix.actie(() => nee.click({ timeout: 10_000 }), 60_000))
+      uitkomst = false
+    } catch (err) {
+      console.error('Chauffeurvraag: klik op "alleen vandaag" faalde:', err.message)
+    }
+  } else if (uitkomst === null) {
+    opmerkingen.push('Of de komende ritten zijn aangepast is niet zeker: PostNL reageerde traag. Controleer de komende dagen van deze rit in PostNL.')
+  }
+  const dicht = await eenVanBeide.waitFor({ state: 'hidden', timeout: 15_000 }).then(() => true, () => false)
+  if (!dicht) {
+    // Het kruisje: de chauffeur van vandaag staat al, de komende ritten blijven zoals ze waren.
+    await sluitDialoog(page, mendix).catch(() => {})
+    if (await eenVanBeide.isVisible().catch(() => false)) throw new Error('De vraag van PostNL bij de chauffeurwissel ging niet dicht')
+    if (uitkomst !== false || ookKomend) opmerkingen.push('De vraag van PostNL is met het kruisje gesloten; de komende ritten zijn niet aangepast.')
+    uitkomst = false
+  }
+  return { meldingen: uniekeMeldingen(antwoorden), ookKomend: uitkomst, opmerkingen }
 }
 
 export async function klikStopRij(page, mendix, rij, { ctrl = false } = {}) {
