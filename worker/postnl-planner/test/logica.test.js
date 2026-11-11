@@ -421,6 +421,24 @@ test('controleUitkomst: niets gelezen van de doelrit is iets anders dan stops di
   assert.equal(controleUitkomst({ gewenst, inDoel: new Set(gewenst.map(adresSleutel)), gelezen: true, doel }), null)
 })
 
+test('controleUitkomst: geen enkele stop verplaatst en PostNL zei niets: PostNL voerde het niet uit (matransport#696)', async () => {
+  const { controleUitkomst, adresSleutel } = await import('../src/logica.js')
+  const s = (n) => ({ PostalCode: '2651AB', Street: 'Straat', BuildingNumber: String(n), BuildingNumberExtension: '' })
+  const doel = { ritnaam: '0732 Pijnacker Noord' }
+  const nacht = new Date('2026-11-11T00:02:00Z')   // 01:02 NL
+  const dag = new Date('2026-11-10T06:15:00Z')     // 07:15 NL
+  const anders = new Set([adresSleutel(s(9))])     // de doelrit is gelezen, maar zonder deze stops
+  const een = controleUitkomst({ gewenst: [s(1)], inDoel: anders, gelezen: true, doel, nu: nacht })
+  assert.equal(een.status, 'mislukt')
+  assert.match(een.melding, /^PostNL heeft deze verplaatsing niet uitgevoerd: de stop staat niet in 0732 Pijnacker Noord\. 's Nachts gebeurt dit vaker/)
+  const twee = controleUitkomst({ gewenst: [s(1), s(2)], inDoel: anders, gelezen: true, doel, nu: dag })
+  assert.match(twee.melding, /de 2 stops staan niet in 0732/)
+  assert.doesNotMatch(twee.melding, /Nachts/, 'overdag geen nachttekst')
+  // Met een dialoog van PostNL of een deel verplaatst: de oude, precieze tekst.
+  assert.match(controleUitkomst({ gewenst: [s(1)], inDoel: anders, gelezen: true, doel, dialoog: 'Let op', nu: nacht }).melding, /staan na de actie niet in .*PostNL: Let op/)
+  assert.match(controleUitkomst({ gewenst: [s(1), s(2)], inDoel: new Set([adresSleutel(s(1))]), gelezen: true, doel, nu: nacht }).melding, /^1 stop\(s\) staan na de actie niet in/)
+})
+
 test('gebouwnummer in de straat: "Teststraat 22-A" nr 8 wordt 22 + A8, alleen als het register het zo kent (matransport#667, verzonnen)', async () => {
   const { stopNaarRij, gebouwUitStraat, woningenUitRegister, adresParen } = await import('../src/logica.js')
   const register = [

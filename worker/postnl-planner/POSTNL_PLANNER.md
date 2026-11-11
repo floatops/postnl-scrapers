@@ -57,7 +57,7 @@ Mendix stuurt alles naar `/xas/`. Herken data aan `objectType`, **nooit aan `ope
 
 ## Timing
 
-De nieuwe dag staat al **rond middernacht** in PostNL (11-11: om 00:07); de sessiehouder leest hem om 00:10 één keer in Plannen (taak `nacht`, matransport#690), de volle ochtendlezing blijft om 05:30. Tot de deadline kan PostNL nog adressen toevoegen, dus: wat in FloatOps staat kan verouderd zijn, en rijnummers zijn niet vast. Daarom leest de worker vlak voor elke verplaatsing opnieuw, en zoekt hij rijen altijd op tijd + adres. De ritmonitor start pas om 08:00 en de dagplanning-scraper om 07:00, dus het sessie-slot is in dit tijdvak meestal vrij.
+De nieuwe dag staat al **rond middernacht** in PostNL (11-11: om 00:07); de sessiehouder leest hem om 00:10 één keer in Plannen (taak `nacht`, matransport#690), de volle ochtendlezing blijft om 05:30. **'s Nachts voert PostNL stopverplaatsingen stil niet uit** (11-11 00:30-01:04: vijf van de vijf, op A en B; de achtergrondtaak is in 60-70 ms klaar zonder een pakket aan te raken, een chauffeurswissel lukt wel). Alle geslaagde verplaatsingen sinds 03-11 vielen tussen 06:00 en 11:00; tussen 01:00 en 06:00 is het nog niet geprobeerd. De app meldt dan "PostNL heeft deze verplaatsing niet uitgevoerd" (`controleUitkomst`, matransport#696). Tot de deadline kan PostNL nog adressen toevoegen, dus: wat in FloatOps staat kan verouderd zijn, en rijnummers zijn niet vast. Daarom leest de worker vlak voor elke verplaatsing opnieuw, en zoekt hij rijen altijd op tijd + adres. De ritmonitor start pas om 08:00 en de dagplanning-scraper om 07:00, dus het sessie-slot is in dit tijdvak meestal vrij.
 
 ## Deadline
 

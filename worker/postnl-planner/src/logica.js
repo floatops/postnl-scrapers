@@ -219,12 +219,19 @@ export function bronNietGelezen(bron, stops) {
 // Uitkomst van de controle na de dubbelklik. Kwam er van de doelrit niets binnen, dan is de controle
 // mislukt, niet per se de verplaatsing: zeg dat (matransport#666: 10-11 Waddinxveen, 56 stops
 // "staan niet in 0712" terwijl ze erin stonden). null = gelukt.
-export function controleUitkomst({ gewenst, inDoel, gelezen, doel, dialoog = null }) {
+// Staat er geen enkele stop in de doelrit en zei PostNL niets, dan heeft PostNL de verplaatsing
+// stil niet uitgevoerd (matransport#696: 11-11 00:30-01:04 vijf van de vijf, op A en B).
+export function controleUitkomst({ gewenst, inDoel, gelezen, doel, dialoog = null, nu = new Date() }) {
   const extra = dialoog ? ` (PostNL: ${dialoog})` : ''
   if (!gelezen) {
     return { status: 'mislukt', melding: `De verplaatsing naar ${doel.ritnaam} is gegeven, maar die rit kon daarna niet gelezen worden${extra}. Controleer in PostNL of de ${gewenst.length} stop(s) erin staan.` }
   }
   const missen = gewenst.filter(s => !inDoel.has(adresSleutel(s)))
+  if (missen.length === gewenst.length && !dialoog) {
+    const uur = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Europe/Amsterdam', hour: '2-digit', hourCycle: 'h23' }).format(nu))
+    const nacht = uur < 6 ? " 's Nachts gebeurt dit vaker: probeer het in de ochtend opnieuw." : ' Probeer het opnieuw of controleer dit in PostNL.'
+    return { status: 'mislukt', melding: `PostNL heeft deze verplaatsing niet uitgevoerd: ${missen.length === 1 ? 'de stop staat' : `de ${missen.length} stops staan`} niet in ${doel.ritnaam}.${nacht}` }
+  }
   if (missen.length) {
     return { status: 'mislukt', melding: `${missen.length} stop(s) staan na de actie niet in ${doel.ritnaam}${extra}. Controleer dit in PostNL.` }
   }
