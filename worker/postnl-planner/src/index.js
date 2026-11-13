@@ -22,8 +22,9 @@ import { installeerNeutraleConsole } from '../../credentials-shared/src/publiekL
 import { kiesProxy, sluitProxyAf, detecteerBlok, isBlokStatus, uitkomstBijFout, proxyPoolAan, ProxyBlokkadeError, gooiBijProxyWeigering } from '../../credentials-shared/src/proxyPool.js'
 import { bewaarVideo, latestPad, foutPad, ruimOudeFoutVideosOp, depotSlug, nlTijdstempel, BUCKET } from '../../credentials-shared/src/sessieVideo.js'
 import { pakSessieSlot } from '../../credentials-shared/src/sessieSlot.js'
+import { bewaarChauffeurs, chauffeursUitKeuzes } from '../../credentials-shared/src/postnl/chauffeurs.js'
 import {
-  RIT_VELDEN, STOP_VELDEN, OPTIONELE_STOP_VELDEN, zonderVelden, volgordeAfwijkingen, verhuisdeStops, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, isWeigering, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
+  RIT_VELDEN, STOP_VELDEN, OPTIONELE_STOP_VELDEN, zonderVelden, volgordeAfwijkingen, verhuisdeStops, adresPaar, adresParen, bronNietGelezen, gebouwAdres, controleUitkomst, kiesGewenst, straatUitRegister, woningenUitRegister, verschil, adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, isWeigering, kiesUitLijst, zelfdeChauffeur, ritnummerVan, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, selectieKlopt, stopNaarRij,
 } from './logica.js'
 import {
   afmelden, kiesChauffeur, kiesDag, kiesShift, klikStopRij, leesChauffeurKeuze, leesDeadlineTekst, leesShifts, leesStopTabel, openRit, sluitDialoog,
@@ -136,8 +137,9 @@ async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
   const nu = new Date().toISOString()
   const bestaand = await db(supabase.from('planning_ritten').select(['rit_id', ...RIT_VELDEN].join(', '))
     .eq('klant_id', KLANT_ID).eq('depot', taak.depot).eq('datum', taak.datum), 'ritten lezen')
-  // De chauffeurlijst staat alleen op een open rit. Ritten die deze ronde niet open waren
-  // (andere shift, geen stops) houden wat ze hadden.
+  // Of de chauffeur te wisselen is, staat alleen op een open rit. Ritten die deze ronde niet open
+  // waren (andere shift, geen stops) houden wat ze hadden. De keuzelijst zelf gaat sinds
+  // matransport#713 naar postnl_chauffeurs (één lijst per klant), niet meer per rit.
   const bekend = new Map(bestaand.map(r => [r.rit_id, r]))
   const rijen = ritten.map(r => ({
     ...r,
@@ -145,7 +147,6 @@ async function bewaarRitten(taak, ritten, { inScope = () => true } = {}) {
     deadline: r.deadline ?? bekend.get(r.rit_id)?.deadline ?? null,
     stops_gelezen: r.stops_gelezen ?? bekend.get(r.rit_id)?.stops_gelezen ?? null,
     chauffeur_wijzigbaar: r.chauffeur_wijzigbaar ?? bekend.get(r.rit_id)?.chauffeur_wijzigbaar ?? false,
-    chauffeur_opties: r.chauffeur_opties ?? bekend.get(r.rit_id)?.chauffeur_opties ?? [],
     klant_id: KLANT_ID, depot: taak.depot, datum: taak.datum,
   }))
   const v = verschil(bestaand.filter(inScope), rijen, 'rit_id', RIT_VELDEN)
@@ -262,6 +263,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
   const gezien = []
   const telling = { nieuw: 0, gewijzigd: 0, weg: 0, gestopt: false }
   const nietGelezen = new Set()
+  const keuzelijst = []   // opties van open (niet vergrendelde) chauffeurkeuzelijsten, matransport#713
   let klaar = 0
   for (const rit of eigen) {
     if (stoppen()) { telling.gestopt = true; break }
@@ -335,11 +337,24 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
       if (deadline) rit.deadline = deadline
       const keuze = await leesChauffeurKeuze(page)
       rit.chauffeur_wijzigbaar = keuze.wijzigbaar
-      rit.chauffeur_opties = keuze.opties
+      if (keuze.wijzigbaar) keuzelijst.push(...keuze.keuzes)
     } else {
       rit.stops_gelezen = 0
     }
     await opVoortgang(++klaar / Math.max(1, eigen.length), eigen[klaar]?.ritnaam)
+  }
+  // Wie PostNL nu laat kiezen, naar de ene lijst met PostNL-chauffeurs (matransport#713). Een
+  // vergrendelde lijst (geautoriseerde rit) bevat alleen de eigen chauffeur en telt niet mee.
+  // Mislukt het bewaren, dan de ronde eerst afmaken (stops opruimen, versheid) en daarna gooien.
+  let chauffeurFout = null
+  if (keuzelijst.length) {
+    const lijst = chauffeursUitKeuzes(keuzelijst)
+    try {
+      const c = await bewaarChauffeurs(supabase, { klantId: KLANT_ID, depot: taak.depot, chauffeurs: lijst, uitKeuzelijst: true })
+      console.log(`Shift ${shift}: keuzelijst ${lijst.length} chauffeurs, ${c.overgeslagen ? 'tabel ontbreekt nog' : `${c.geschreven} bijgewerkt`}`)
+    } catch (err) {
+      chauffeurFout = err
+    }
   }
   // Pas na een complete ronde: bij een fout onderweg blijft de vorige stand staan. Alleen stops van
   // ritten die deze ronde gelezen zijn (een rit zonder stops telt als gelezen).
@@ -352,6 +367,7 @@ async function leesStopsVanShift(page, mendix, taak, shift, ritten, opVoortgang 
   }
   telling.weg = weg.length
   if (!deel && !telling.gestopt) await zetVersheid(taak, [shift], { stops_om: nu })
+  if (chauffeurFout) throw chauffeurFout
   return telling
 }
 
@@ -453,19 +469,24 @@ async function verplaatsEen(page, mendix, taak, v, ritten, opStap) {
 }
 
 // Ritten-pagina meteen laten kloppen, niet pas na de volgende sync (om 05:40 zou dat tot 07:00
-// duren). Een andere PostNL-naam beëindigt ook een met de hand gekozen chauffeur: dat regelt de
-// trigger rit_chauffeur_handmatig (#362). Is de naam aan niemand gekoppeld, dan blijft de
-// koppeling staan en toont Ritten de nieuwe PostNL-naam ernaast. Bestaat de rit nog niet, dan
-// maakt de eerstvolgende sync hem met deze naam aan.
-async function werkRittenBij(taak, ritnaam, naam) {
+// duren). Alleen de PostNL-chauffeur (id + naam) van de rit; welke medewerker dat is, koppelt de
+// database (trigger rit_chauffeur_koppeling, matransport#713). Alleen de HD-rit: een AD- of GB-rit
+// met hetzelfde nummer is een andere rit (#560). Bestaat de rit nog niet, dan maakt de eerstvolgende
+// sync hem met deze chauffeur aan.
+let chauffeurIdKolom = true   // false: ritten.postnl_chauffeur_id bestaat op deze stack nog niet
+async function werkRittenBij(taak, ritnaam, chauffeur) {
   const ritnummer = ritnummerVan(ritnaam)
   if (!ritnummer) return
-  const gebruikers = await db(supabase.from('users').select('id, postnl_naam')
-    .eq('klant_id', KLANT_ID).not('postnl_naam', 'is', null), 'gebruikers lezen')
-  const chauffeurId = gebruikerBijNaam(gebruikers, naam)
-  await db(supabase.from('ritten')
-    .update({ postnl_chauffeur: naam, ...(chauffeurId && { chauffeur_id: chauffeurId }) })
-    .eq('klant_id', KLANT_ID).eq('datum', taak.datum).eq('depot', taak.depot).eq('ritnummer', ritnummer), 'rit bijwerken')
+  const zet = (metId) => supabase.from('ritten')
+    .update({ postnl_chauffeur: chauffeur.naam, ...(metId && { postnl_chauffeur_id: chauffeur.id ?? null }) })
+    .eq('klant_id', KLANT_ID).eq('datum', taak.datum).eq('depot', taak.depot).eq('ritnummer', ritnummer)
+    .or('postnl_kanaal.is.null,postnl_kanaal.eq.HD')
+  let { error } = await zet(chauffeurIdKolom)
+  if (error?.code === '42703' && chauffeurIdKolom) {
+    chauffeurIdKolom = false
+    ;({ error } = await zet(false))
+  }
+  if (error) throw new Error(`rit bijwerken: ${error.message}`)
 }
 
 async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
@@ -476,16 +497,18 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
   await openRit(page, mendix, rit.ritnaam)
   const keuze = await leesChauffeurKeuze(page)
   if (!keuze.wijzigbaar) return { status: 'overgeslagen', melding: `PostNL staat bij ${rit.ritnaam} geen chauffeurwissel meer toe.` }
-  if (!keuze.opties.includes(v.chauffeur)) return { status: 'overgeslagen', melding: `${v.chauffeur} staat niet in de PostNL-lijst.` }
+  // Op het PostNL-id (matransport#713); een oude opdracht zonder id op de naam.
+  const gekozenChauffeur = kiesUitLijst(keuze.keuzes, v)
+  if (!gekozenChauffeur) return { status: 'overgeslagen', melding: `${v.chauffeur} staat niet in de PostNL-lijst.` }
   const ookKomend = v.chauffeur_ook_komend === true
-  if (keuze.huidig === v.chauffeur) {
-    await werkRittenBij(taak, rit.ritnaam, v.chauffeur)
+  if (zelfdeChauffeur(keuze, gekozenChauffeur)) {
+    await werkRittenBij(taak, rit.ritnaam, gekozenChauffeur)
     // PostNL stelt de vraag alleen bij een echte wissel: de komende ritten zijn dan niet geraakt.
     return { status: 'gelukt', melding: ookKomend ? `${rit.ritnaam} stond vandaag al op deze chauffeur; de komende ritten zijn niet aangepast.` : 'Stond al op deze chauffeur.' }
   }
 
   // matransport#707: de planner koos 'alleen vandaag' of 'ook de komende ritten van dit scenario'.
-  const gekozen = await kiesChauffeur(page, mendix, v.chauffeur, { ookKomend })
+  const gekozen = await kiesChauffeur(page, mendix, gekozenChauffeur, { ookKomend })
   const { meldingen } = gekozen
   const dialoog = await sluitDialoog(page, mendix)
   const weigering = meldingen.find(isWeigering)
@@ -494,10 +517,10 @@ async function wisselChauffeur(page, mendix, taak, v, ritten, opStap) {
   await kiesShift(page, mendix, rit.shift)
   await openRit(page, mendix, rit.ritnaam)
   const na = await leesChauffeurKeuze(page)
-  if (na.huidig !== v.chauffeur) {
+  if (!zelfdeChauffeur(na, gekozenChauffeur)) {
     return { status: 'mislukt', melding: `De chauffeur staat na de actie op ${na.huidig ?? 'niemand'}${dialoog ? ` (PostNL: ${dialoog})` : ''}. Controleer dit in PostNL.` }
   }
-  await werkRittenBij(taak, rit.ritnaam, v.chauffeur)
+  await werkRittenBij(taak, rit.ritnaam, gekozenChauffeur)
   // De nacontrole ziet alleen vandaag; dat de komende ritten volgen, zegt PostNL niet terug. Lukte
   // de keuze voor de komende ritten niet, dan is de wissel van vandaag toch gelukt (matransport#707).
   const notities = [

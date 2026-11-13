@@ -50,9 +50,10 @@ test('dagplanningRitten: alle velden uit de antwoorden, in de vorm van `ritten`'
   assert.deepEqual(a.velden, {
     postnl_stops: 5, postnl_stuks: 276, postnl_volume: '3,94', postnl_gewicht: '387,00',
     postnl_briefbusstops: 0, postnl_geplande_duur: '2:18', postnl_ritnaam: '0114 volume',
-    postnl_chauffeur: 'JANSEN, A.', postnl_shift: '1', postnl_rit_id: 'r1', postnl_geautoriseerd: true,
+    postnl_chauffeur: 'JANSEN, A.', postnl_chauffeur_id: 'd-r1', postnl_shift: '1', postnl_rit_id: 'r1', postnl_geautoriseerd: true,
   })
   assert.equal(b.velden.postnl_chauffeur, null, 'geen chauffeur gekoppeld = leeg')
+  assert.equal(b.velden.postnl_chauffeur_id, null, 'geen chauffeur gekoppeld = ook geen id (matransport#713)')
   assert.equal(b.velden.postnl_gewicht, '1234,50', 'geen duizendtalpunt, zoals in ritten')
   assert.equal(b.geautoriseerd, false)
 })
@@ -66,6 +67,7 @@ test('dagplanningRitten: een later antwoord vult aan, een ontbrekend veld blijft
   const [los] = dagplanningRitten([alleenTotalen])
   assert.equal('postnl_stuks' in los.velden, false)
   assert.equal('postnl_chauffeur' in los.velden, false, 'chauffeur onbekend ≠ geen chauffeur')
+  assert.equal('postnl_chauffeur_id' in los.velden, false, 'id alleen samen met de naam (matransport#713)')
 })
 
 test('kanaal zonder RideID: uit het scherm, anders onbekend en niet geschreven', () => {
@@ -162,7 +164,7 @@ test('schrijfDagplanning: lezen en bijwerken altijd met klant_id; een databasefo
   const sb = nepSupabase({ bestaande: [{ id: 'x', ritnummer: '114', postnl_kanaal: null, postnl_stops: 4 }] })
   const uit = await schrijfDagplanning(sb, { klantId: 'k', datum: '2026-11-02', depot: 'D', nu: NU,
     gelezen: [{ ritnummer: '114', kanaal: 'HD', shift: '1', velden: { postnl_stops: 5 } }] })
-  assert.deepEqual(uit, { bijgewerkt: 1, nieuw: 0, kanaalOnbekend: [], tegenstrijdig: [] })
+  assert.deepEqual(uit, { bijgewerkt: 1, nieuw: 0, chauffeurs: 0, kanaalOnbekend: [], tegenstrijdig: [] })
   for (const q of sb.log) assert.ok(q.filters.some(([k, v]) => k === 'klant_id' && v === 'k'), `${q.soort} zonder klant_id`)
   await assert.rejects(schrijfDagplanning(nepSupabase({ fout: { message: 'kapot' } }), { klantId: 'k', datum: 'd', depot: 'D', gelezen: [] }), /kapot/)
 })

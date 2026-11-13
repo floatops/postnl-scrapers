@@ -51,7 +51,7 @@ export function dagplanningRitten(antwoorden, { negeer = new Set() } = {}) {
       RideNumber: n,
       Ride: rit,
       // Geen chauffeur gekoppeld = leeg; een gekoppelde die niet in de antwoorden stond = onbekend.
-      Driver: chauffeurGuid === null ? { LastNameInitials: null } : chauffeurs.get(chauffeurGuid),
+      Driver: chauffeurGuid === null ? { guid: null, LastNameInitials: null } : chauffeurs.get(chauffeurGuid),
       Shift: shifts.get(rit['OperationalPlanning.Ride_Shift'] ?? n['OperationalPlanning.RideNumber_Shift']),
     }
     const velden = veldenUit(ctx)

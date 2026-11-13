@@ -9,6 +9,7 @@
 // - Een databasefout is nooit stil: uitvoeren() gooit, zodat de run als mislukt telt.
 import { normaliseerRitnummer } from './tekst.js'
 import { NIEUWE_KOLOMMEN } from './velden.js'
+import { bewaarChauffeurs, chauffeursUitRitten } from './chauffeurs.js'
 
 export function ritSleutel(ritnummer, kanaal) {
   return `${normaliseerRitnummer(ritnummer)}|${kanaal || 'HD'}`
@@ -115,11 +116,22 @@ export async function schrijfDagplanning(supabase, { klantId, datum, depot, gele
   const bestaande = await vereis(supabase.from('ritten').select(select)
     .eq('klant_id', klantId).eq('datum', datum).eq('depot', depot), 'ritten lezen')
   const plan = planRitten({ bestaande: bestaande ?? [], gelezen, klantId, datum, depot, nu, statusNieuw, kolommen })
+  // Eerst de chauffeurs (floatops/matransport#713): de koppeltrigger op ritten zoekt het id van de
+  // chauffeur op in postnl_chauffeurs. Staat hij daar nog niet, dan kent hij de chauffeur niet.
+  // Mislukt dat, dan toch eerst de ritten schrijven (die zijn belangrijker), en daarna gooien.
+  let chauffeurs = { geschreven: 0 }
+  let chauffeurFout = null
+  try {
+    chauffeurs = await bewaarChauffeurs(supabase, { klantId, depot, chauffeurs: chauffeursUitRitten(gelezen), nu })
+  } catch (err) {
+    chauffeurFout = err
+  }
   for (const u of plan.updates) {
     await vereis(supabase.from('ritten').update(u.velden).eq('id', u.id).eq('klant_id', klantId), 'rit bijwerken')
   }
   if (plan.inserts.length) await vereis(supabase.from('ritten').insert(plan.inserts), 'ritten aanmaken')
-  return { bijgewerkt: plan.updates.length, nieuw: plan.inserts.length, kanaalOnbekend: plan.kanaalOnbekend, tegenstrijdig: plan.tegenstrijdig }
+  if (chauffeurFout) throw chauffeurFout
+  return { bijgewerkt: plan.updates.length, nieuw: plan.inserts.length, chauffeurs: chauffeurs.geschreven, kanaalOnbekend: plan.kanaalOnbekend, tegenstrijdig: plan.tegenstrijdig }
 }
 
 // Ritten van een dag in het verleden op Gereden zetten, alleen van deze klant en dit depot.

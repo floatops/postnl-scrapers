@@ -99,3 +99,20 @@ test('rijenUitScherm: rommelrijen weg, duizendtal, AD zonder shift, leeg kanaal 
   assert.equal(rijen[0].brievenbusstops, null)
   assert.equal(rijen[1].shift, null)
 })
+
+test('matransport#713: chauffeur en brievenbusstops alleen uit de Dagplanning als die de rit kent', () => {
+  const nu = nuOm('10:00')
+  const basis = { ritnummer: '216', postnl_kanaal: 'HD', status: 'gepland', postnl_stops_totaal: 113, postnl_stops_te_doen: 113,
+    postnl_laatste_actie: null, postnl_monitor_opgehaald: nu, postnl_chauffeur: 'Dagplanning, D.', postnl_briefbusstops: 14 }
+  const bekend = plan([{ ...basis, id: 'a', postnl_rit_id: 'r1' }], [rij({ chauffeur: 'Anders, A.', brievenbusstops: 15 })], nu)
+  const velden = bekend.updates[0]?.velden ?? {}
+  assert.equal('postnl_chauffeur' in velden, false, 'de Ritmonitor overschrijft de chauffeur van de Dagplanning niet')
+  assert.equal('postnl_briefbusstops' in velden, false)
+  const onbekend = plan([{ ...basis, id: 'b', postnl_rit_id: null }], [rij({ chauffeur: 'Anders, A.', brievenbusstops: 15 })], nu)
+  assert.equal(onbekend.updates[0].velden.postnl_chauffeur, 'Anders, A.', 'rit zonder Dagplanning (#653): de Ritmonitor vult hem')
+  assert.equal(onbekend.updates[0].velden.postnl_briefbusstops, 15)
+  const leeg = plan([{ ...basis, id: 'c', postnl_rit_id: null }], [rij({ chauffeur: null })], nu)
+  assert.equal('postnl_chauffeur' in (leeg.updates[0]?.velden ?? {}), false, 'een lege cel wist geen chauffeur')
+  const nieuw = plan([], [rij({ chauffeur: 'Nieuw, N.' })], nu)
+  assert.equal(nieuw.inserts[0].postnl_chauffeur, 'Nieuw, N.', 'nood-rij krijgt de chauffeur uit de Ritmonitor')
+})

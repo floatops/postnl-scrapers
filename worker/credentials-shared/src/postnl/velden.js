@@ -4,7 +4,7 @@
 // `object` is het Mendix-object waar de waarde staat (zie POSTNL_SESSIE.md § Mendix-objecten):
 //   RideNumber  totalen van een rit (Stops, Pieces, Volume, Weight, MailboxOnlyStops, TotalRideTime)
 //   Ride        de rit zelf (RideName, RideID, Authorized, …)
-//   Driver      de chauffeur van de rit (LastNameInitials)
+//   Driver      de chauffeur van de rit (guid = vast PostNL-id, LastNameInitials)
 //   Shift       de shift van de rit (Name)
 // `lees` krijgt { ritnummer, RideNumber, Ride, Driver, Shift } en geeft de waarde, of `undefined` als
 // PostNL hem in deze antwoorden niet meestuurde: dan blijft de kolom zoals hij was.
@@ -35,6 +35,10 @@ export const RIT_VELDEN = [
   { kolom: 'postnl_geplande_duur', lees: attr('RideNumber', 'TotalRideTime', normaliseerDuur) },
   { kolom: 'postnl_ritnaam',       lees: attr('Ride', 'RideName', tekst) },
   { kolom: 'postnl_chauffeur',     lees: attr('Driver', 'LastNameInitials', tekst) },
+  // Het vaste PostNL-id van de chauffeur (Mendix-id van Planning.Driver, floatops/matransport#713).
+  // Daarop koppelt matransport de rit aan een medewerker; de naam alleen is niet uniek. Alleen samen
+  // met de naam: een chauffeur die niet in de antwoorden stond, laat beide kolommen ongemoeid.
+  { kolom: 'postnl_chauffeur_id',  lees: attr('Driver', 'guid', tekst), nieuw: true },
   // Zoals de dagplanning het altijd deed: het eerste cijfer van het ritnummer (114 → "1",
   // 9xx → "9" voor reserve). Daar rekenen shift_tijden en de reserve-regel van de ritmonitor op.
   // De shift volgens PostNL zelf geeft dagplanningRitten() apart terug (`shiftPostnl`).

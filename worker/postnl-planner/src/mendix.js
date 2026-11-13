@@ -242,18 +242,37 @@ export async function leesStopTabel(page) {
 }
 
 // De chauffeur-keuzelijst bij de open rit. Bij een geautoriseerde rit staat hij op slot, en dan
-// staat alleen de huidige chauffeur erin.
-export async function leesChauffeurKeuze(page) {
+// staat alleen de huidige chauffeur erin. De `value` van een optie is het vaste PostNL-id van de
+// chauffeur (Mendix-id van Planning.Driver, gezien in de trace van 13-11, matransport#713); twee
+// chauffeurs kunnen dezelfde naam hebben ("Ancharad, I." twee keer), het id niet.
+// Pas lezen als de lijst stil staat (worker-robuust punt 7): twee keer hetzelfde aantal opties,
+// hooguit KEUZE_STIL_MS lang wachten.
+export const KEUZE_STIL_MS = 3000
+const KEUZE_STAP_MS = 300
+
+export async function leesChauffeurKeuze(page, { stilMs = KEUZE_STIL_MS, stapMs = KEUZE_STAP_MS } = {}) {
   const keuze = page.locator(SCHERM.chauffeur).first()
-  if (!(await keuze.count())) return { wijzigbaar: false, opties: [], huidig: null }
-  return keuze.evaluate((el) => {
+  if (!(await keuze.count())) return { wijzigbaar: false, opties: [], keuzes: [], huidig: null, huidigId: null }
+  const lees = () => keuze.evaluate((el) => {
     const opties = [...el.options].filter(o => o.value && o.label.trim())
+    const gekozen = el.options[el.selectedIndex]
     return {
       wijzigbaar: !el.disabled,
-      opties: opties.map(o => o.label.trim()),
-      huidig: el.options[el.selectedIndex]?.label.trim() || null,
+      keuzes: opties.map(o => ({ id: o.value, naam: o.label.trim() })),
+      huidig: gekozen?.label.trim() || null,
+      huidigId: (gekozen?.value && gekozen.label.trim()) ? gekozen.value : null,
     }
-  })
+  }, undefined, { timeout: 10_000 })
+  let uit = await lees()
+  const eind = Date.now() + stilMs
+  while (uit.wijzigbaar && Date.now() < eind) {
+    await new Promise(r => setTimeout(r, stapMs))
+    const opnieuw = await lees()
+    const stil = opnieuw.keuzes.length === uit.keuzes.length
+    uit = opnieuw
+    if (stil) break
+  }
+  return { ...uit, opties: uit.keuzes.map(k => k.naam) }
 }
 
 // PostNL slaat de keuze meteen op en vraagt dan of de chauffeur ook aan de komende ritten van
@@ -273,8 +292,11 @@ export const antwoordKnop = ookKomend => (ookKomend ? OOK_KOMEND : ALLEEN_VANDAA
 // lukt die knop niet, dan valt hij terug op "alleen vandaag" (de chauffeur van vandaag is dan al
 // opgeslagen) en staat de reden in opmerkingen. Blijft de vraag open staan, dan gaat hij dicht
 // met het kruisje, zodat de volgende wijziging van de opdracht een vrij scherm heeft.
-export async function kiesChauffeur(page, mendix, naam, { ookKomend = false } = {}) {
-  const antwoorden = await mendix.actie(() => page.locator(SCHERM.chauffeur).first().selectOption({ label: naam }), 60_000)
+// `chauffeur`: { id, naam } kiest op het PostNL-id (matransport#713); een losse naam (oude opdracht
+// zonder id) op het label.
+export async function kiesChauffeur(page, mendix, chauffeur, { ookKomend = false } = {}) {
+  const optie = chauffeur && typeof chauffeur === 'object' && chauffeur.id ? { value: String(chauffeur.id) } : { label: typeof chauffeur === 'object' ? chauffeur?.naam : chauffeur }
+  const antwoorden = await mendix.actie(() => page.locator(SCHERM.chauffeur).first().selectOption(optie), 60_000)
   const opmerkingen = []
   // Op de knop zelf zoeken: welk soort venster PostNL gebruikt, maakt dan niet uit (02-11: het
   // was geen .mx-dialog, en de vraag bleef open staan). Eerst wachten op een van beide knoppen,

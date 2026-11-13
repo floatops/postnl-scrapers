@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, gebruikerBijNaam, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, rittenUit,
+  adresSleutel, deadlineUitTekst, foutVoorPlanner, teOudeTraces, traceAan, kiesUitLijst, zelfdeChauffeur, getal, ritnummerVan, isWeigering, objectenUit, redenNietUitvoeren, rijenVoorStops, shiftReden, shiftsVan, rittenUit,
   selectieKlopt, stopNaarRij, stopsUit, tvi, tviTijd, volgordeAfwijkingen, isPostnlPunt, schoonToevoeging, uniekeMeldingen, verschil, zonderVelden, STOP_VELDEN, OPTIONELE_STOP_VELDEN,
 } from '../src/logica.js'
 
@@ -46,11 +46,15 @@ test('ritnummer zoals in de tabel ritten', () => {
   assert.equal(ritnummerVan('geen nummer'), null)
 })
 
-test('koppeling op PostNL-naam, alleen bij precies één treffer', () => {
-  const lijst = [{ id: 'a', postnl_naam: 'Soerka, S.H.' }, { id: 'b', postnl_naam: 'Dubbel, D.' }, { id: 'c', postnl_naam: 'dubbel, d.' }]
-  assert.equal(gebruikerBijNaam(lijst, ' soerka, s.h. '), 'a')
-  assert.equal(gebruikerBijNaam(lijst, 'Dubbel, D.'), null)
-  assert.equal(gebruikerBijNaam(lijst, 'Niemand'), null)
+test('chauffeurwissel kiest op het PostNL-id, naamgenoten worden niet verward (matransport#713)', () => {
+  const keuzes = [{ id: '11', naam: 'Dubbel, D.' }, { id: '12', naam: 'Dubbel, D.' }, { id: '13', naam: 'Soerka, S.H.' }]
+  assert.deepEqual(kiesUitLijst(keuzes, { chauffeur: 'Dubbel, D.', chauffeur_postnl_id: '12' }), { id: '12', naam: 'Dubbel, D.' })
+  assert.equal(kiesUitLijst(keuzes, { chauffeur: 'Dubbel, D.', chauffeur_postnl_id: '99' }), null, 'id niet in de lijst: niet op de naam terugvallen')
+  assert.equal(kiesUitLijst(keuzes, { chauffeur: 'Dubbel, D.' }), null, 'oude opdracht zonder id: bij twee naamgenoten niet raden')
+  assert.deepEqual(kiesUitLijst(keuzes, { chauffeur: 'Soerka, S.H.' }), { id: '13', naam: 'Soerka, S.H.' })
+  assert.equal(zelfdeChauffeur({ huidig: 'Dubbel, D.', huidigId: '11' }, { id: '12', naam: 'Dubbel, D.' }), false, 'zelfde naam, andere chauffeur')
+  assert.equal(zelfdeChauffeur({ huidig: 'Dubbel, D.', huidigId: '12' }, { id: '12', naam: 'Dubbel, D.' }), true)
+  assert.equal(zelfdeChauffeur({ huidig: 'Soerka, S.H.', huidigId: null }, { id: null, naam: 'Soerka, S.H.' }), true)
 })
 
 test('ritten: geneste Ride en chauffeur zoals PostNL ze stuurt', () => {
@@ -248,11 +252,11 @@ test('verschil: alleen wat anders is gaat naar de app (#562)', async () => {
   assert.deepEqual(verschil(bestaand, bestaand, 'stop_id', STOP_VELDEN), { nieuw: [], gewijzigd: [], weg: [] }, 'niets veranderd: niets schrijven')
 
   // Database en PostNL schrijven hetzelfde anders: "0.5" vs 0.5, ander ISO-formaat, lege lijst.
-  const rit = { rit_id: 'r1', shift: '07', ritnaam: '0703 x', chauffeur: null, chauffeur_wijzigbaar: false, chauffeur_opties: [], geautoriseerd: false, bewerkbaar: true, geblokkeerd: false, stops: 10, stuks: 20, volume: '1.5', deadline: '2026-11-03T10:10:00+00:00', stops_gelezen: 10 }
+  const rit = { rit_id: 'r1', shift: '07', ritnaam: '0703 x', chauffeur: null, chauffeur_wijzigbaar: false, geautoriseerd: false, bewerkbaar: true, geblokkeerd: false, stops: 10, stuks: 20, volume: '1.5', deadline: '2026-11-03T10:10:00+00:00', stops_gelezen: 10 }
   const zelfdeRit = { ...rit, volume: 1.5, deadline: '2026-11-03T10:10:00.000Z' }
   assert.equal(verschil([rit], [zelfdeRit], 'rit_id', RIT_VELDEN).gewijzigd.length, 0)
   assert.equal(verschil([rit], [{ ...zelfdeRit, stops: 11 }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
-  assert.equal(verschil([rit], [{ ...zelfdeRit, chauffeur_opties: ['A'] }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
+  assert.equal(verschil([rit], [{ ...zelfdeRit, chauffeur_wijzigbaar: true }], 'rit_id', RIT_VELDEN).gewijzigd.length, 1)
 })
 
 test('doorvoer leest alleen de shifts van de wijzigingen, of alles als er een shift ontbreekt (matransport#578)', () => {

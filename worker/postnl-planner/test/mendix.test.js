@@ -1,7 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { volgMendix, VERWEESD_MS, antwoordKnop, kiesChauffeur } from '../src/mendix.js'
+import { volgMendix, VERWEESD_MS, antwoordKnop, kiesChauffeur, leesChauffeurKeuze } from '../src/mendix.js'
 
 // Genoeg van een Playwright-pagina voor volgMendix: events, geen voortgangsbalk, korte timeouts.
 function nepPagina() {
@@ -200,4 +200,38 @@ test('chauffeurvraag: geen knop doet iets = dicht met het kruisje, zonder fout',
 test('chauffeurvraag: venster gaat ook met het kruisje niet dicht = fout (volgende wijziging zou vastlopen)', async () => {
   const { page, mendix } = nepVraag({ gedrag: { ja: 'niets', nee: 'niets' }, kruisje: 'niets' })
   await assert.rejects(kiesChauffeur(page, mendix, 'X', { ookKomend: true }), /ging niet dicht/)
+})
+
+// matransport#713: de keuzelijst geeft id + naam per optie, en wordt pas gelezen als hij stil staat.
+function nepKeuzelijst(standen, { disabled = false } = {}) {
+  let i = 0
+  const locator = {
+    first() { return this },
+    count: async () => 1,
+    evaluate: async (fn) => {
+      const opties = standen[Math.min(i++, standen.length - 1)]
+      const el = { disabled, selectedIndex: 0, options: [{ value: '', label: '' }, ...opties.map(([value, label]) => ({ value, label }))] }
+      el.selectedIndex = opties.length ? 1 : 0
+      return fn(el)
+    },
+  }
+  return { locator: () => locator }
+}
+
+test('chauffeurkeuzelijst: id per optie, wacht tot het aantal stil staat, met een grens', async () => {
+  const page = nepKeuzelijst([[['1', 'Een, A.']], [['1', 'Een, A.'], ['2', 'Twee, B.']], [['1', 'Een, A.'], ['2', 'Twee, B.']]])
+  const uit = await leesChauffeurKeuze(page, { stilMs: 2000, stapMs: 1 })
+  assert.deepEqual(uit.keuzes, [{ id: '1', naam: 'Een, A.' }, { id: '2', naam: 'Twee, B.' }])
+  assert.deepEqual(uit.opties, ['Een, A.', 'Twee, B.'])
+  assert.equal(uit.huidigId, '1')
+  // Groeit hij steeds door: na de grens toch lezen wat er staat, niet eeuwig wachten.
+  let n = 0
+  const groeit = { locator: () => ({ first() { return this }, count: async () => 1, evaluate: async (fn) => fn({ disabled: false, selectedIndex: -1, options: Array.from({ length: ++n }, (_, k) => ({ value: String(k + 1), label: `C${k}` })) }) }) }
+  const t0 = Date.now()
+  const g = await leesChauffeurKeuze(groeit, { stilMs: 50, stapMs: 5 })
+  assert.ok(Date.now() - t0 < 1000)
+  assert.ok(g.keuzes.length > 1)
+  // Vergrendeld (geautoriseerde rit): niet wachten.
+  const slot = await leesChauffeurKeuze(nepKeuzelijst([[['1', 'Een, A.']]], { disabled: true }), { stilMs: 5000, stapMs: 1 })
+  assert.equal(slot.wijzigbaar, false)
 })

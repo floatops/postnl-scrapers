@@ -60,7 +60,7 @@ export const AFWEZIG_DREMPEL_MIN = 20
 
 // Elk veld dat planMonitor kan zetten moet hier staan: teSchrijven() vergelijkt ermee, en een
 // ontbrekend veld telt als "gewijzigd".
-export const BESTAANDE_KOLOMMEN = 'id, ritnummer, status, shift, postnl_stops_totaal, postnl_stops_te_doen, postnl_start_werktijd, postnl_eind_werktijd, postnl_monitor_opgehaald, postnl_laatste_actie, postnl_kanaal, postnl_chauffeur, postnl_briefbusstops'
+export const BESTAANDE_KOLOMMEN = 'id, ritnummer, status, shift, postnl_stops_totaal, postnl_stops_te_doen, postnl_start_werktijd, postnl_eind_werktijd, postnl_monitor_opgehaald, postnl_laatste_actie, postnl_kanaal, postnl_chauffeur, postnl_briefbusstops, postnl_rit_id'
 
 // Puur: wat moet er na deze lezing bijgewerkt, aangemaakt en gelogd worden?
 export function planMonitor({ bestaande, rijen, datum, depot, klantId, nu, leegBevestigd = false, tijdzone = TIJDZONE }) {
@@ -95,14 +95,19 @@ export function planMonitor({ bestaande, rijen, datum, depot, klantId, nu, leegB
     // veel te vroeg als afgerond gemarkeerd (eind_werktijd vlak na start_werktijd).
     const stopsTeDoenBevestigdNul = rit.stopsTeDoen === 0 && existing?.postnl_stops_te_doen === 0
 
+    // Eén bron per gegeven (matransport#713): kent de Dagplanning deze rit (postnl_rit_id), dan komen
+    // de chauffeur (met zijn vaste PostNL-id) en de brievenbusstops alleen uit de Dagplanning. De
+    // Ritmonitor vult ze alleen voor een rit die de Dagplanning niet leest (avond-, bulk- en
+    // reserveritten, #653). Een lege cel overschrijft geen bekende chauffeur.
+    const dagplanningKent = Boolean(existing?.postnl_rit_id)
     const velden = {
       postnl_stops_totaal:      rit.stopsTotaal,
       postnl_stops_te_doen:     rit.stopsTeDoen,
       postnl_laatste_actie:     rit.laatsteActie,
       postnl_kanaal:            rit.kanaal,
-      postnl_chauffeur:         rit.chauffeur,
       postnl_monitor_opgehaald: nu,
-      ...(rit.brievenbusstops !== null && { postnl_briefbusstops: rit.brievenbusstops }),
+      ...(!dagplanningKent && rit.chauffeur && { postnl_chauffeur: rit.chauffeur }),
+      ...(!dagplanningKent && rit.brievenbusstops !== null && { postnl_briefbusstops: rit.brievenbusstops }),
       // Status op basis van ritmonitor: ritmonitor is leidend zodra stops_te_doen bekend is.
       ...(rit.stopsTeDoen !== null && {
         status: stopsTeDoenBevestigdNul ? 'gereden' : 'bezig',

@@ -469,12 +469,20 @@ export function ritnummerVan(ritnaam) {
   return m ? String(parseInt(m[1], 10)) : null
 }
 
-// Wie moet er in FloatOps aan deze PostNL-naam gekoppeld worden? Zelfde vergelijking als de
-// trigger rit_chauffeur_handmatig. Geen of meerdere treffers: niets kiezen.
-export function gebruikerBijNaam(gebruikers, naam) {
-  const schoon = (w) => String(w ?? '').trim().toLowerCase()
-  const treffers = gebruikers.filter(u => schoon(u.postnl_naam) === schoon(naam))
-  return treffers.length === 1 ? treffers[0].id : null
+// Welke optie van de chauffeurkeuzelijst bedoelt de opdracht? Op het PostNL-id (matransport#713):
+// twee chauffeurs kunnen dezelfde naam hebben. Een oude opdracht zonder id: alleen als de naam
+// precies één keer in de lijst staat (bij twee naamgenoten niet raden).
+// keuzes: [{ id, naam }] uit leesChauffeurKeuze; v: rij uit planning_verplaatsingen.
+export function kiesUitLijst(keuzes, v) {
+  if (v?.chauffeur_postnl_id) return keuzes.find(k => k.id === String(v.chauffeur_postnl_id)) ?? null
+  const treffers = keuzes.filter(k => k.naam === v?.chauffeur)
+  return treffers.length === 1 ? treffers[0] : null
+}
+
+// Staat de keuzelijst al op deze chauffeur? Op het id als dat er is, anders op de naam.
+export function zelfdeChauffeur(keuze, chauffeur) {
+  if (keuze?.huidigId && chauffeur?.id) return keuze.huidigId === chauffeur.id
+  return (keuze?.huidig ?? null) === (chauffeur?.naam ?? null)
 }
 
 // Wat de planner te zien krijgt. De technische tekst blijft in worker_run_log.
@@ -506,7 +514,7 @@ export function teOudeTraces(namen, nu = new Date(), dagen = TRACE_BEWAAR_DAGEN)
 
 // Alleen verschillen schrijven (floatops/matransport#562): de app ziet live wat er in PostNL
 // veranderde, en een ronde zonder wijziging schrijft niets. Vergelijkt de inhoud, niet opgehaald_at.
-export const RIT_VELDEN = ['shift', 'ritnaam', 'chauffeur', 'chauffeur_wijzigbaar', 'chauffeur_opties', 'geautoriseerd',
+export const RIT_VELDEN = ['shift', 'ritnaam', 'chauffeur', 'chauffeur_wijzigbaar', 'geautoriseerd',
   'bewerkbaar', 'geblokkeerd', 'stops', 'stuks', 'volume', 'deadline', 'stops_gelezen']
 export const STOP_VELDEN = ['rit_id', 'shift', 'straat', 'huisnummer', 'toevoeging', 'postcode', 'stuks', 'volume', 'tvi_tijd', 'tvi_volgorde', 'postnl_punt']
 // Kolommen die op een stack nog kunnen ontbreken tot de migratie daar is gepromoot (één checkout

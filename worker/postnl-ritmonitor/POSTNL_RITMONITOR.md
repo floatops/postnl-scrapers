@@ -24,7 +24,7 @@ Per rit, in de `ritten`-tabel:
 | `postnl_briefbusstops` | Brievenbusstops, kolom dynamisch opgezocht via header-titel (regex `/brievenbuss/i`) — het kolomnummer verschilt per Mendix-instantie |
 | `postnl_laatste_actie` | Tekst uit "Tijdstip laatste actie" (alleen tijd, geen datum) |
 | `postnl_kanaal` | Kanaal-kolom |
-| `postnl_chauffeur` | Chauffeursnaam zoals PostNL 'm toont (gebruikt om later te koppelen aan `users.postnl_naam`, zie `koppelChauffeurs()`) |
+| `postnl_chauffeur` | Chauffeursnaam zoals PostNL 'm toont. **Sinds matransport#713 alleen voor een rit die de Dagplanning niet kent** (`postnl_rit_id` leeg: avond-, bulk- en reserveritten) en nooit leeg overschreven; anders komt hij (met het vaste PostNL-id) alleen uit de Dagplanning. Zelfde regel voor `postnl_briefbusstops`. |
 | `postnl_monitor_opgehaald` | Hartslag: wanneer de rit voor het laatst in de grid stond. Basis voor de "verdwenen-uit-grid"-detectie hieronder (20 min), `sluit_stille_ritten()` (20 min) en `useLiveVoertuig` (30 min). **Sinds floatops/matransport#462 hoogstens elke 5 min bijgewerkt** (`HARTSLAG_MS`), of eerder als er toch iets verandert — geen tijdstempel van elke lezing meer |
 | `postnl_start_werktijd` / `postnl_eind_werktijd` | Zie [Werkuren](#werkuren--start-eind-werktijd) |
 | `status` | `ritmonitor` is leidend zodra `stops_te_doen` bekend is: `bezig` of `gereden` (bevestigd-nul, zie hieronder) |
@@ -135,7 +135,7 @@ Náást `--once` (wat GitHub Actions gebruikt) heeft `src/index.js` ook een daem
 
 ## Chauffeur-koppeling
 
-**Sinds floatops/matransport#562 doet de database dit, niet de worker.** De trigger `trg_rit_chauffeur_koppeling` op `ritten` zet `chauffeur_id` zodra `postnl_chauffeur` nieuw is of wijzigt: de medewerker met precies die `users.postnl_naam` in dezelfde klant (hoofdletters en spaties maken niet uit, bij naamgenoten niets). Een handmatige keuze blijft staan zolang PostNL dezelfde naam meldt (#362). `trg_users_postnl_naam_koppelen` koppelt bestaande ritten zodra een PostNL-naam wordt ingevuld. De oude `koppelChauffeurs()` (na elke run alle ritten nalopen) is daarmee weg; vóór het weghalen gecontroleerd dat er geen enkele rit was die de trigger zou missen. `@Home`/freelance-ritten (geen `postnl_chauffeur`) blijven buiten bereik.
+**Sinds floatops/matransport#562 doet de database dit, niet de worker; sinds #713 op het vaste PostNL-id.** De trigger `trg_rit_chauffeur_koppeling` op `ritten` zet `chauffeur_id` op de medewerker die HR aan die PostNL-chauffeur koppelde (`postnl_chauffeurs.user_id`). Een rit zonder id (alleen uit de Ritmonitor) koppelt op de naam, alleen als die bij precies één PostNL-chauffeur hoort. Niet gekoppeld = geen chauffeur. Een handmatige keuze blijft staan zolang PostNL dezelfde chauffeur meldt (#362). De oude `koppelChauffeurs()` (na elke run alle ritten nalopen) is daarmee weg; vóór het weghalen gecontroleerd dat er geen enkele rit was die de trigger zou missen. `@Home`/freelance-ritten (geen `postnl_chauffeur`) blijven buiten bereik.
 
 ## Per-depot foutisolatie
 
